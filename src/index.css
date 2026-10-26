@@ -1,0 +1,125 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens (Light Mode Fintech) ─────────────────────── */
+:root {
+  --bg-main: #F8FAFC;
+  --bg-card: #FFFFFF;
+  --border-card: #E2E8F0;
+  --text-primary: #0F172A;
+  --text-secondary: #64748B;
+
+  /* Tailwind CSS surface / ink tokens */
+  --surface-0: #F8FAFC;
+  --surface-1: #FFFFFF;
+  --surface-2: #E2E8F0;
+  --surface-3: #CBD5E1;
+  --ink: #0F172A;
+  --ink-muted: #334155;
+  --ink-faint: #64748B;
+  --accent: #0F172A;
+  --accent-muted: rgba(15, 23, 42, 0.06);
+  --accent-fg: #FFFFFF;
+}
+
+.dark {
+  --bg-main: #0B0F19;
+  --bg-card: #131B2E;
+  --border-card: #1E293B;
+  --text-primary: #F8FAFC;
+  --text-secondary: #94A3B8;
+
+  --surface-0: #0B0F19;
+  --surface-1: #131B2E;
+  --surface-2: #1E293B;
+  --surface-3: #334155;
+  --ink: #F8FAFC;
+  --ink-muted: #94A3B8;
+  --ink-faint: #64748B;
+  --accent: #38BDF8;
+  --accent-muted: rgba(56, 189, 248, 0.15);
+  --accent-fg: #0B0F19;
+}
+
+/* ── Base resets ───────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  height: -webkit-fill-available;
+  background-color: var(--bg-main);
+}
+
+body {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  min-height: 100vh;
+  min-height: -webkit-fill-available;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Recharts Clean Styling (Light & Dark) ─────────────────── */
+.recharts-default-tooltip {
+  background-color: #FFFFFF !important;
+  border: 1px solid #E2E8F0 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05) !important;
+  color: #0F172A !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+}
+
+.dark .recharts-default-tooltip {
+  background-color: #131B2E !important;
+  border: 1px solid #1E293B !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+  color: #F8FAFC !important;
+}
+
+.recharts-tooltip-label {
+  color: #0F172A !important;
+  font-weight: 700 !important;
+  margin-bottom: 4px !important;
+}
+
+.dark .recharts-tooltip-label {
+  color: #F8FAFC !important;
+}
+
+.recharts-cartesian-axis-tick text {
+  fill: #64748B !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+}
+
+.dark .recharts-cartesian-axis-tick text {
+  fill: #94A3B8 !important;
+}
+
+.recharts-cartesian-grid line {
+  stroke: #F1F5F9 !important;
+}
+
+.dark .recharts-cartesian-grid line {
+  stroke: #1E293B !important;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Tabular numbers for amounts ───────────────────────────── */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* ── Safe area padding ─────────────────────────────────────── */
+.safe-top    { padding-top:    env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
