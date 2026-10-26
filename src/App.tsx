@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect } from 'react';
-import { PenLine, BarChart3, TrendingUp } from 'lucide-react';
+import { PenLine, History, BarChart3, TrendingUp } from 'lucide-react';
 import Header from './components/Header';
 import QuickRegister from './components/QuickRegister';
+import TransactionsView from './components/TransactionsView';
 import BudgetAccordion from './components/BudgetAccordion';
 import AnalyticsView from './components/AnalyticsView';
 import WalletsModal from './components/WalletsModal';
-import { postTransaccion, enqueue, getOfflineQueue, syncQueue, fetchAppData } from './services/api';
+import { saveTransaction, getOfflineQueue, syncOfflineQueue, fetchAppData } from './services/api';
 import { haptic } from './utils/format';
 import type { TabPrincipal, TipoTransaccion, Transaccion } from './types/finance';
 
@@ -18,7 +19,8 @@ interface ToastState {
 
 const NAV_TABS: { key: TabPrincipal; label: string; Icon: typeof PenLine }[] = [
   { key: 'registro', label: 'Registro', Icon: PenLine },
-  { key: 'presupuesto', label: 'Presupuesto', Icon: BarChart3 },
+  { key: 'movimientos', label: 'Movimientos', Icon: History },
+  { key: 'presupuestos', label: 'Presupuesto', Icon: BarChart3 },
   { key: 'analiticas', label: 'Analíticas', Icon: TrendingUp },
 ];
 
@@ -59,17 +61,28 @@ export default function App() {
       setOnline(true);
       if (getOfflineQueue().length > 0) {
         setSincronizando(true);
-        await syncQueue();
+        await syncOfflineQueue();
         setQueueCount(getOfflineQueue().length);
         setSincronizando(false);
       }
     };
     const handleOffline = () => setOnline(false);
+    const handleQueueChange = (e: Event) => {
+      const custom = e as CustomEvent<number>;
+      if (typeof custom.detail === 'number') {
+        setQueueCount(custom.detail);
+      } else {
+        setQueueCount(getOfflineQueue().length);
+      }
+    };
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    window.addEventListener('finanzas_queue_updated', handleQueueChange);
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('finanzas_queue_updated', handleQueueChange);
     };
   }, []);
 
@@ -88,7 +101,7 @@ export default function App() {
     setTimeout(() => setToast(prev => prev?.id === id ? null : prev), 3500);
   }, []);
 
-  // ── Save transaction ───────────────────────────────────────
+  // ── Save transaction (Optimistic + CORS Simple Request) ─────
   const [saving, setSaving] = useState(false);
 
   const handleSave = useCallback(async (payload: {
@@ -108,24 +121,19 @@ export default function App() {
       ...payload,
     };
 
-    if (online) {
-      try {
-        await postTransaccion(tx);
-        showToast(`${payload.tipo} guardado — $${payload.monto.toLocaleString('es-CO')}`, 'ok');
-        fetchAppData(true).catch(() => {});
-      } catch {
-        enqueue(tx);
-        setQueueCount(getOfflineQueue().length);
-        showToast('Guardado offline · se enviará al reconectar', 'warn');
-      }
-    } else {
-      enqueue(tx);
+    try {
+      // saveTransaction aplica de inmediato actualización optimista en memoria y localStorage
+      await saveTransaction(tx);
+      showToast(`${payload.tipo} guardado — $${payload.monto.toLocaleString('es-CO')}`, 'ok');
+    } catch {
+      // Si la petición a la red falla, ya está en memoria y encolada en localStorage
       setQueueCount(getOfflineQueue().length);
-      showToast('Sin conexión · guardado localmente', 'warn');
+      showToast('Guardado offline · se enviará al reconectar', 'warn');
+    } finally {
+      setQueueCount(getOfflineQueue().length);
+      setSaving(false);
     }
-
-    setSaving(false);
-  }, [online, showToast]);
+  }, [showToast]);
 
   // ── Initial sync & Service Worker ──────────────────────────
   useEffect(() => {
@@ -175,11 +183,14 @@ export default function App() {
           {tab === 'registro' && (
             <QuickRegister onSave={handleSave} saving={saving} />
           )}
-          {tab === 'presupuesto' && <BudgetAccordion />}
+          {tab === 'movimientos' && (
+            <TransactionsView onNavigateToRegister={() => setTab('registro')} />
+          )}
+          {(tab === 'presupuestos' || tab === 'presupuesto') && <BudgetAccordion />}
           {tab === 'analiticas' && <AnalyticsView />}
         </main>
 
-        {/* Bottom navigation bar */}
+        {/* Bottom navigation bar: 4 pestañas */}
         <nav
           className="
             fixed bottom-0 inset-x-0 z-40
@@ -194,15 +205,15 @@ export default function App() {
           aria-label="Navegación principal"
         >
           {NAV_TABS.map(({ key, label, Icon }) => {
-            const active = tab === key;
+            const active = tab === key || (key === 'presupuestos' && tab === 'presupuesto');
             return (
               <button
                 key={key}
                 type="button"
                 onClick={() => { haptic(); setTab(key); }}
                 className={`
-                  flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl
-                  transition-all duration-150 min-w-[76px]
+                  flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl
+                  transition-all duration-150 min-w-[70px]
                   ${active
                     ? 'text-slate-900 dark:text-slate-100 font-bold'
                     : 'text-slate-400 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}
@@ -211,7 +222,7 @@ export default function App() {
                 aria-label={label}
               >
                 <div className={`p-1 rounded-xl transition-colors ${active ? 'bg-slate-100 dark:bg-slate-800' : ''}`}>
-                  <Icon size={20} strokeWidth={active ? 2.5 : 1.8} />
+                  <Icon size={19} strokeWidth={active ? 2.5 : 1.8} />
                 </div>
                 <span className="text-[10px] font-semibold">{label}</span>
               </button>

@@ -65,7 +65,7 @@ export interface KPIs {
   pendientesOffline: number;
 }
 
-export type TabPrincipal = 'registro' | 'presupuesto' | 'analiticas';
+export type TabPrincipal = 'registro' | 'movimientos' | 'presupuestos' | 'analiticas' | 'presupuesto';
 
 export interface EstadoApp {
   tema: 'dark' | 'light';
