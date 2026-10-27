@@ -138,3 +138,34 @@ export interface AppDataResponse {
   gastosRecurrentes?: GastoRecurrente[];
 }
 
+export interface RunwayData {
+  costosFijosBase: number;
+  saldoReserva: number;
+  runwayMeses: number;
+  metaMeses: number;
+}
+
+export interface SimuladorCreditoResult {
+  deudaViva: number;
+  cuotaRegular: number;
+  tasaEA: number;
+  tasaMensual: number;
+  interesMes: number;
+  abonoCapitalCuota: number;
+  escenario: 'plazo' | 'cuota';
+  abonoSimulado: number;
+  cuotasAhorradas?: number;
+  interesAhorradoAnual?: number;
+  reduccionCuotaMensual?: number;
+  nuevaCuotaEstimada?: number;
+  spreadLiquidezPct: number;
+}
+
+export interface MatrizGastos {
+  totalInflexibles: number;
+  totalDiscrecionales: number;
+  pctInflexibles: number;
+  pctDiscrecionales: number;
+  subcategoriasInflexibles: string[];
+}
+

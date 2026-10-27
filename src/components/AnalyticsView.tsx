@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   BarChart,
   Bar,
@@ -10,6 +10,8 @@ import {
   Pie,
   Cell,
   Legend,
+  AreaChart,
+  Area,
 } from 'recharts';
 import {
   Car,
@@ -19,6 +21,10 @@ import {
   Check,
   Flame,
   CreditCard,
+  ShieldCheck,
+  Scale,
+  TrendingUp,
+  Layers,
 } from 'lucide-react';
 import { CATALOG_GASTOS } from '../data/catalog';
 import {
@@ -35,6 +41,20 @@ const PALETTE = [
   '#E11D48', '#2563EB', '#059669', '#D97706',
   '#7C3AED', '#0891B2', '#EA580C', '#4F46E5', '#DB2777',
 ];
+
+// Subcategorías clasificadas como inflexibles (costos fijos obligatorios)
+const SUBCATS_INFLEXIBLES_SET = new Set([
+  'arriendo',
+  'energía eléctrica',
+  'energia electrica',
+  'agua y alcantarillado',
+  'gas natural',
+  'internet hogar',
+  'plan celular',
+  'mercado del hogar',
+  'cuota regular mazda 2',
+  'gimnasio',
+]);
 
 interface TooltipProps {
   active?: boolean;
@@ -95,6 +115,7 @@ export default function AnalyticsView() {
   // ── Simulador de Abono Extraordinario Mazda ─────────────────
   const [abonoSimulado, setAbonoSimulado] = useState<number>(1_000_000);
   const [abonoInput, setAbonoInput] = useState<string>('1.000.000');
+  const [escenarioSimulador, setEscenarioSimulador] = useState<'plazo' | 'cuota'>('plazo');
 
   useEffect(() => {
     fetchAppData().then(data => setAppData(data)).catch(() => {});
@@ -132,6 +153,119 @@ export default function AnalyticsView() {
   const balanceDisponible = appData.kpis.balanceDisponible ?? appData.kpis.balance;
   const ritmoDiario = Math.max(balanceDisponible / diasRestantes, 0);
 
+  // ── WIDGET 1: RUNWAY EN MESES DE VIDA (OXÍGENO FINANCIERO) ─────────
+  // Costos Fijos Inflexibles Base: Arriendo ($524.000) + Servicios Públicos ($325.000) + Cuota Mazda ($815.731) + Mercado Base ($600.000) = $2.264.731 COP/mes.
+  const costosFijosBase = 2_264_731;
+  const saldoReserva = saldos['Lulo Bolsillo - Ahorro'] ?? 0;
+  const runwayMeses = costosFijosBase > 0 ? saldoReserva / costosFijosBase : 0;
+  const pctRunwayMeta = Math.min((runwayMeses / 3) * 100, 100);
+
+  const runwayColorClass = runwayMeses >= 3
+    ? 'text-emerald-600 dark:text-emerald-400'
+    : runwayMeses >= 1
+    ? 'text-amber-600 dark:text-amber-400'
+    : 'text-rose-600 dark:text-rose-400';
+
+  const runwayBarClass = runwayMeses >= 3
+    ? 'bg-emerald-500'
+    : runwayMeses >= 1
+    ? 'bg-amber-500'
+    : 'bg-rose-500';
+
+  const runwayBadgeClass = runwayMeses >= 3
+    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+    : runwayMeses >= 1
+    ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
+    : 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800';
+
+  const runwayBadgeLabel = runwayMeses >= 3 ? 'Meta Superada' : runwayMeses >= 1 ? 'En Construcción' : 'Alerta Mínima';
+
+  // ── WIDGET 2: MATRIZ DE GASTOS: INFLEXIBLES VS. ESTILO DE VIDA ─────
+  const { totalInflexibles, totalDiscrecionales, pctInflexibles, pctDiscrecionales } = useMemo(() => {
+    let inflexibles = 0;
+    let discrecionales = 0;
+
+    const subcats = appData.gastadoPorSubcat || {};
+    Object.entries(subcats).forEach(([sub, monto]) => {
+      const subNorm = sub.trim().toLowerCase();
+      if (SUBCATS_INFLEXIBLES_SET.has(subNorm)) {
+        inflexibles += Number(monto) || 0;
+      } else {
+        discrecionales += Number(monto) || 0;
+      }
+    });
+
+    const total = inflexibles + discrecionales;
+    return {
+      totalInflexibles: inflexibles,
+      totalDiscrecionales: discrecionales,
+      pctInflexibles: total > 0 ? (inflexibles / total) * 100 : 50,
+      pctDiscrecionales: total > 0 ? (discrecionales / total) * 100 : 50,
+    };
+  }, [appData.gastadoPorSubcat]);
+
+  // ── WIDGET 3: SIMULADOR MAZDA 2 · DESPIECE A CAPITAL & ARBITRAJE ────
+  const cuotaRegular = 815_731;
+  const mazdaRates = calcEquivalentesEA(tasaMazda);
+  const rawDeudaMazda = saldos['Crédito Mazda 2 (Lulo)'] ?? 0;
+  const deudaViva = Math.abs(rawDeudaMazda);
+
+  // i_mes exacto según fórmula de tasas equivalentes
+  const i_mes = mazdaRates.tasaMensual;
+  const interesMesBanco = deudaViva > 0 ? Math.round(deudaViva * i_mes) : 0;
+  const abonoCapitalCuota = deudaViva > 0 ? Math.max(0, cuotaRegular - interesMesBanco) : cuotaRegular;
+
+  // Escenario Reducir Plazo
+  const cuotasAhorradas = abonoCapitalCuota > 0 ? (abonoSimulado / abonoCapitalCuota).toFixed(1) : '0';
+  const interesAhorradoAnual = Math.round(abonoSimulado * (tasaMazda / 100));
+
+  // Escenario Reducir Cuota
+  const reduccionCuotaMensual = Math.round(abonoSimulado * i_mes);
+  const nuevaCuotaEstimada = Math.max(cuotaRegular - reduccionCuotaMensual, 0);
+
+  // ── WIDGET 4: EVOLUCIÓN DE PATRIMONIO NETO ─────────────────────────
+  const { patrimonioNetoActual, totalActivos, totalPasivos, evolucionPatrimonio } = useMemo(() => {
+    let activos = 0;
+    let pasivos = 0;
+
+    Object.entries(saldos).forEach(([cuenta, saldo]) => {
+      const cuentaLower = cuenta.toLowerCase();
+      if (cuentaLower.includes('crédito') || cuentaLower.includes('credito') || saldo < 0) {
+        pasivos += Math.abs(saldo);
+      } else {
+        activos += Math.max(0, saldo);
+      }
+    });
+
+    const netActual = activos - pasivos;
+
+    // Generar 6 puntos (Actual + 5 meses proyectados con amortización a capital)
+    const puntos = [];
+    const baseDate = new Date();
+    const mesesNombres = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+    for (let i = 0; i <= 5; i++) {
+      const mDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
+      const label = i === 0 ? 'Actual' : `+${i}M (${mesesNombres[mDate.getMonth()]})`;
+      // Proyección basada en el abono a capital recurrente de la cuota
+      const capitalAbonadoAcum = abonoCapitalCuota * i;
+      const netProyectado = netActual + capitalAbonadoAcum;
+      puntos.push({
+        mes: label,
+        patrimonio: netProyectado,
+        activos: activos,
+        pasivos: Math.max(0, pasivos - capitalAbonadoAcum),
+      });
+    }
+
+    return {
+      patrimonioNetoActual: netActual,
+      totalActivos: activos,
+      totalPasivos: pasivos,
+      evolucionPatrimonio: puntos,
+    };
+  }, [saldos, abonoCapitalCuota]);
+
   // ── Cálculo de Carga Financiera (DTI) ────────────────────────
   const tcWallets = new Set(['TC Lulo Bank', 'RappiCard']);
   appData.carteras?.forEach(c => {
@@ -142,7 +276,6 @@ export default function AnalyticsView() {
     .filter(t => t.tipo === 'GASTO' && (tcWallets.has(t.cuenta) || tcWallets.has(t.cuentaOrigen || '')))
     .reduce((acc, t) => acc + (Number(t.monto) || 0), 0);
 
-  const cuotaRegular = 815_731;
   const dti = ingresosTotal > 0 ? ((cuotaRegular + totalGastosTC) / ingresosTotal) * 100 : 0;
 
   let dtiStatus = {
@@ -166,20 +299,6 @@ export default function AnalyticsView() {
       textClass: 'text-amber-600 dark:text-amber-400',
     };
   }
-
-  // ── Amortización y Simulador Crédito Mazda 2 ────────────────
-  const mazdaRates = calcEquivalentesEA(tasaMazda);
-  const rawDeudaMazda = saldos['Crédito Mazda 2 (Lulo)'] ?? 0;
-  const deudaViva = Math.abs(rawDeudaMazda);
-
-  const interesMesBanco = deudaViva > 0 ? Math.round(deudaViva * mazdaRates.tasaMensual) : 0;
-  const abonoCapitalCuota = deudaViva > 0 ? Math.max(0, cuotaRegular - interesMesBanco) : cuotaRegular;
-
-  // Cálculos del simulador de abono extraordinario
-  const tasaMazdaEA = tasaMazda / 100;
-  const interesAhorrado = Math.round(abonoSimulado * tasaMazdaEA);
-  const abonoCapitalPorCuota = Math.max(1, cuotaRegular - interesMesBanco);
-  const cuotasAhorradas = Math.floor(abonoSimulado / abonoCapitalPorCuota);
 
   const handleOpenMazdaModal = () => {
     setInputMazda(tasaMazda.toString());
@@ -206,9 +325,10 @@ export default function AnalyticsView() {
   })).filter(d => d.value > 0);
 
   const formatAxisValue = (v: number) => `$${Math.round(v / 1000)}k`;
+  const formatPatrimonioAxis = (v: number) => `$${(v / 1_000_000).toFixed(1)}M`;
 
   return (
-    <div className="flex flex-col gap-4 px-4 pb-4 pt-3 animate-fade-in max-w-lg mx-auto w-full">
+    <div className="flex flex-col gap-4 px-4 pb-8 pt-3 animate-fade-in max-w-lg mx-auto w-full">
 
       {/* ── CARD: RITMO DE GASTO DIARIO SUGERIDO (BURN RATE) ── */}
       <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex items-center justify-between">
@@ -266,6 +386,121 @@ export default function AnalyticsView() {
         />
       </div>
 
+      {/* ── WIDGET 1: RUNWAY EN MESES DE VIDA (OXÍGENO FINANCIERO) ── */}
+      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-800/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                Runway · Fondo de Reserva
+              </h2>
+              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                Oxígeno Financiero · Cobertura Costos Fijos
+              </p>
+            </div>
+          </div>
+          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border uppercase tracking-wide ${runwayBadgeClass}`}>
+            {runwayBadgeLabel}
+          </span>
+        </div>
+
+        <div className="flex items-baseline justify-between">
+          <div>
+            <span className={`text-3xl font-black font-mono tabular-nums tracking-tight ${runwayColorClass}`}>
+              {runwayMeses.toFixed(1)} meses
+            </span>
+            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 ml-2">
+              (Meta ideal: 3.0 meses)
+            </span>
+          </div>
+          <span className="text-xs font-bold text-slate-600 dark:text-slate-400 font-mono">
+            {pctRunwayMeta.toFixed(0)}%
+          </span>
+        </div>
+
+        {/* Barra de progreso hacia la meta ideal de 3 meses */}
+        <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden">
+          <div
+            className={`h-full transition-all duration-500 rounded-full ${runwayBarClass}`}
+            style={{ width: `${pctRunwayMeta}%` }}
+          />
+        </div>
+
+        <p className="text-[11px] text-slate-600 dark:text-slate-400 font-medium pt-0.5">
+          Reserva actual: <strong className="text-slate-800 dark:text-slate-200">{formatCOP(saldoReserva)}</strong> · Costo fijo: <strong className="text-slate-800 dark:text-slate-200">{formatCOP(costosFijosBase)}/mes</strong>
+        </p>
+      </section>
+
+      {/* ── WIDGET 2: MATRIZ DE GASTOS: INFLEXIBLES VS. ESTILO DE VIDA ── */}
+      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-800/60 flex items-center justify-center text-blue-600 dark:text-blue-400">
+              <Layers className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                Matriz de Gastos: Inflexibles vs. Estilo de Vida
+              </h2>
+              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                Esenciales obligatorios vs. Consumo discrecional
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Barra proporcional bicolor */}
+        <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-xl h-3.5 overflow-hidden flex shadow-inner">
+          <div
+            className="h-full bg-blue-600 transition-all duration-500"
+            style={{ width: `${pctInflexibles}%` }}
+            title={`Inflexibles: ${pctInflexibles.toFixed(1)}%`}
+          />
+          <div
+            className="h-full bg-amber-500 transition-all duration-500"
+            style={{ width: `${pctDiscrecionales}%` }}
+            title={`Estilo de Vida: ${pctDiscrecionales.toFixed(1)}%`}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          {/* Bloque Inflexibles */}
+          <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-800/50 flex flex-col">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="w-2 h-2 rounded-full bg-blue-600 flex-shrink-0" />
+              <span className="text-[10px] font-bold text-blue-900 dark:text-blue-300 uppercase tracking-wider">
+                Inflexibles
+              </span>
+            </div>
+            <p className="text-base font-black text-blue-700 dark:text-blue-300 font-mono">
+              {formatCOP(totalInflexibles)}
+            </p>
+            <p className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+              {pctInflexibles.toFixed(1)}% del ciclo
+            </p>
+          </div>
+
+          {/* Bloque Discrecionales */}
+          <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-800/50 flex flex-col">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
+              <span className="text-[10px] font-bold text-amber-900 dark:text-amber-300 uppercase tracking-wider">
+                Estilo de Vida
+              </span>
+            </div>
+            <p className="text-base font-black text-amber-700 dark:text-amber-300 font-mono">
+              {formatCOP(totalDiscrecionales)}
+            </p>
+            <p className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+              {pctDiscrecionales.toFixed(1)}% del ciclo
+            </p>
+          </div>
+        </div>
+      </section>
+
       {/* ── CARD: CARGA FINANCIERA (DTI) ── */}
       <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -310,7 +545,7 @@ export default function AnalyticsView() {
         </div>
       </section>
 
-      {/* ── CARD: CRÉDITO MAZDA 2 · SIMULADOR Y DESPIECE A CAPITAL ── */}
+      {/* ── WIDGET 3: SIMULADOR MAZDA 2 · DESPIECE A CAPITAL & ARBITRAJE ── */}
       <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
         <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
           <div className="flex items-center gap-2">
@@ -319,10 +554,10 @@ export default function AnalyticsView() {
             </div>
             <div>
               <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                Crédito Mazda 2 · Simulador y Despiece
+                Simulador Mazda 2 · Despiece & Arbitraje
               </h2>
               <p className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">
-                Crédito Consumo · Tasa Interés E.A.
+                Crédito Consumo · Cuota Fija {formatCOP(cuotaRegular)}
               </p>
             </div>
           </div>
@@ -371,7 +606,7 @@ export default function AnalyticsView() {
             </div>
             <div className="mt-1">
               <p className="text-base font-black text-rose-600 dark:text-rose-400 font-mono">
-                {mazdaRates.tasaMensualPct.toFixed(3)}% <span className="text-xs font-semibold text-rose-800 dark:text-rose-300">mes</span>
+                {(i_mes * 100).toFixed(3)}% <span className="text-xs font-semibold text-rose-800 dark:text-rose-300">mes</span>
               </p>
               <p className="text-[11px] font-bold text-rose-600 dark:text-rose-400 mt-0.5 font-mono">
                 {formatCOP(interesMesBanco)}/mes
@@ -400,14 +635,14 @@ export default function AnalyticsView() {
           </div>
         </div>
 
-        {/* ── Simulador Interactivo de Abono Extraordinario ── */}
+        {/* ── Simulador Interactivo de Abono a Capital ── */}
         <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-              Simulador de Abono Extraordinario
+              Abono Extraordinario a Capital
             </span>
             <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-              Abono directo a capital
+              Impacto directo
             </span>
           </div>
 
@@ -453,25 +688,174 @@ export default function AnalyticsView() {
             />
           </div>
 
-          {/* Caja destacada con resultados */}
+          {/* Toggle de Escenario: [Reducir Plazo] vs [Reducir Cuota] */}
+          <div className="flex gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => { haptic(); setEscenarioSimulador('plazo'); }}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                escenarioSimulador === 'plazo'
+                  ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Reducir Plazo
+            </button>
+            <button
+              type="button"
+              onClick={() => { haptic(); setEscenarioSimulador('cuota'); }}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                escenarioSimulador === 'cuota'
+                  ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Reducir Cuota
+            </button>
+          </div>
+
+          {/* Caja con resultado según el escenario */}
           <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 rounded-2xl p-4 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                Ahorro real en intereses:
-              </span>
-              <span className="text-sm font-black text-rose-600 dark:text-rose-400 font-mono">
-                +{formatCOP(interesAhorrado)}/año
-              </span>
+            {escenarioSimulador === 'plazo' ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Cuotas descontadas de deuda:
+                  </span>
+                  <span className="text-sm font-black text-slate-900 dark:text-slate-100 font-mono">
+                    ~{cuotasAhorradas} {cuotasAhorradas === '1.0' ? 'cuota menos' : 'cuotas menos'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Ahorro en intereses proyectado:
+                  </span>
+                  <span className="text-sm font-black text-rose-600 dark:text-rose-400 font-mono">
+                    +{formatCOP(interesAhorradoAnual)}/año
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Nueva cuota mensual estimada:
+                  </span>
+                  <span className="text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">
+                    {formatCOP(nuevaCuotaEstimada)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Alivio mensual en flujo de caja:
+                  </span>
+                  <span className="text-xs font-black text-blue-600 dark:text-blue-400 font-mono">
+                    -{formatCOP(reduccionCuotaMensual)}/mes
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* INSIGHT DE ARBITRAJE FINANCIERO (SPREAD) */}
+          <div className="p-3.5 rounded-2xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 flex items-start gap-2.5">
+            <div className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center text-amber-700 dark:text-amber-300 flex-shrink-0 mt-0.5">
+              <Scale size={14} />
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                Tiempo descontado:
-              </span>
-              <span className="text-xs font-black text-slate-900 dark:text-slate-100 font-mono">
-                ~{cuotasAhorradas} {cuotasAhorradas === 1 ? 'cuota menos' : 'cuotas menos'} de deuda
-              </span>
+            <div>
+              <p className="text-[11px] font-bold text-amber-900 dark:text-amber-200">
+                Spread de Liquidez
+              </p>
+              <p className="text-[11px] text-amber-800 dark:text-amber-300/90 leading-relaxed mt-0.5">
+                Amortizar este abono a capital te ahorra <strong>21.35% E.A.</strong>, mientras que en Lulo rinde <strong>9.25% E.A.</strong> Rendimiento neto de amortizar: <strong className="text-emerald-700 dark:text-emerald-300">+12.10% E.A.</strong> (+${(121000).toLocaleString('es-CO')}/año extra por cada millón).
+              </p>
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* ── WIDGET 4: EVOLUCIÓN DE PATRIMONIO NETO ── */}
+      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-800/60 flex items-center justify-center text-blue-600 dark:text-blue-400">
+              <TrendingUp className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                Evolución de Patrimonio Neto
+              </h2>
+              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                Trayectoria consolidada (Activos - Pasivos)
+              </p>
+            </div>
+          </div>
+
+          <div className="text-right">
+            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">
+              Patrimonio Actual
+            </span>
+            <span className={`text-sm font-black font-mono ${patrimonioNetoActual >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {formatCOP(patrimonioNetoActual)}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex justify-between text-[11px] text-slate-500 dark:text-slate-400 px-1">
+          <span>Activos: <strong className="text-slate-800 dark:text-slate-200">{formatCOP(totalActivos)}</strong></span>
+          <span>Pasivos: <strong className="text-rose-600 dark:text-rose-400">{formatCOP(totalPasivos)}</strong></span>
+        </div>
+
+        {/* Gráfico de Área en Recharts con tema Light Fintech (#2563EB) */}
+        <div className="w-full h-48 mt-1">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={evolucionPatrimonio} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <defs>
+                <linearGradient id="patrimonioGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#2563EB" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="#2563EB" stopOpacity={0.0} />
+                </linearGradient>
+              </defs>
+              <XAxis
+                dataKey="mes"
+                tick={{ fontSize: 9, fill: 'currentColor' }}
+                className="text-slate-500 dark:text-slate-400"
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tickFormatter={formatPatrimonioAxis}
+                tick={{ fontSize: 9, fill: 'currentColor' }}
+                className="text-slate-500 dark:text-slate-400"
+                axisLine={false}
+                tickLine={false}
+                width={45}
+              />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  const item = payload[0];
+                  return (
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-2.5 text-xs shadow-lg">
+                      <p className="font-bold text-slate-900 dark:text-slate-100 mb-1">{label}</p>
+                      <p className="text-blue-600 dark:text-blue-400 font-mono font-bold">
+                        Patrimonio: {formatCOP(item.value as number)}
+                      </p>
+                    </div>
+                  );
+                }}
+              />
+              <Area
+                type="monotone"
+                dataKey="patrimonio"
+                name="Patrimonio Neto"
+                stroke="#2563EB"
+                strokeWidth={2.5}
+                fillOpacity={1}
+                fill="url(#patrimonioGradient)"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       </section>
 
@@ -668,7 +1052,7 @@ export default function AnalyticsView() {
               </p>
               <div className="flex justify-between font-mono text-rose-800 dark:text-rose-200">
                 <span>Tasa Mensual:</span>
-                <span className="font-bold">{previewMazdaRates.tasaMensualPct.toFixed(3)}% mes</span>
+                <span className="font-bold">{(previewMazdaRates.tasaMensual * 100).toFixed(3)}% mes</span>
               </div>
               <div className="flex justify-between font-mono text-rose-800 dark:text-rose-200">
                 <span>Costo Interés Banco:</span>
@@ -679,7 +1063,7 @@ export default function AnalyticsView() {
               <div className="flex justify-between font-mono pt-1 border-t border-rose-200/60 dark:border-rose-800/60 text-rose-900 dark:text-rose-100">
                 <span className="font-sans font-bold">Ahorro por $1M extra:</span>
                 <span className="font-black">
-                  +{formatCOP(Math.round(1_000_000 * (previewMazdaRates.eaPct)))}/año
+                  +{formatCOP(Math.round(1_000_000 * (previewMazdaRates.eaPct / 100)))}/año
                 </span>
               </div>
             </div>

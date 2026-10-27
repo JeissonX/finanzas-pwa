@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { Transaccion, AppDataResponse, PresupuestoItem, CarteraInfo, GastoRecurrente } from '../types/finance';
+import type { Transaccion, AppDataResponse, PresupuestoItem, CarteraInfo, GastoRecurrente, RunwayData, MatrizGastos } from '../types/finance';
 import { isDateInCurrentCycle, getCycleLabel } from '../utils/format';
 
 const QUEUE_KEY = 'finanzas_offline_queue';
@@ -988,3 +988,42 @@ export async function syncOfflineQueue(): Promise<{ synced: number; remaining: n
 }
 
 export const syncQueue = syncOfflineQueue;
+
+export function computeRunway(saldos: Record<string, number>): RunwayData {
+  const costosFijosBase = 2_264_731;
+  const saldoReserva = saldos['Lulo Bolsillo - Ahorro'] ?? 0;
+  const runwayMeses = costosFijosBase > 0 ? (saldoReserva / costosFijosBase) : 0;
+  return {
+    costosFijosBase,
+    saldoReserva,
+    runwayMeses,
+    metaMeses: 3,
+  };
+}
+
+export function computeMatrizGastos(gastadoPorSubcat: Record<string, number>): MatrizGastos {
+  const subcategoriasInflexibles = [
+    'Arriendo', 'Energía Eléctrica', 'Agua y Alcantarillado', 'Gas Natural',
+    'Internet Hogar', 'Plan Celular', 'Mercado del Hogar', 'Cuota Regular Mazda 2', 'Gimnasio'
+  ];
+  const setInflexibles = new Set(subcategoriasInflexibles.map(s => s.toLowerCase()));
+  let totalInflexibles = 0;
+  let totalDiscrecionales = 0;
+
+  Object.entries(gastadoPorSubcat || {}).forEach(([sub, monto]) => {
+    if (setInflexibles.has(sub.trim().toLowerCase())) {
+      totalInflexibles += Number(monto) || 0;
+    } else {
+      totalDiscrecionales += Number(monto) || 0;
+    }
+  });
+
+  const total = totalInflexibles + totalDiscrecionales;
+  return {
+    totalInflexibles,
+    totalDiscrecionales,
+    pctInflexibles: total > 0 ? (totalInflexibles / total) * 100 : 0,
+    pctDiscrecionales: total > 0 ? (totalDiscrecionales / total) * 100 : 0,
+    subcategoriasInflexibles,
+  };
+}

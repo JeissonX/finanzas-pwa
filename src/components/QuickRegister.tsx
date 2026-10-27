@@ -218,34 +218,32 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
         ))}
       </div>
 
-      {/* Amount direct input */}
+      {/* Contenedor de input numérico directo y limpio */}
       <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm flex flex-col items-center gap-2">
         <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
           Monto · COP
         </span>
         <div className="relative flex items-center justify-center w-full max-w-sm">
-          <span className="text-2xl sm:text-3xl font-black text-slate-400 dark:text-slate-500 mr-1 select-none">
-            $
-          </span>
           <input
             type="text"
             inputMode="numeric"
             autoFocus
-            value={display === '0' ? '' : display}
-            placeholder="0"
+            value={amount > 0 ? formatCOP(amount) : ''}
+            placeholder="$0"
             onChange={e => handleInput(e.target.value)}
-            className="w-full text-center text-3xl sm:text-4xl font-black text-slate-900 dark:text-slate-100 bg-transparent focus:outline-none selection:bg-rose-100 dark:selection:bg-rose-900/50 font-mono tabular-nums pr-8 pl-4"
+            className="w-full text-center text-4xl font-black text-slate-900 dark:text-slate-100 bg-transparent focus:outline-none selection:bg-rose-100 dark:selection:bg-rose-900/50 font-mono tabular-nums pr-12 pl-12"
             aria-label="Monto de la transacción"
           />
           {amount > 0 && (
             <button
               type="button"
               onClick={handleClear}
-              className="absolute right-1 p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              className="absolute right-2 p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center gap-1 text-[11px] font-bold"
               aria-label="Borrar monto"
               title="Borrar monto"
             >
               <X size={18} />
+              <span className="hidden sm:inline">Borrar</span>
             </button>
           )}
         </div>

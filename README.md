@@ -1,6 +1,6 @@
 # Finanzas PWA 🚀
 
-Aplicación web progresiva (PWA) offline-first para el control financiero personal y gestión patrimonial, respaldada por Supabase (PostgreSQL + Realtime) con cálculo automático de saldos mediante triggers de base de datos.
+Aplicación web progresiva (PWA) offline-first para el control financiero personal y gestión patrimonial estilo Fénix OS, respaldada por Supabase (PostgreSQL + Realtime) con cálculo automático de saldos mediante triggers de base de datos.
 
 ---
 
@@ -12,16 +12,28 @@ Aplicación web progresiva (PWA) offline-first para el control financiero person
    - Trigger PostgreSQL `trg_actualizar_saldos` que recalcula automáticamente los saldos de carteras ante inserciones, modificaciones y eliminaciones.
    - Botón de sincronización limpia y purga forzada en cabecera que vacía la caché de runtime y refresca el estado en caliente.
 
-2. **Registro Rápido Simplificado & Edición de Movimientos**:
-   - Input numérico directo, centrado y estilizado con autoFocus y tipografía grande (`text-3xl` / `text-4xl`).
-   - Formateo en COP en tiempo real (`$ #,##0`) con botón discreto de borrado rápido.
-   - Modal slide-up de edición de transacciones para modificar montos, macro-categorías, subcategorías, medios de pago y comentarios sin perder integridad contable.
+2. **Registro Rápido Simplificado & Táctil**:
+   - Input numérico directo, centrado y estilizado con `autoFocus`, `inputMode="numeric"` y tipografía `text-4xl font-black`.
+   - Formateo reactivo en COP en tiempo real (`formatCOP(monto)`) al escribir números.
+   - Botón discreto de borrado rápido a la derecha (icono X / "Borrar") para resetear inmediatamente el monto a 0.
+   - Eliminación de cuadrícula innecesaria de chips para máxima agilidad en el registro.
 
-3. **Analíticas Avanzadas de Crédito y Flujo**:
-   - **Ritmo de Gasto Diario Sugerido (Burn Rate)**: Calcula los días restantes exactos hasta el día 24 del ciclo salarial y proyecta el tope de gasto diario sobre el balance disponible.
-   - **Carga Financiera (DTI)**: Ratio deuda/ingreso que consolida la cuota del crédito de consumo y el gasto mensual en tarjetas de crédito, clasificado con semáforo inteligente (*Saludable*, *Alerta*, *Elevado*).
-   - **Crédito Mazda 2 · Simulador y Despiece a Capital**: Desglose de cuota regular ($815.731), costo real de intereses bancarios y simulador interactivo de abono extraordinario a capital con cálculo de interés ahorrado por año y cuotas descontadas de deuda.
-   - Historial comparativo de gastos vs. ingresos y desglose porcentual por categorías.
+3. **Suite Analítica Avanzada (Estilo Fénix OS)**:
+   - **Runway · Fondo de Reserva (Oxígeno Financiero)**:
+     - Cobertura de costos fijos inflexibles base ($2.264.731 COP/mes: Arriendo, Servicios, Mazda 2, Mercado).
+     - Medición del saldo de reserva ('Lulo Bolsillo - Ahorro') en meses de vida con meta a 3.0 meses y semáforo cromático (esmeralda, ámbar, rose).
+   - **Matriz de Gastos: Inflexibles vs. Estilo de Vida**:
+     - Clasificación inteligente de subcategorías entre indispensables y discrecionales.
+     - Barra proporcional bicolor interactiva (Azul Real `#2563EB` vs. Ámbar `#D97706`) con montos en COP y porcentajes del ciclo.
+   - **Simulador Mazda 2 · Despiece a Capital & Arbitraje Financiero**:
+     - Desglose de cuota regular ($815.731), tasa Efectiva Anual (21.35% E.A.) y costo de intereses bancarios del mes.
+     - Selector interactivo de abono a capital (chips rápidos de $500k, $1M, $2M e input libre).
+     - Toggle de escenario: **[Reducir Plazo]** (cálculo de cuotas descontadas e intereses ahorrados por año) vs. **[Reducir Cuota]** (nueva cuota mensual y alivio en flujo de caja).
+     - Insight de Arbitraje Financiero (Spread de Liquidez): Ahorro del 21.35% E.A. vs. rendimiento del 9.25% E.A. en Lulo (+12.10% E.A. neto / +$121.000/año por cada millón).
+   - **Evolución de Patrimonio Neto**:
+     - Gráfico de área en Recharts con tema Light Fintech (`#2563EB`) y gradiente sutil.
+     - Consolidado en tiempo real de Activos vs. Pasivos con proyección a 6 meses basada en la amortización de deuda.
+   - **Ritmo de Gasto Diario Sugerido (Burn Rate)** y **Carga Financiera (DTI)**.
 
 4. **Offline-First & PWA**:
    - Registro y edición de transacciones sin conexión a internet.
