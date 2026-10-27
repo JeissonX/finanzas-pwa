@@ -9,18 +9,26 @@ import {
 } from '../utils/format';
 import {
   getQueuedMutations,
+  getQueuedMutationsUnlocked,
   enqueueMutation,
+  enqueueMutationUnlocked,
   removeProcessedMutations,
+  removeProcessedMutationsUnlocked,
   clearMutationQueue,
+  clearMutationQueueUnlocked,
   withQueueLock,
   type QueuedMutation,
 } from '../utils/offlineQueueDb';
 
 export {
   getQueuedMutations,
+  getQueuedMutationsUnlocked,
   enqueueMutation,
+  enqueueMutationUnlocked,
   removeProcessedMutations,
+  removeProcessedMutationsUnlocked,
   clearMutationQueue,
+  clearMutationQueueUnlocked,
   withQueueLock,
 };
 export type { QueuedMutation };
@@ -1056,7 +1064,7 @@ export async function getSaldos(forceRefresh = false): Promise<SaldosResponse> {
 
 export async function syncOfflineQueue(): Promise<{ synced: number; remaining: number }> {
   return withQueueLock(async () => {
-    const queue = await getQueuedMutations();
+    const queue = await getQueuedMutationsUnlocked();
     if (queue.length === 0) return { synced: 0, remaining: 0 };
 
     const processed: QueuedMutation[] = [];
@@ -1095,7 +1103,7 @@ export async function syncOfflineQueue(): Promise<{ synced: number; remaining: n
     }
 
     if (processed.length > 0) {
-      await removeProcessedMutations(processed);
+      await removeProcessedMutationsUnlocked(processed);
     }
 
     const remainingCount = queue.length - processed.length;

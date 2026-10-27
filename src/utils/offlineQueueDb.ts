@@ -116,79 +116,85 @@ async function ensureLegacyMigrated(db: IDBDatabase): Promise<void> {
   }
 }
 
+/** Obtiene la lista completa de mutaciones encoladas sin adquirir lock (para uso dentro de withQueueLock) */
+export async function getQueuedMutationsUnlocked(): Promise<QueuedMutation[]> {
+  try {
+    const db = await openDatabase();
+    await ensureLegacyMigrated(db);
+    const records = await readAllRecords(db);
+    db.close();
+    return records.map(r => r.mutation);
+  } catch (err) {
+    console.warn('Error leyendo mutaciones de IndexedDB:', err);
+    return [];
+  }
+}
+
 /** Obtiene la lista completa de mutaciones encoladas bajo lock */
 export async function getQueuedMutations(): Promise<QueuedMutation[]> {
-  return withQueueLock(async () => {
-    try {
-      const db = await openDatabase();
-      await ensureLegacyMigrated(db);
-      const records = await readAllRecords(db);
-      db.close();
-      return records.map(r => r.mutation);
-    } catch (err) {
-      console.warn('Error leyendo mutaciones de IndexedDB:', err);
-      return [];
+  return withQueueLock(() => getQueuedMutationsUnlocked());
+}
+
+/** Encola una mutación aplicando coalescencia atómica sin adquirir lock (para uso dentro de withQueueLock) */
+export async function enqueueMutationUnlocked(mutation: QueuedMutation): Promise<void> {
+  const db = await openDatabase();
+  await ensureLegacyMigrated(db);
+  const records = await readAllRecords(db);
+
+  const list = records.map(r => r.mutation);
+
+  if (mutation.op === 'insert') {
+    const idx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.tx.id));
+    if (idx >= 0) {
+      list[idx] = mutation;
+    } else {
+      list.push(mutation);
     }
-  });
+  } else if (mutation.op === 'delete') {
+    // Eliminar inserts o updates pendientes de este ID antes de añadir el delete
+    const filtered = list.filter(m => {
+      if (m.op === 'insert' && String(m.tx.id) === String(mutation.id)) return false;
+      if (m.op === 'update' && String(m.id) === String(mutation.id)) return false;
+      return true;
+    });
+    filtered.push(mutation);
+    const updatedRecords: MutationRecord[] = filtered.map(m => ({ mutation: m, timestamp: Date.now() }));
+    await writeAllRecords(db, updatedRecords);
+    db.close();
+    notifyQueueUpdated(updatedRecords.length);
+    return;
+  } else if (mutation.op === 'update') {
+    const insertIdx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.id));
+    if (insertIdx >= 0 && list[insertIdx].op === 'insert') {
+      const existingTx = (list[insertIdx] as { op: 'insert'; tx: Transaccion }).tx;
+      list[insertIdx] = {
+        op: 'insert',
+        tx: { ...existingTx, ...mutation.patch },
+      };
+    } else {
+      const updateIdx = list.findIndex(m => m.op === 'update' && String(m.id) === String(mutation.id));
+      if (updateIdx >= 0) {
+        const prevPatch = (list[updateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion> }).patch;
+        list[updateIdx] = {
+          op: 'update',
+          id: mutation.id,
+          patch: { ...prevPatch, ...mutation.patch },
+        };
+      } else {
+        list.push(mutation);
+      }
+    }
+  }
+
+  const updatedRecords: MutationRecord[] = list.map(m => ({ mutation: m, timestamp: Date.now() }));
+  await writeAllRecords(db, updatedRecords);
+  db.close();
+  notifyQueueUpdated(updatedRecords.length);
 }
 
 /** Encola una mutación aplicando coalescencia atómica bajo lock */
 export async function enqueueMutation(mutation: QueuedMutation): Promise<void> {
-  return withQueueLock(async () => {
-    const db = await openDatabase();
-    await ensureLegacyMigrated(db);
-    const records = await readAllRecords(db);
-
-    const list = records.map(r => r.mutation);
-
-    if (mutation.op === 'insert') {
-      const idx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.tx.id));
-      if (idx >= 0) {
-        list[idx] = mutation;
-      } else {
-        list.push(mutation);
-      }
-    } else if (mutation.op === 'delete') {
-      // Eliminar inserts o updates pendientes de este ID antes de añadir el delete
-      const filtered = list.filter(m => {
-        if (m.op === 'insert' && String(m.tx.id) === String(mutation.id)) return false;
-        if (m.op === 'update' && String(m.id) === String(mutation.id)) return false;
-        return true;
-      });
-      filtered.push(mutation);
-      const updatedRecords: MutationRecord[] = filtered.map(m => ({ mutation: m, timestamp: Date.now() }));
-      await writeAllRecords(db, updatedRecords);
-      db.close();
-      notifyQueueUpdated(updatedRecords.length);
-      return;
-    } else if (mutation.op === 'update') {
-      const insertIdx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.id));
-      if (insertIdx >= 0 && list[insertIdx].op === 'insert') {
-        const existingTx = (list[insertIdx] as { op: 'insert'; tx: Transaccion }).tx;
-        list[insertIdx] = {
-          op: 'insert',
-          tx: { ...existingTx, ...mutation.patch },
-        };
-      } else {
-        const updateIdx = list.findIndex(m => m.op === 'update' && String(m.id) === String(mutation.id));
-        if (updateIdx >= 0) {
-          const prevPatch = (list[updateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion> }).patch;
-          list[updateIdx] = {
-            op: 'update',
-            id: mutation.id,
-            patch: { ...prevPatch, ...mutation.patch },
-          };
-        } else {
-          list.push(mutation);
-        }
-      }
-    }
-
-    const updatedRecords: MutationRecord[] = list.map(m => ({ mutation: m, timestamp: Date.now() }));
-    await writeAllRecords(db, updatedRecords);
-    db.close();
-    notifyQueueUpdated(updatedRecords.length);
-  });
+  return withQueueLock(() => enqueueMutationUnlocked(mutation));
 }
 
 function areMutationsEqual(a: QueuedMutation, b: QueuedMutation): boolean {
@@ -205,29 +211,35 @@ function areMutationsEqual(a: QueuedMutation, b: QueuedMutation): boolean {
   return false;
 }
 
+/** Remueve las mutaciones procesadas con éxito sin adquirir lock (para uso dentro de withQueueLock) */
+export async function removeProcessedMutationsUnlocked(processed: QueuedMutation[]): Promise<void> {
+  if (processed.length === 0) return;
+  const db = await openDatabase();
+  const records = await readAllRecords(db);
+
+  const remaining = records.filter(
+    r => !processed.some(p => areMutationsEqual(r.mutation, p))
+  );
+
+  await writeAllRecords(db, remaining);
+  db.close();
+  notifyQueueUpdated(remaining.length);
+}
+
 /** Remueve las mutaciones procesadas con éxito bajo lock */
 export async function removeProcessedMutations(processed: QueuedMutation[]): Promise<void> {
-  return withQueueLock(async () => {
-    if (processed.length === 0) return;
-    const db = await openDatabase();
-    const records = await readAllRecords(db);
+  return withQueueLock(() => removeProcessedMutationsUnlocked(processed));
+}
 
-    const remaining = records.filter(
-      r => !processed.some(p => areMutationsEqual(r.mutation, p))
-    );
-
-    await writeAllRecords(db, remaining);
-    db.close();
-    notifyQueueUpdated(remaining.length);
-  });
+/** Limpia completamente la cola offline sin adquirir lock (para uso dentro de withQueueLock) */
+export async function clearMutationQueueUnlocked(): Promise<void> {
+  const db = await openDatabase();
+  await writeAllRecords(db, []);
+  db.close();
+  notifyQueueUpdated(0);
 }
 
 /** Limpia completamente la cola offline bajo lock */
 export async function clearMutationQueue(): Promise<void> {
-  return withQueueLock(async () => {
-    const db = await openDatabase();
-    await writeAllRecords(db, []);
-    db.close();
-    notifyQueueUpdated(0);
-  });
+  return withQueueLock(() => clearMutationQueueUnlocked());
 }
