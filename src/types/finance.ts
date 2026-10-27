@@ -86,6 +86,16 @@ export interface PresupuestoItem {
   pct?: number;
 }
 
+export interface CarteraInfo {
+  id: string;
+  nombre: string;
+  tipo: string;
+  saldo_inicial?: number;
+  saldo_actual?: number;
+  icono?: string;
+  permite_gasto?: boolean;
+}
+
 export interface AppDataResponse {
   saldos: Record<string, number>;
   gastadoPorSubcat: Record<string, number>;
@@ -107,5 +117,6 @@ export interface AppDataResponse {
   };
   transacciones?: Transaccion[];
   presupuestos?: PresupuestoItem[];
+  carteras?: CarteraInfo[];
 }
 

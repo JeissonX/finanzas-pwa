@@ -1,6 +1,5 @@
 import { supabase } from './supabase';
-import type { Transaccion, AppDataResponse, PresupuestoItem } from '../types/finance';
-import { CATALOG_GASTOS } from '../data/catalog';
+import type { Transaccion, AppDataResponse, PresupuestoItem, CarteraInfo } from '../types/finance';
 import { isDateInCurrentCycle, getCycleLabel } from '../utils/format';
 
 const QUEUE_KEY = 'finanzas_offline_queue';
@@ -46,6 +45,7 @@ export const DEFAULT_APPDATA: AppData = {
   },
   transacciones: [],
   presupuestos: [],
+  carteras: [],
 };
 
 export function getOfflineQueue(): Transaccion[] {
@@ -486,8 +486,6 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
 
     const cicloTxs = mergedList.filter(t => isDateInCurrentCycle(t.fecha));
 
-    const gastadoPorSubcat: Record<string, number> = {};
-    const gastadoPorMacro: Record<string, number> = {};
     let totalIngresos = 0;
     let totalGastos = 0;
 
@@ -495,37 +493,31 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       const monto = Number(tx.monto) || 0;
       if (tx.tipo === 'GASTO') {
         totalGastos += monto;
-        const sub = tx.subcategoria || tx.sub || '';
-        const macro = tx.categoria || tx.macro || '';
-        if (sub) {
-          gastadoPorSubcat[sub] = (gastadoPorSubcat[sub] ?? 0) + monto;
-        }
-        if (macro) {
-          gastadoPorMacro[macro] = (gastadoPorMacro[macro] ?? 0) + monto;
-        }
       } else if (tx.tipo === 'INGRESO') {
         totalIngresos += monto;
       }
     }
 
-    for (const cat of CATALOG_GASTOS) {
-      let sum = 0;
-      for (const sub of cat.subcategorias) {
-        sum += gastadoPorSubcat[sub.nombre] ?? 0;
-      }
-      if (!gastadoPorMacro[cat.nombre]) {
-        gastadoPorMacro[cat.nombre] = sum;
-      }
-    }
-
-    const balance = totalIngresos - totalGastos;
-    const tasaAhorro = totalIngresos > 0 ? (balance / totalIngresos) * 100 : 0;
-
     const presupuestos: PresupuestoItem[] = catalogoData.map((catRow: any) => {
-      const macro = catRow.macro_categoria || '';
-      const sub = catRow.subcategoria || '';
+      const macro = (catRow.macro_categoria || '').trim();
+      const sub = (catRow.subcategoria || '').trim();
       const presupuesto = Number(catRow.presupuesto_base) || 0;
-      const gastado = gastadoPorSubcat[sub] || 0;
+
+      // Normalizar la comparación entre transacciones y catalogo:
+      // t.subcategoria.trim().toLowerCase() === p.sub.trim().toLowerCase()
+      const matchingTxs = cicloTxs.filter(t => {
+        if (t.tipo !== 'GASTO') return false;
+        const txSub = (t.subcategoria || t.sub || '').trim().toLowerCase();
+        const pSub = sub.toLowerCase();
+        if (txSub === pSub) return true;
+        // Compatibilidad adicional para Streaming y Apps Digitales
+        if (pSub === 'streaming y apps digitales' && (txSub.includes('streaming') || txSub.includes('apps digitales'))) {
+          return true;
+        }
+        return false;
+      });
+
+      const gastado = matchingTxs.reduce((sum, t) => sum + (Number(t.monto) || 0), 0);
       const disponible = presupuesto - gastado;
       const pct = presupuesto > 0 ? (gastado / presupuesto) * 100 : 0;
       return {
@@ -537,6 +529,46 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         pct,
       };
     });
+
+    const gastadoPorSubcat: Record<string, number> = {};
+    const gastadoPorMacro: Record<string, number> = {};
+
+    for (const p of presupuestos) {
+      gastadoPorSubcat[p.sub] = p.gastado || 0;
+      gastadoPorMacro[p.macro] = (gastadoPorMacro[p.macro] ?? 0) + (p.gastado || 0);
+    }
+
+    // Para cualquier transacción no catalogada en catalogo_categorias
+    for (const tx of cicloTxs) {
+      if (tx.tipo === 'GASTO') {
+        const sub = (tx.subcategoria || tx.sub || '').trim();
+        const macro = (tx.categoria || tx.macro || '').trim();
+        const yaContabilizado = presupuestos.some(p => {
+          const pSub = p.sub.trim().toLowerCase();
+          const txSub = sub.toLowerCase();
+          return txSub === pSub || (pSub === 'streaming y apps digitales' && (txSub.includes('streaming') || txSub.includes('apps digitales')));
+        });
+        if (!yaContabilizado && sub) {
+          gastadoPorSubcat[sub] = (gastadoPorSubcat[sub] ?? 0) + (Number(tx.monto) || 0);
+          if (macro) {
+            gastadoPorMacro[macro] = (gastadoPorMacro[macro] ?? 0) + (Number(tx.monto) || 0);
+          }
+        }
+      }
+    }
+
+    const balance = totalIngresos - totalGastos;
+    const tasaAhorro = totalIngresos > 0 ? (balance / totalIngresos) * 100 : 0;
+
+    const carterasMapped: CarteraInfo[] = carterasData.map((c: any) => ({
+      id: c.id,
+      nombre: c.nombre,
+      tipo: c.tipo,
+      saldo_inicial: Number(c.saldo_inicial) || 0,
+      saldo_actual: Number(c.saldo_actual) || 0,
+      icono: c.icono || '💳',
+      permite_gasto: c.permite_gasto !== false,
+    }));
 
     const result: AppData = {
       saldos: updatedSaldos,
@@ -561,6 +593,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       },
       transacciones: mergedList,
       presupuestos,
+      carteras: carterasMapped,
     };
 
     try {

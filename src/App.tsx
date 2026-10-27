@@ -6,7 +6,14 @@ import TransactionsView from './components/TransactionsView';
 import BudgetAccordion from './components/BudgetAccordion';
 import AnalyticsView from './components/AnalyticsView';
 import WalletsModal from './components/WalletsModal';
-import { saveTransaction, getOfflineQueue, syncOfflineQueue, fetchAppData, saveTransacciones } from './services/api';
+import {
+  saveTransaction,
+  deleteTransaction,
+  getTransacciones,
+  getOfflineQueue,
+  syncOfflineQueue,
+  fetchAppData,
+} from './services/api';
 import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
 import type { TabPrincipal, TipoTransaccion, Transaccion } from './types/finance';
@@ -26,6 +33,9 @@ const NAV_TABS: { key: TabPrincipal; label: string; Icon: typeof PenLine }[] = [
 ];
 
 export default function App() {
+  // ── Global transactions state ──────────────────────────────
+  const [transacciones, setTransacciones] = useState<Transaccion[]>(() => getTransacciones());
+
   // ── Theme ──────────────────────────────────────────────────
   const [tema, setTema] = useState<'dark' | 'light'>(() => {
     try {
@@ -120,7 +130,36 @@ export default function App() {
     setTimeout(() => setToast(prev => prev?.id === id ? null : prev), 3500);
   }, []);
 
-  // ── Save transaction (Optimistic + CORS Simple Request) ─────
+  // ── Refresh app data ───────────────────────────────────────
+  const refreshData = useCallback(async (force = false) => {
+    try {
+      const data = await fetchAppData(force);
+      if (data?.transacciones) {
+        setTransacciones(data.transacciones);
+      }
+    } catch (err) {
+      console.error('Error sincronizando datos:', err);
+    }
+  }, []);
+
+  // ── Delete transaction (reactivo e instantáneo) ────────────
+  const handleDeleteTransaction = useCallback(async (id: number | string): Promise<boolean> => {
+    haptic(50);
+    setTransacciones(prev => prev.filter(t => String(t.id) !== String(id)));
+    try {
+      const ok = await deleteTransaction(id);
+      showToast('Movimiento eliminado y revertido', 'ok');
+      await refreshData(true);
+      return ok;
+    } catch (err) {
+      console.error('Error al eliminar transacción:', err);
+      showToast('Error al eliminar movimiento', 'err');
+      await refreshData(true);
+      return false;
+    }
+  }, [refreshData, showToast]);
+
+  // ── Save transaction (Optimistic + Realtime) ───────────────
   const [saving, setSaving] = useState(false);
 
   const handleSave = useCallback(async (payload: {
@@ -145,27 +184,24 @@ export default function App() {
       ...payload,
     };
 
+    setTransacciones(prev => [tx, ...prev.filter(t => String(t.id) !== String(tx.id))]);
+
     try {
-      // saveTransaction aplica de inmediato actualización optimista en memoria y localStorage
       await saveTransaction(tx);
       showToast(`${payload.tipo} guardado — $${payload.monto.toLocaleString('es-CO')}`, 'ok');
+      refreshData(true);
     } catch {
-      // Si la petición a la red falla, ya está en memoria y encolada en localStorage
       setQueueCount(getOfflineQueue().length);
       showToast('Guardado offline · se enviará al reconectar', 'warn');
     } finally {
       setQueueCount(getOfflineQueue().length);
       setSaving(false);
     }
-  }, [showToast]);
+  }, [refreshData, showToast]);
 
   // ── Initial sync, Realtime & Service Worker ─────────────────
   useEffect(() => {
-    fetchAppData().then(data => {
-      if (data?.transacciones && Array.isArray(data.transacciones)) {
-        saveTransacciones(data.transacciones);
-      }
-    }).catch(() => {});
+    refreshData(false);
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(console.warn);
@@ -173,17 +209,26 @@ export default function App() {
 
     const channel = supabase.channel('finanzas-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transacciones' }, () => {
-        fetchAppData(true);
+        refreshData(true);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'carteras' }, () => {
-        fetchAppData(true);
+        refreshData(true);
       })
       .subscribe();
 
+    const handleTxUpdated = (e: Event) => {
+      const custom = e as CustomEvent<Transaccion[]>;
+      if (custom.detail) {
+        setTransacciones(custom.detail);
+      }
+    };
+    window.addEventListener('finanzas_transacciones_updated', handleTxUpdated);
+
     return () => {
       supabase.removeChannel(channel);
+      window.removeEventListener('finanzas_transacciones_updated', handleTxUpdated);
     };
-  }, []);
+  }, [refreshData]);
 
   // ── Render ─────────────────────────────────────────────────
   const TOAST_BG: Record<ToastState['type'], string> = {
@@ -226,7 +271,11 @@ export default function App() {
             <QuickRegister onSave={handleSave} saving={saving} />
           )}
           {tab === 'movimientos' && (
-            <TransactionsView onNavigateToRegister={() => setTab('registro')} />
+            <TransactionsView
+              transacciones={transacciones}
+              onDeleteTransaction={handleDeleteTransaction}
+              onNavigateToRegister={() => setTab('registro')}
+            />
           )}
           {(tab === 'presupuestos' || tab === 'presupuesto') && <BudgetAccordion />}
           {tab === 'analiticas' && <AnalyticsView />}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -14,7 +14,6 @@ import {
   Wallet,
 } from 'lucide-react';
 import type { Transaccion, TipoTransaccion } from '../types/finance';
-import { getTransacciones, deleteTransaccion } from '../services/api';
 import {
   formatCOP,
   formatDateSpanish,
@@ -25,12 +24,17 @@ import {
 
 interface TransactionsViewProps {
   onNavigateToRegister?: () => void;
+  transacciones: Transaccion[];
+  onDeleteTransaction: (id: number | string) => Promise<boolean>;
 }
 
 type FiltroTipo = 'TODOS' | TipoTransaccion;
 
-export default function TransactionsView({ onNavigateToRegister }: TransactionsViewProps) {
-  const [transacciones, setTransacciones] = useState<Transaccion[]>(() => getTransacciones());
+export default function TransactionsView({
+  onNavigateToRegister,
+  transacciones,
+  onDeleteTransaction,
+}: TransactionsViewProps) {
   const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>('TODOS');
   const [soloCicloActivo, setSoloCicloActivo] = useState(true);
   const [busqueda, setBusqueda] = useState('');
@@ -39,28 +43,6 @@ export default function TransactionsView({ onNavigateToRegister }: TransactionsV
   const [txToDelete, setTxToDelete] = useState<Transaccion | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
-
-  // Cargar y escuchar cambios en las transacciones locales y sincronizadas
-  useEffect(() => {
-    const refresh = () => setTransacciones(getTransacciones());
-    refresh();
-
-    const handleUpdated = (e: Event) => {
-      const custom = e as CustomEvent<Transaccion[]>;
-      if (custom.detail) {
-        setTransacciones(custom.detail);
-      } else {
-        refresh();
-      }
-    };
-
-    window.addEventListener('finanzas_transacciones_updated', handleUpdated);
-    window.addEventListener('storage', refresh);
-    return () => {
-      window.removeEventListener('finanzas_transacciones_updated', handleUpdated);
-      window.removeEventListener('storage', refresh);
-    };
-  }, []);
 
   // Filtrado de transacciones
   const filteredTxs = useMemo(() => {
@@ -112,7 +94,7 @@ export default function TransactionsView({ onNavigateToRegister }: TransactionsV
     setIsDeleting(true);
     haptic(50);
     try {
-      const ok = await deleteTransaccion(txToDelete.id);
+      const ok = await onDeleteTransaction(txToDelete.id);
       if (ok) {
         setFeedbackMsg(`Transacción revertida y eliminada correctamente.`);
         setTimeout(() => setFeedbackMsg(null), 3000);

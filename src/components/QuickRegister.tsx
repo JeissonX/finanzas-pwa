@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect } from 'react';
-import { ChevronDown } from 'lucide-react';
-import type { TipoTransaccion } from '../types/finance';
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import { ChevronDown, Zap } from 'lucide-react';
+import type { TipoTransaccion, CarteraInfo } from '../types/finance';
+import type { AppData } from '../services/api';
 import { CATALOG_GASTOS, CATALOG_INGRESOS, CATALOG_TRANSFERENCIAS, CARTERAS, PAYMENT_RULES } from '../data/catalog';
 import { formatDisplay, parseAmount, formatCOP, haptic } from '../utils/format';
 
@@ -37,6 +38,45 @@ const TAB_ACCENT: Record<TipoTransaccion, string> = {
 
 const INCREMENTS = [10000, 20000, 50000, 100000];
 
+interface QuickSubItem {
+  label: string;
+  monto: number;
+  macro: string;
+  sub: string;
+  cuenta: string;
+}
+
+const QUICK_SUBS: QuickSubItem[] = [
+  {
+    label: 'Netflix / Spotify',
+    monto: 30000,
+    macro: 'Suscripciones',
+    sub: 'Streaming y Apps Digitales',
+    cuenta: 'TC Lulo Bank',
+  },
+  {
+    label: 'Plan Celular',
+    monto: 40000,
+    macro: 'Servicios Públicos',
+    sub: 'Plan Celular',
+    cuenta: 'Lulo Principal (Cuenta)',
+  },
+  {
+    label: 'Internet Hogar',
+    monto: 80000,
+    macro: 'Servicios Públicos',
+    sub: 'Internet Hogar',
+    cuenta: 'Lulo Principal (Cuenta)',
+  },
+  {
+    label: 'Gimnasio',
+    monto: 100000,
+    macro: 'Salud y Bienestar',
+    sub: 'Gimnasio',
+    cuenta: 'TC Lulo Bank',
+  },
+];
+
 export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
   const [tipo, setTipo] = useState<TipoTransaccion>('GASTO');
   const [display, setDisplay] = useState('0');
@@ -46,7 +86,58 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
   const [cuentaDestino, setCuentaDestino] = useState('Lulo Principal (Cuenta)');
   const [comentario, setComentario] = useState('');
 
+  // Carteras dinámicas desde AppData
+  const [carterasList, setCarterasList] = useState<CarteraInfo[]>(() => {
+    try {
+      const raw = localStorage.getItem('finanzas_cached_appdata_v4');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.data?.carteras && parsed.data.carteras.length > 0) {
+          return parsed.data.carteras;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return CARTERAS.map(c => ({
+      id: c.id,
+      nombre: c.nombre,
+      tipo: c.tipo,
+      icono: c.icono,
+      permite_gasto: !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre),
+    }));
+  });
+
+  useEffect(() => {
+    const handleUpdate = (e: Event) => {
+      const custom = e as CustomEvent<AppData>;
+      if (custom.detail?.carteras && custom.detail.carteras.length > 0) {
+        setCarterasList(custom.detail.carteras);
+      }
+    };
+    window.addEventListener('finanzas_appdata_updated', handleUpdate);
+    return () => window.removeEventListener('finanzas_appdata_updated', handleUpdate);
+  }, []);
+
   const catalog = tipo === 'GASTO' ? CATALOG_GASTOS : tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+
+  // Filtrar carteras disponibles para el selector de origen/pago
+  const carterasDisponibles = useMemo(() => {
+    if (tipo === 'GASTO') {
+      return carterasList.filter(c => c.permite_gasto !== false);
+    }
+    return carterasList;
+  }, [tipo, carterasList]);
+
+  // Asegurar que al estar en GASTO la cuenta seleccionada sea permitida
+  useEffect(() => {
+    if (tipo === 'GASTO') {
+      const currentAllowed = carterasDisponibles.some(c => c.nombre === cuenta || c.id === cuenta);
+      if (!currentAllowed && carterasDisponibles.length > 0) {
+        setCuenta(carterasDisponibles[0].nombre);
+      }
+    }
+  }, [tipo, carterasDisponibles, cuenta]);
 
   // Reset category when tab changes
   useEffect(() => {
@@ -56,7 +147,12 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
     setSubcategoria(firstSub.nombre);
     const rule = PAYMENT_RULES[firstSub.nombre];
     if (rule) {
-      setCuenta(rule);
+      if (tipo === 'GASTO') {
+        const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
+        setCuenta(isPermitida ? rule : (carterasDisponibles[0]?.nombre || rule));
+      } else {
+        setCuenta(rule);
+      }
     } else if (tipo === 'TRANSFERENCIA') {
       setCuenta('Lulo Principal (Cuenta)');
       setCuentaDestino('Lulo Bolsillo - Ahorro');
@@ -91,15 +187,40 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
     if (firstSub) {
       setSubcategoria(firstSub.nombre);
       const rule = PAYMENT_RULES[firstSub.nombre];
-      if (rule) setCuenta(rule);
+      if (rule) {
+        if (tipo === 'GASTO') {
+          const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
+          setCuenta(isPermitida ? rule : (carterasDisponibles[0]?.nombre || rule));
+        } else {
+          setCuenta(rule);
+        }
+      }
     }
-  }, [catalog]);
+  }, [catalog, tipo, carterasDisponibles]);
 
   const handleSelectSub = useCallback((sub: string) => {
     haptic();
     setSubcategoria(sub);
     const rule = PAYMENT_RULES[sub];
-    if (rule) setCuenta(rule);
+    if (rule) {
+      if (tipo === 'GASTO') {
+        const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
+        setCuenta(isPermitida ? rule : (carterasDisponibles[0]?.nombre || rule));
+      } else {
+        setCuenta(rule);
+      }
+    }
+  }, [tipo, carterasDisponibles]);
+
+  // Acción de Acceso Rápido / Suscripción
+  const handleQuickSub = useCallback((sub: QuickSubItem) => {
+    haptic();
+    setTipo('GASTO');
+    setDisplay(formatDisplay(String(sub.monto)));
+    setCategoria(sub.macro);
+    setSubcategoria(sub.sub);
+    setCuenta(sub.cuenta);
+    setComentario(sub.label);
   }, []);
 
   const handleSave = async () => {
@@ -147,6 +268,31 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
             {t.label}
           </button>
         ))}
+      </div>
+
+      {/* Barra de Accesos Rápidos / Suscripciones */}
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-1.5 px-0.5">
+          <Zap size={12} className="text-amber-500 flex-shrink-0" />
+          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            Accesos Rápidos / Suscripciones
+          </span>
+        </div>
+        <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+          {QUICK_SUBS.map(sub => (
+            <button
+              key={sub.label}
+              type="button"
+              onClick={() => handleQuickSub(sub)}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-indigo-400 dark:hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 shadow-sm transition active:scale-95 flex items-center gap-1.5"
+            >
+              <span>{sub.label}</span>
+              <span className="text-[10px] text-slate-400 font-mono font-normal">
+                {sub.monto >= 1000 ? `${sub.monto / 1000}k` : sub.monto}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Amount display */}
@@ -248,11 +394,11 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
         </div>
       </section>
 
-      {/* Account (Origen) Dropdown */}
+      {/* Account (Origen) Dropdown - Filtra exclusivamente permite_gasto !== false cuando tipo === GASTO */}
       <section>
         <div className="flex items-center justify-between mb-1.5">
           <label htmlFor="select-cuenta" className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-            {tipo === 'TRANSFERENCIA' ? 'Cuenta Origen' : tipo === 'INGRESO' ? 'Cuenta Receptora' : 'Medio de Pago'}
+            {tipo === 'TRANSFERENCIA' ? 'Cuenta Origen' : tipo === 'INGRESO' ? 'Cuenta Receptora' : 'Medio de Pago (Permitidas)'}
           </label>
           <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-0.5 rounded-lg border border-emerald-200/60 dark:border-emerald-800/60 truncate max-w-[180px]">
             {cuenta}
@@ -265,8 +411,8 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
             onChange={e => { haptic(); setCuenta(e.target.value); }}
             className="w-full appearance-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3.5 pr-10 text-sm font-semibold text-slate-900 dark:text-slate-100 shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 cursor-pointer transition-colors"
           >
-            {CARTERAS.map(c => (
-              <option key={c.id} value={c.id} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
+            {carterasDisponibles.map(c => (
+              <option key={c.id || c.nombre} value={c.nombre} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
                 {c.icono} {c.nombre}
               </option>
             ))}
@@ -295,8 +441,8 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
               onChange={e => { haptic(); setCuentaDestino(e.target.value); }}
               className="w-full appearance-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3.5 pr-10 text-sm font-semibold text-slate-900 dark:text-slate-100 shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 cursor-pointer transition-colors"
             >
-              {CARTERAS.filter(c => c.id !== cuenta).map(c => (
-                <option key={c.id} value={c.id} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
+              {carterasList.filter(c => c.nombre !== cuenta && c.id !== cuenta).map(c => (
+                <option key={c.id || c.nombre} value={c.nombre} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
                   {c.icono} {c.nombre}
                 </option>
               ))}

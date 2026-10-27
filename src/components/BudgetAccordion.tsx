@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
-import { formatCOP, progressColor, progressTextColor } from '../utils/format';
+import { ChevronDown, ChevronRight, Pencil, Plus, X, Check, Loader2 } from 'lucide-react';
+import { formatCOP, formatDisplay, parseAmount, progressColor, progressTextColor, haptic } from '../utils/format';
 import type { PresupuestoItem } from '../types/finance';
 import { fetchAppData, type AppData } from '../services/api';
+import { supabase } from '../services/supabase';
 
 interface ProgressBarProps {
   pct: number;
@@ -42,9 +43,10 @@ interface DynamicMacroCategoria {
 
 interface AccordionRowProps {
   cat: DynamicMacroCategoria;
+  onEditSub: (subNombre: string, currentBudget: number) => void;
 }
 
-function AccordionRow({ cat }: AccordionRowProps) {
+function AccordionRow({ cat, onEditSub }: AccordionRowProps) {
   const [open, setOpen] = useState(false);
 
   const totalGastado = cat.subcategorias.length > 0
@@ -103,16 +105,29 @@ function AccordionRow({ cat }: AccordionRowProps) {
               const subPct = sub.presupuesto > 0 ? (subGastado / sub.presupuesto) * 100 : 0;
               const subRemaining = sub.presupuesto - subGastado;
               return (
-                <div key={sub.nombre} className="px-4 py-2.5 pl-14">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">{sub.nombre}</span>
-                    <div className="flex items-center gap-2">
+                <div key={sub.nombre} className="px-4 py-2.5 pl-14 flex flex-col gap-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 truncate mr-2">{sub.nombre}</span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
                       <span className={`text-[11px] font-black ${progressTextColor(subPct)}`}>
                         {subPct.toFixed(0)}%
                       </span>
                       <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
                         {formatCOP(subGastado)} / {formatCOP(sub.presupuesto)}
                       </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          haptic();
+                          onEditSub(sub.nombre, sub.presupuesto);
+                        }}
+                        className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
+                        title={`Editar presupuesto de ${sub.nombre}`}
+                        aria-label={`Editar presupuesto de ${sub.nombre}`}
+                      >
+                        <Pencil size={12} />
+                      </button>
                     </div>
                   </div>
                   <ProgressBar pct={subPct} label={`${sub.nombre}: ${subPct.toFixed(0)}%`} />
@@ -160,8 +175,32 @@ const MACRO_ICONS: Record<string, string> = {
   'Varios': '📦',
 };
 
+const MEDIOS_PAGO = [
+  'TC Lulo Bank',
+  'RappiCard',
+  'Lulo Principal (Cuenta)',
+  'Nequi',
+  'Efectivo',
+  'Lulo Bolsillo - Gastos',
+  'Lulo Bolsillo - Carro / Moto',
+];
+
 export default function BudgetAccordion() {
   const [appData, setAppData] = useState<AppData | null>(null);
+
+  // Estados de modales
+  const [editingSub, setEditingSub] = useState<{ nombre: string; presupuesto: number } | null>(null);
+  const [editAmountDisplay, setEditAmountDisplay] = useState('0');
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  const [modalNewSub, setModalNewSub] = useState(false);
+  const [newMacro, setNewMacro] = useState('Alimentación');
+  const [newSubNombre, setNewSubNombre] = useState('');
+  const [newPresupuestoDisplay, setNewPresupuestoDisplay] = useState('0');
+  const [newMedioPago, setNewMedioPago] = useState('TC Lulo Bank');
+  const [isCreating, setIsCreating] = useState(false);
+
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAppData().then(data => {
@@ -220,8 +259,79 @@ export default function BudgetAccordion() {
   const totalGastado = categories.reduce((s, c) => s + (c.subcategorias.length > 0 ? c.subcategorias.reduce((ss, sub) => ss + sub.gastado, 0) : c.gastado), 0) || (appData?.kpis.gastos ?? 0);
   const globalPct = totalPresupuesto > 0 ? (totalGastado / totalPresupuesto) * 100 : 0;
 
+  // Abrir modal de edición
+  const handleOpenEdit = (subNombre: string, currentBudget: number) => {
+    setEditingSub({ nombre: subNombre, presupuesto: currentBudget });
+    setEditAmountDisplay(formatDisplay(String(currentBudget)));
+  };
+
+  // Guardar edición de presupuesto en Supabase
+  const handleSaveEdit = async () => {
+    if (!editingSub) return;
+    const nuevoMonto = parseAmount(editAmountDisplay);
+    setIsUpdating(true);
+    haptic(50);
+    try {
+      const { error } = await supabase
+        .from('catalogo_categorias')
+        .update({ presupuesto_base: nuevoMonto })
+        .eq('subcategoria', editingSub.nombre);
+
+      if (error) throw error;
+
+      await fetchAppData(true);
+      setFeedback(`Presupuesto de "${editingSub.nombre}" actualizado.`);
+      setTimeout(() => setFeedback(null), 3000);
+      setEditingSub(null);
+    } catch (err) {
+      console.error('Error actualizando presupuesto:', err);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // Guardar nueva subcategoría en Supabase
+  const handleCreateNewSub = async () => {
+    if (!newSubNombre.trim()) return;
+    const nuevoMonto = parseAmount(newPresupuestoDisplay);
+    setIsCreating(true);
+    haptic(50);
+    try {
+      const { error } = await supabase
+        .from('catalogo_categorias')
+        .insert([{
+          macro_categoria: newMacro.trim(),
+          subcategoria: newSubNombre.trim(),
+          presupuesto_base: nuevoMonto,
+          medio_pago_sugerido: newMedioPago,
+          activo: true,
+        }]);
+
+      if (error) throw error;
+
+      await fetchAppData(true);
+      setFeedback(`Subcategoría "${newSubNombre.trim()}" creada con éxito.`);
+      setTimeout(() => setFeedback(null), 3000);
+      setModalNewSub(false);
+      setNewSubNombre('');
+      setNewPresupuestoDisplay('0');
+    } catch (err) {
+      console.error('Error insertando nueva subcategoría:', err);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3 px-4 pb-4 pt-3 animate-fade-in max-w-lg mx-auto w-full">
+      {/* Notificación de feedback */}
+      {feedback && (
+        <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200 text-xs font-semibold flex items-center gap-2 shadow-sm animate-slide-up">
+          <Check size={16} className="text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+          <span>{feedback}</span>
+        </div>
+      )}
+
       {/* Global summary card */}
       <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
         <div className="flex items-center justify-between mb-3">
@@ -240,8 +350,237 @@ export default function BudgetAccordion() {
 
       {/* Accordion list */}
       {categories.map(cat => (
-        <AccordionRow key={cat.nombre} cat={cat} />
+        <AccordionRow key={cat.nombre} cat={cat} onEditSub={handleOpenEdit} />
       ))}
+
+      {/* Botón "+ Nueva Subcategoría" al final del acordeón */}
+      <button
+        type="button"
+        onClick={() => {
+          haptic();
+          setModalNewSub(true);
+        }}
+        className="w-full py-3.5 px-4 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-600 bg-white/70 dark:bg-slate-900/50 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 flex items-center justify-center gap-2 transition active:scale-[0.99] shadow-sm cursor-pointer mt-1"
+      >
+        <Plus size={16} />
+        <span>+ Nueva Subcategoría</span>
+      </button>
+
+      {/* Modal Editar Presupuesto Base */}
+      {editingSub && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => { if (e.target === e.currentTarget) setEditingSub(null); }}
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-4 animate-scale-up">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                  <Pencil size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                    Editar Presupuesto Base
+                  </h3>
+                  <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate max-w-[200px]">
+                    {editingSub.nombre}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingSub(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div>
+              <label htmlFor="edit-budget-input" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                Nuevo Presupuesto Base (COP)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 dark:text-slate-500">$</span>
+                <input
+                  id="edit-budget-input"
+                  type="text"
+                  inputMode="numeric"
+                  value={editAmountDisplay}
+                  onChange={e => {
+                    const digits = e.target.value.replace(/\D/g, '');
+                    setEditAmountDisplay(digits ? formatDisplay(digits) : '0');
+                  }}
+                  className="w-full pl-7 pr-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-sm font-black text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setEditingSub(null)}
+                disabled={isUpdating}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdit}
+                disabled={isUpdating}
+                className="flex-1 py-2.5 rounded-xl bg-slate-900 dark:bg-indigo-600 hover:bg-slate-800 dark:hover:bg-indigo-500 text-white text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5"
+              >
+                {isUpdating ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    <span>Guardando...</span>
+                  </>
+                ) : (
+                  <span>Guardar Presupuesto</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Nueva Subcategoría */}
+      {modalNewSub && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => { if (e.target === e.currentTarget) setModalNewSub(false); }}
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-3.5 animate-scale-up">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                  <Plus size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                    Nueva Subcategoría
+                  </h3>
+                  <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    Añadir al catálogo de presupuestos
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalNewSub(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Macro-categoría */}
+            <div>
+              <label htmlFor="new-macro-select" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                Macro-Categoría
+              </label>
+              <select
+                id="new-macro-select"
+                value={newMacro}
+                onChange={e => setNewMacro(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {allMacroNames.map(m => (
+                  <option key={m} value={m}>
+                    {MACRO_ICONS[m] || '📊'} {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Nombre de la Subcategoría */}
+            <div>
+              <label htmlFor="new-sub-name" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                Nombre de la Subcategoría
+              </label>
+              <input
+                id="new-sub-name"
+                type="text"
+                value={newSubNombre}
+                onChange={e => setNewSubNombre(e.target.value)}
+                placeholder="Ej. Plataformas IA, Peajes"
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            {/* Presupuesto Base */}
+            <div>
+              <label htmlFor="new-sub-budget" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                Presupuesto Base (COP)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 dark:text-slate-500">$</span>
+                <input
+                  id="new-sub-budget"
+                  type="text"
+                  inputMode="numeric"
+                  value={newPresupuestoDisplay}
+                  onChange={e => {
+                    const digits = e.target.value.replace(/\D/g, '');
+                    setNewPresupuestoDisplay(digits ? formatDisplay(digits) : '0');
+                  }}
+                  className="w-full pl-7 pr-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-black text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+
+            {/* Medio de pago sugerido */}
+            <div>
+              <label htmlFor="new-medio-pago" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                Medio de Pago Sugerido
+              </label>
+              <select
+                id="new-medio-pago"
+                value={newMedioPago}
+                onChange={e => setNewMedioPago(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {MEDIOS_PAGO.map(m => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setModalNewSub(false)}
+                disabled={isCreating}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateNewSub}
+                disabled={isCreating || !newSubNombre.trim()}
+                className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5"
+              >
+                {isCreating ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    <span>Creando...</span>
+                  </>
+                ) : (
+                  <span>Crear Subcategoría</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
