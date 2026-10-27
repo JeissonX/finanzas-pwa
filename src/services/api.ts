@@ -252,15 +252,24 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
     // Categorías (ambas variantes)
     macro: tx.macroCategoria || tx.categoria,
     categoria: tx.macroCategoria || tx.categoria,
-    sub: tx.subcategoria,
-    subcategoria: tx.subcategoria,
-    // Cuentas según el tipo
-    cuentaOrigen: tx.tipo === 'GASTO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaOrigen : ''),
-    cuentaDestino: tx.tipo === 'INGRESO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaDestino : ''),
-    cuenta: tx.cuenta || '',
-    // Comentario
-    detalle: tx.comentario || '',
-    comentario: tx.comentario || ''
+    macroCategoria: tx.macroCategoria || tx.categoria,
+    sub: tx.subcategoria || tx.sub || '',
+    subcategoria: tx.subcategoria || tx.sub || '',
+    // Cuentas según el tipo (GASTO, INGRESO, TRANSFERENCIA, AJUSTE)
+    cuentaOrigen:
+      tx.tipo === 'GASTO'
+        ? (tx.cuenta || tx.cuentaOrigen || '')
+        : (tx.tipo === 'TRANSFERENCIA'
+            ? (tx.cuentaOrigen || tx.cuenta || '')
+            : (tx.tipo === 'AJUSTE' ? (tx.cuentaOrigen || '') : '')),
+    cuentaDestino:
+      tx.tipo === 'INGRESO'
+        ? (tx.cuenta || tx.cuentaDestino || '')
+        : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE' ? (tx.cuentaDestino || '') : ''),
+    cuenta: tx.cuenta || (tx.tipo === 'GASTO' ? tx.cuentaOrigen : (tx.tipo === 'INGRESO' ? tx.cuentaDestino : '')) || '',
+    // Comentario (ambas variantes)
+    detalle: tx.comentario || tx.detalle || '',
+    comentario: tx.comentario || tx.detalle || ''
   };
 
   // 1. Actualización optimista inmediata en memoria y localStorage
@@ -413,6 +422,7 @@ export interface AjustePayload {
   detalle: string;
   cuenta?: string;
   categoria?: string;
+  macroCategoria?: string;
   subcategoria?: string;
   comentario?: string;
   fecha?: string;
@@ -422,21 +432,44 @@ export interface AjustePayload {
 export async function postAjuste(ajuste: AjustePayload): Promise<void> {
   const payloadId = ajuste.id || Date.now();
   const payloadDate = ajuste.fecha || new Date().toISOString();
+  const macroValue = ajuste.macroCategoria || ajuste.categoria || ajuste.macro || 'Ajuste / Conciliación';
+  const subValue = ajuste.subcategoria || ajuste.sub || 'Ajuste de Saldo';
+  const comentarioValue = ajuste.comentario || ajuste.detalle || '';
+  const cuentaPrincipal = ajuste.cuenta || ajuste.cuentaOrigen || ajuste.cuentaDestino || '';
+
   const payload: Transaccion = {
     id: payloadId,
     fecha: payloadDate,
     tipo: 'AJUSTE',
     monto: ajuste.monto,
-    cuenta: ajuste.cuenta || (ajuste.cuentaOrigen || ajuste.cuentaDestino),
-    cuentaOrigen: ajuste.cuentaOrigen,
-    cuentaDestino: ajuste.cuentaDestino,
-    categoria: ajuste.categoria || ajuste.macro,
-    subcategoria: ajuste.subcategoria || ajuste.sub,
-    comentario: ajuste.comentario || ajuste.detalle,
-    macro: ajuste.macro,
-    sub: ajuste.sub,
-    detalle: ajuste.detalle,
+    cuenta: cuentaPrincipal,
+    cuentaOrigen: ajuste.cuentaOrigen || '',
+    cuentaDestino: ajuste.cuentaDestino || '',
+    categoria: macroValue,
+    macroCategoria: macroValue,
+    macro: macroValue,
+    subcategoria: subValue,
+    sub: subValue,
+    comentario: comentarioValue,
+    detalle: comentarioValue,
     sincronizado: false,
+  };
+
+  const netPayload = {
+    id: payload.id,
+    fecha: payload.fecha,
+    tipo: payload.tipo,
+    monto: payload.monto,
+    macro: macroValue,
+    categoria: macroValue,
+    macroCategoria: macroValue,
+    sub: subValue,
+    subcategoria: subValue,
+    cuentaOrigen: payload.cuentaOrigen || '',
+    cuentaDestino: payload.cuentaDestino || '',
+    cuenta: cuentaPrincipal,
+    detalle: comentarioValue,
+    comentario: comentarioValue,
   };
 
   // Optimistic update
@@ -448,7 +481,7 @@ export async function postAjuste(ajuste: AjustePayload): Promise<void> {
       mode: 'no-cors',
       redirect: 'follow',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(netPayload),
     });
     markTransactionSynced(payloadId, true);
   } catch (err) {
@@ -686,15 +719,24 @@ export async function syncOfflineQueue(): Promise<{ synced: number; remaining: n
         // Categorías (ambas variantes)
         macro: tx.macroCategoria || tx.categoria,
         categoria: tx.macroCategoria || tx.categoria,
-        sub: tx.subcategoria,
-        subcategoria: tx.subcategoria,
-        // Cuentas según el tipo
-        cuentaOrigen: tx.tipo === 'GASTO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaOrigen : ''),
-        cuentaDestino: tx.tipo === 'INGRESO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaDestino : ''),
-        cuenta: tx.cuenta || '',
-        // Comentario
-        detalle: tx.comentario || '',
-        comentario: tx.comentario || ''
+        macroCategoria: tx.macroCategoria || tx.categoria,
+        sub: tx.subcategoria || tx.sub || '',
+        subcategoria: tx.subcategoria || tx.sub || '',
+        // Cuentas según el tipo (GASTO, INGRESO, TRANSFERENCIA, AJUSTE)
+        cuentaOrigen:
+          tx.tipo === 'GASTO'
+            ? (tx.cuenta || tx.cuentaOrigen || '')
+            : (tx.tipo === 'TRANSFERENCIA'
+                ? (tx.cuentaOrigen || tx.cuenta || '')
+                : (tx.tipo === 'AJUSTE' ? (tx.cuentaOrigen || '') : '')),
+        cuentaDestino:
+          tx.tipo === 'INGRESO'
+            ? (tx.cuenta || tx.cuentaDestino || '')
+            : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE' ? (tx.cuentaDestino || '') : ''),
+        cuenta: tx.cuenta || (tx.tipo === 'GASTO' ? tx.cuentaOrigen : (tx.tipo === 'INGRESO' ? tx.cuentaDestino : '')) || '',
+        // Comentario (ambas variantes)
+        detalle: tx.comentario || tx.detalle || '',
+        comentario: tx.comentario || tx.detalle || ''
       };
 
       await fetch(API_URL, {
