@@ -7,6 +7,7 @@ import BudgetAccordion from './components/BudgetAccordion';
 import AnalyticsView from './components/AnalyticsView';
 import WalletsModal from './components/WalletsModal';
 import { saveTransaction, getOfflineQueue, syncOfflineQueue, fetchAppData, saveTransacciones } from './services/api';
+import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
 import type { TabPrincipal, TipoTransaccion, Transaccion } from './types/finance';
 
@@ -158,19 +159,30 @@ export default function App() {
     }
   }, [showToast]);
 
-  // ── Initial sync & Service Worker ──────────────────────────
+  // ── Initial sync, Realtime & Service Worker ─────────────────
   useEffect(() => {
     fetchAppData().then(data => {
       if (data?.transacciones && Array.isArray(data.transacciones)) {
         saveTransacciones(data.transacciones);
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: data.transacciones }));
-        }
       }
     }).catch(() => {});
+
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(console.warn);
     }
+
+    const channel = supabase.channel('finanzas-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transacciones' }, () => {
+        fetchAppData(true);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'carteras' }, () => {
+        fetchAppData(true);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   // ── Render ─────────────────────────────────────────────────

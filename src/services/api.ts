@@ -1,13 +1,13 @@
+import { supabase } from './supabase';
 import type { Transaccion, AppDataResponse, PresupuestoItem } from '../types/finance';
 import { CATALOG_GASTOS } from '../data/catalog';
+import { isDateInCurrentCycle, getCycleLabel } from '../utils/format';
 
-export const API_URL = 'https://script.google.com/macros/s/AKfycbwMXl1h2dBkA5--xHRHw-DTvmWrQ9dXij47yIR-KAu5aw95sVS9B6UqBDA_0BVV4Haa/exec';
 const QUEUE_KEY = 'finanzas_offline_queue';
 const TRANSACTIONS_KEY = 'finanzas_transacciones_ciclo_v2';
 const APPDATA_CACHE_KEY = 'finanzas_cached_appdata_v4';
-const APPDATA_CACHE_TTL = 5 * 60 * 1000; // 5 min
+const APPDATA_CACHE_TTL = 5 * 60 * 1000;
 
-// Saldos oficiales por defecto (exactamente las 10 carteras oficiales en Saldo: 0)
 export const DEFAULT_SALDOS: Record<string, number> = {
   'Lulo Principal (Cuenta)': 0,
   'Lulo Bolsillo - Ahorro': 0,
@@ -32,6 +32,8 @@ export const DEFAULT_APPDATA: AppData = {
     gastos: 0,
     balance: 0,
     tasaAhorro: 0,
+    saldoRemunerados: 0,
+    balanceDisponible: 0,
   },
   historico: [
     { ciclo: 'Ciclo Actual', gastos: 0, ingresos: 0 },
@@ -46,18 +48,6 @@ export const DEFAULT_APPDATA: AppData = {
   presupuestos: [],
 };
 
-// Purgar cachés obsoletas con datos ficticios
-try {
-  localStorage.removeItem('finanzas_cached_balances');
-  localStorage.removeItem('finanzas_cached_balances_v2');
-  localStorage.removeItem('finanzas_cached_balances_v3');
-  localStorage.removeItem('finanzas_cached_appdata');
-  localStorage.removeItem('finanzas_cached_appdata_v2');
-} catch {
-  // Ignorar en entornos sin localStorage
-}
-
-// ── Queue helpers ──────────────────────────────────────────
 export function getOfflineQueue(): Transaccion[] {
   try {
     const raw = localStorage.getItem(QUEUE_KEY);
@@ -71,13 +61,12 @@ export function saveOfflineQueue(queue: Transaccion[]): void {
   try {
     localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
   } catch {
-    // Ignorar si hay cuota excedida
+    /* ignore */
   }
 }
 
 export function enqueue(tx: Transaccion): void {
   const q = getOfflineQueue();
-  // Evitar duplicados por id
   const existingIdx = q.findIndex(item => item.id === tx.id);
   if (existingIdx >= 0) {
     q[existingIdx] = tx;
@@ -90,7 +79,6 @@ export function enqueue(tx: Transaccion): void {
   }
 }
 
-// ── Local Transactions Storage ──────────────────────────────
 export function getTransacciones(): Transaccion[] {
   try {
     const raw = localStorage.getItem(TRANSACTIONS_KEY);
@@ -104,18 +92,18 @@ export function saveTransacciones(txs: Transaccion[]): void {
   try {
     localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(txs));
   } catch {
-    // ignore
+    /* ignore */
   }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: txs }));
   }
 }
 
-export function markTransactionSynced(id: number, synced = true): void {
+export function markTransactionSynced(id: number | string, synced = true): void {
   const list = getTransacciones();
   let changed = false;
   const updated = list.map(t => {
-    if (t.id === id) {
+    if (String(t.id) === String(id)) {
       changed = true;
       return { ...t, sincronizado: synced };
     }
@@ -126,11 +114,9 @@ export function markTransactionSynced(id: number, synced = true): void {
   }
 }
 
-// ── Optimistic update in-memory and in-cache ────────────────
 export function applyOptimisticTransaction(tx: Transaccion): AppData {
-  // 1. Guardar en historial local de transacciones
   const txList = getTransacciones();
-  const existingIdx = txList.findIndex(t => t.id === tx.id);
+  const existingIdx = txList.findIndex(t => String(t.id) === String(tx.id));
   let updatedList: Transaccion[];
   if (existingIdx >= 0) {
     updatedList = [...txList];
@@ -140,7 +126,6 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
   }
   saveTransacciones(updatedList);
 
-  // 2. Cargar AppData actual en caché o por defecto
   let current: AppData = { ...DEFAULT_APPDATA };
   try {
     const raw = localStorage.getItem(APPDATA_CACHE_KEY);
@@ -157,7 +142,7 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
   const saldos = { ...DEFAULT_SALDOS, ...(current.saldos || {}) };
   const gastadoPorSubcat = { ...(current.gastadoPorSubcat || {}) };
   const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
-  const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0 }) };
+  const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
 
   const monto = Number(tx.monto) || 0;
   const subcatNombre = tx.subcategoria || tx.sub || '';
@@ -166,11 +151,9 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
   const cuentaDestino = tx.cuentaDestino || '';
 
   if (tx.tipo === 'GASTO') {
-    // Reducir saldo de la cuenta
     if (cuentaNombre) {
       saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
     }
-    // Incrementar gasto en subcategoría y macrocategoría
     if (subcatNombre) {
       gastadoPorSubcat[subcatNombre] = (gastadoPorSubcat[subcatNombre] ?? 0) + monto;
     }
@@ -218,7 +201,6 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
     /* ignore */
   }
 
-  // Notificar inmediatamente a toda la UI reactiva
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: updatedData }));
     window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: updatedData.saldos }));
@@ -227,69 +209,67 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
   return updatedData;
 }
 
-// ── SAVE TRANSACTION (CORS Simple Request + Optimistic Update) ──
 export async function saveTransaction(tx: Transaccion): Promise<void> {
   const payload = {
     id: tx.id,
-    fecha: tx.fecha,
+    fecha: tx.fecha || new Date().toISOString(),
     tipo: tx.tipo,
     monto: tx.monto,
-    // Categorías (ambas variantes)
-    macro: tx.macroCategoria || tx.categoria,
-    categoria: tx.macroCategoria || tx.categoria,
-    macroCategoria: tx.macroCategoria || tx.categoria,
-    sub: tx.subcategoria || tx.sub || '',
+    macro_categoria: tx.macroCategoria || tx.categoria || tx.macro || '',
     subcategoria: tx.subcategoria || tx.sub || '',
-    // Cuentas según el tipo (GASTO, INGRESO, TRANSFERENCIA, AJUSTE)
-    cuentaOrigen:
+    cuenta: tx.cuenta || (tx.tipo === 'GASTO' ? tx.cuentaOrigen : (tx.tipo === 'INGRESO' ? tx.cuentaDestino : '')) || '',
+    cuenta_origen:
       tx.tipo === 'GASTO'
         ? (tx.cuenta || tx.cuentaOrigen || '')
-        : (tx.tipo === 'TRANSFERENCIA'
+        : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE'
             ? (tx.cuentaOrigen || tx.cuenta || '')
-            : (tx.tipo === 'AJUSTE' ? (tx.cuentaOrigen || '') : '')),
-    cuentaDestino:
+            : ''),
+    cuenta_destino:
       tx.tipo === 'INGRESO'
         ? (tx.cuenta || tx.cuentaDestino || '')
-        : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE' ? (tx.cuentaDestino || '') : ''),
-    cuenta: tx.cuenta || (tx.tipo === 'GASTO' ? tx.cuentaOrigen : (tx.tipo === 'INGRESO' ? tx.cuentaDestino : '')) || '',
-    // Comentario (ambas variantes)
+        : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE'
+            ? (tx.cuentaDestino || '')
+            : ''),
     detalle: tx.comentario || tx.detalle || '',
-    comentario: tx.comentario || tx.detalle || ''
+    ciclo: getCycleLabel(new Date(tx.fecha || Date.now())),
   };
 
-  // 1. Actualización optimista inmediata en memoria y localStorage
   applyOptimisticTransaction({ ...tx, ...payload });
 
-  // 2. Envío como Simple Request: text/plain;charset=utf-8
-  // Evita CORS Preflight (OPTIONS) rechazado por Apps Script en Safari/iOS
   try {
-    await fetch(API_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload),
-    });
-    // no-cors en petición exitosa se marca como sincronizado
+    const { error } = await supabase.from('transacciones').insert([{
+      id: String(payload.id),
+      fecha: payload.fecha,
+      tipo: payload.tipo,
+      monto: payload.monto,
+      macro_categoria: payload.macro_categoria,
+      subcategoria: payload.subcategoria,
+      cuenta: payload.cuenta,
+      cuenta_origen: payload.cuenta_origen,
+      cuenta_destino: payload.cuenta_destino,
+      detalle: payload.detalle,
+      ciclo: payload.ciclo,
+    }]);
+
+    if (error) {
+      throw error;
+    }
+
     markTransactionSynced(tx.id, true);
   } catch (err) {
-    // Si falla la red, se guarda en la cola offline para sync posterior
-    enqueue({ ...tx, ...payload, sincronizado: false });
+    enqueue({ ...tx, sincronizado: false });
     markTransactionSynced(tx.id, false);
     throw err;
   }
 }
 
-// Alias de compatibilidad con App.tsx
 export const postTransaccion = saveTransaction;
 
-// ── DELETE TRANSACTION (Reversión local y en Webhook) ───────
-export async function deleteTransaccion(id: number): Promise<boolean> {
+export async function deleteTransaction(id: number | string): Promise<boolean> {
   const list = getTransacciones();
-  const tx = list.find(t => t.id === id);
+  const tx = list.find(t => String(t.id) === String(id));
   if (!tx) return false;
 
-  // 1. Revertir impacto financiero en AppData
   let current: AppData = { ...DEFAULT_APPDATA };
   try {
     const raw = localStorage.getItem(APPDATA_CACHE_KEY);
@@ -304,7 +284,7 @@ export async function deleteTransaccion(id: number): Promise<boolean> {
   const saldos = { ...DEFAULT_SALDOS, ...(current.saldos || {}) };
   const gastadoPorSubcat = { ...(current.gastadoPorSubcat || {}) };
   const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
-  const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0 }) };
+  const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
 
   const monto = Number(tx.monto) || 0;
   const subcatNombre = tx.subcategoria || tx.sub || '';
@@ -343,13 +323,11 @@ export async function deleteTransaccion(id: number): Promise<boolean> {
     /* ignore */
   }
 
-  // 2. Eliminar del listado local
-  const remainingTxs = list.filter(t => t.id !== id);
+  const remainingTxs = list.filter(t => String(t.id) !== String(id));
   saveTransacciones(remainingTxs);
 
-  // 3. Eliminar de la cola offline si estaba encolado
   const queue = getOfflineQueue();
-  const filteredQueue = queue.filter(t => t.id !== id);
+  const filteredQueue = queue.filter(t => String(t.id) !== String(id));
   if (filteredQueue.length !== queue.length) {
     saveOfflineQueue(filteredQueue);
     if (typeof window !== 'undefined') {
@@ -357,46 +335,23 @@ export async function deleteTransaccion(id: number): Promise<boolean> {
     }
   }
 
-  // 4. Notificar a la UI
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: updatedData }));
     window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: updatedData.saldos }));
+    window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: remainingTxs }));
   }
 
-  // 5. Registrar la reversión al Webhook mediante Simple Request
-  const reversalPayload = {
-    id: Date.now(),
-    tipo: 'AJUSTE',
-    reversionDeId: tx.id,
-    monto: tx.monto,
-    cuenta: tx.cuenta,
-    cuentaDestino: tx.cuentaDestino,
-    categoria: tx.categoria,
-    subcategoria: tx.subcategoria,
-    comentario: `Reversión local: Eliminada transacción ID ${tx.id} (${tx.tipo} ${formatMontoShort(tx.monto)})`,
-    fecha: new Date().toISOString(),
-  };
-
   try {
-    await fetch(API_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(reversalPayload),
-    });
-  } catch {
-    // Si no hay red, la reversión queda aplicada en la UI
+    await supabase.from('transacciones').delete().eq('id', String(id));
+  } catch (err) {
+    console.warn('Fallo al eliminar transacción en Supabase:', err);
   }
 
   return true;
 }
 
-function formatMontoShort(m: number): string {
-  return `$${m.toLocaleString('es-CO')}`;
-}
+export const deleteTransaccion = deleteTransaction;
 
-// ── POST ajuste / conciliación ─────────────────────────────
 export interface AjustePayload {
   tipo: 'AJUSTE';
   monto: number;
@@ -440,44 +395,10 @@ export async function postAjuste(ajuste: AjustePayload): Promise<void> {
     sincronizado: false,
   };
 
-  const netPayload = {
-    id: payload.id,
-    fecha: payload.fecha,
-    tipo: payload.tipo,
-    monto: payload.monto,
-    macro: macroValue,
-    categoria: macroValue,
-    macroCategoria: macroValue,
-    sub: subValue,
-    subcategoria: subValue,
-    cuentaOrigen: payload.cuentaOrigen || '',
-    cuentaDestino: payload.cuentaDestino || '',
-    cuenta: cuentaPrincipal,
-    detalle: comentarioValue,
-    comentario: comentarioValue,
-  };
-
-  // Optimistic update
-  applyOptimisticTransaction(payload);
-
-  try {
-    await fetch(API_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(netPayload),
-    });
-    markTransactionSynced(payloadId, true);
-  } catch (err) {
-    enqueue(payload);
-    throw err;
-  }
+  await saveTransaction(payload);
 }
 
-// ── GET AppData (Sincronización real con Google Sheets) ─────
 export async function fetchAppData(forceRefresh = false): Promise<AppData> {
-  // 1. Revisar caché local válida
   if (!forceRefresh) {
     try {
       const raw = localStorage.getItem(APPDATA_CACHE_KEY);
@@ -492,177 +413,173 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     }
   }
 
-  // 2. Consultar Webhook de Google Sheets
   try {
-    const res = await fetch(API_URL, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      redirect: 'follow',
+    const [carterasRes, catalogoRes, txsRes] = await Promise.all([
+      supabase.from('carteras').select('*').order('id'),
+      supabase.from('catalogo_categorias').select('*').eq('activo', true),
+      supabase.from('transacciones').select('*').order('fecha', { ascending: false }).limit(100),
+    ]);
+
+    const carterasData = carterasRes.data || [];
+    const catalogoData = catalogoRes.data || [];
+    const txsData = txsRes.data || [];
+
+    const updatedSaldos: Record<string, number> = { ...DEFAULT_SALDOS };
+    let saldoRemunerados = 0;
+    let balanceDisponible = 0;
+
+    for (const c of carterasData) {
+      const saldoVal = Number(c.saldo_actual) || 0;
+      updatedSaldos[c.nombre] = saldoVal;
+
+      const tipoLower = (c.tipo || '').toLowerCase();
+      const nombreLower = (c.nombre || '').toLowerCase();
+
+      if (tipoLower.includes('remunerado') || nombreLower.includes('bolsillo')) {
+        saldoRemunerados += saldoVal;
+      }
+
+      if (
+        tipoLower.includes('débito') ||
+        tipoLower.includes('debito') ||
+        tipoLower.includes('efectivo') ||
+        tipoLower.includes('billetera') ||
+        tipoLower.includes('líquido') ||
+        tipoLower.includes('liquido')
+      ) {
+        balanceDisponible += saldoVal;
+      }
+    }
+
+    const remoteTxs: Transaccion[] = txsData.map((row: any) => ({
+      id: Number(row.id) || Date.parse(row.fecha) || Date.now(),
+      tipo: row.tipo,
+      monto: Number(row.monto) || 0,
+      categoria: row.macro_categoria || '',
+      macroCategoria: row.macro_categoria || '',
+      macro: row.macro_categoria || '',
+      subcategoria: row.subcategoria || '',
+      sub: row.subcategoria || '',
+      cuenta: row.cuenta || row.cuenta_origen || '',
+      cuentaOrigen: row.cuenta_origen || '',
+      cuentaDestino: row.cuenta_destino || '',
+      detalle: row.detalle || '',
+      comentario: row.detalle || '',
+      fecha: row.fecha || row.created_at || new Date().toISOString(),
+      sincronizado: true,
+    }));
+
+    const localTxs = getTransacciones();
+    const mergedMap = new Map<number | string, Transaccion>();
+    for (const t of remoteTxs) {
+      mergedMap.set(t.id, t);
+    }
+    for (const t of localTxs) {
+      if (!mergedMap.has(t.id)) {
+        mergedMap.set(t.id, t);
+      }
+    }
+    const mergedList = Array.from(mergedMap.values()).sort(
+      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+    );
+    saveTransacciones(mergedList);
+
+    const cicloTxs = mergedList.filter(t => isDateInCurrentCycle(t.fecha));
+
+    const gastadoPorSubcat: Record<string, number> = {};
+    const gastadoPorMacro: Record<string, number> = {};
+    let totalIngresos = 0;
+    let totalGastos = 0;
+
+    for (const tx of cicloTxs) {
+      const monto = Number(tx.monto) || 0;
+      if (tx.tipo === 'GASTO') {
+        totalGastos += monto;
+        const sub = tx.subcategoria || tx.sub || '';
+        const macro = tx.categoria || tx.macro || '';
+        if (sub) {
+          gastadoPorSubcat[sub] = (gastadoPorSubcat[sub] ?? 0) + monto;
+        }
+        if (macro) {
+          gastadoPorMacro[macro] = (gastadoPorMacro[macro] ?? 0) + monto;
+        }
+      } else if (tx.tipo === 'INGRESO') {
+        totalIngresos += monto;
+      }
+    }
+
+    for (const cat of CATALOG_GASTOS) {
+      let sum = 0;
+      for (const sub of cat.subcategorias) {
+        sum += gastadoPorSubcat[sub.nombre] ?? 0;
+      }
+      if (!gastadoPorMacro[cat.nombre]) {
+        gastadoPorMacro[cat.nombre] = sum;
+      }
+    }
+
+    const balance = totalIngresos - totalGastos;
+    const tasaAhorro = totalIngresos > 0 ? (balance / totalIngresos) * 100 : 0;
+
+    const presupuestos: PresupuestoItem[] = catalogoData.map((catRow: any) => {
+      const macro = catRow.macro_categoria || '';
+      const sub = catRow.subcategoria || '';
+      const presupuesto = Number(catRow.presupuesto_base) || 0;
+      const gastado = gastadoPorSubcat[sub] || 0;
+      const disponible = presupuesto - gastado;
+      const pct = presupuesto > 0 ? (gastado / presupuesto) * 100 : 0;
+      return {
+        macro,
+        sub,
+        presupuesto,
+        gastado,
+        disponible,
+        pct,
+      };
     });
 
-    if (res.ok) {
-      const incoming = (await res.json()) as Record<string, unknown>;
+    const result: AppData = {
+      saldos: updatedSaldos,
+      gastadoPorSubcat,
+      gastadoPorMacro,
+      kpis: {
+        ingresos: totalIngresos,
+        gastos: totalGastos,
+        balance,
+        tasaAhorro,
+        saldoRemunerados,
+        balanceDisponible,
+      },
+      historico: [
+        { ciclo: getCycleLabel(), gastos: totalGastos, ingresos: totalIngresos },
+      ],
+      fromCache: false,
+      timestamp: Date.now(),
+      tasas: {
+        lulo: 9.25,
+        mazda: 21.35,
+      },
+      transacciones: mergedList,
+      presupuestos,
+    };
 
-      // A. Mapear saldos
-      const rawSaldos = (
-        'saldos' in incoming
-          ? incoming.saldos
-          : 'carteras' in incoming
-          ? incoming.carteras
-          : {}
-      ) as Record<string, unknown>;
-
-      const updatedSaldos: Record<string, number> = { ...DEFAULT_SALDOS };
-      if (rawSaldos && typeof rawSaldos === 'object') {
-        for (const [key, val] of Object.entries(rawSaldos)) {
-          if (key.toLowerCase().includes('bancolombia')) continue;
-          const valNum = typeof val === 'number' ? val : Number(val) || 0;
-          if (key === 'Lulo Principal (Banco)') {
-            updatedSaldos['Lulo Principal (Cuenta)'] = valNum;
-          } else if (key === 'RappiCard (Davivienda)') {
-            updatedSaldos['RappiCard'] = valNum;
-          } else if (key === 'Lulo Ahorros (Bolsillo 9.25%)') {
-            if (updatedSaldos['Lulo Bolsillo - Ahorro'] === 0) {
-              updatedSaldos['Lulo Bolsillo - Ahorro'] = valNum;
-            }
-          } else {
-            updatedSaldos[key] = valNum;
-          }
-        }
-      }
-
-      // B. Mapear gastos por subcategoría
-      const rawSubcats = (
-        'gastadoPorSubcat' in incoming
-          ? incoming.gastadoPorSubcat
-          : 'gastosPorSubcat' in incoming
-          ? incoming.gastosPorSubcat
-          : 'gastado' in incoming
-          ? incoming.gastado
-          : {}
-      ) as Record<string, unknown>;
-
-      const updatedGastadoSub: Record<string, number> = {};
-      if (rawSubcats && typeof rawSubcats === 'object') {
-        for (const [key, val] of Object.entries(rawSubcats)) {
-          updatedGastadoSub[key] = typeof val === 'number' ? val : Number(val) || 0;
-        }
-      }
-
-      // C. Consolidar gastos por macrocategoría
-      const updatedGastadoMacro: Record<string, number> = {};
-      for (const cat of CATALOG_GASTOS) {
-        let sum = 0;
-        for (const sub of cat.subcategorias) {
-          sum += updatedGastadoSub[sub.nombre] ?? 0;
-        }
-        updatedGastadoMacro[cat.nombre] = sum;
-      }
-
-      // D. Mapear KPIs
-      const rawKpis = (incoming.kpis || {}) as Record<string, unknown>;
-      const totalGastos = typeof incoming.gastos === 'number'
-        ? incoming.gastos
-        : typeof rawKpis.gastos === 'number'
-        ? (rawKpis.gastos as number)
-        : Object.values(updatedGastadoMacro).reduce((a, b) => a + b, 0);
-
-      const totalIngresos = typeof incoming.ingresos === 'number'
-        ? incoming.ingresos
-        : typeof rawKpis.ingresos === 'number'
-        ? (rawKpis.ingresos as number)
-        : 0;
-
-      const balance = totalIngresos - totalGastos;
-      const tasaAhorro = totalIngresos > 0 ? (balance / totalIngresos) * 100 : 0;
-
-      // E. Mapear histórico
-      let historico = [
-        { ciclo: 'Ciclo Actual', gastos: totalGastos, ingresos: totalIngresos },
-      ];
-      if (Array.isArray(incoming.historico) && incoming.historico.length > 0) {
-        historico = incoming.historico as { ciclo: string; gastos: number; ingresos: number }[];
-      }
-
-      // F. Mapear tasas si las retorna Google Sheets
-      const incomingTasas = (incoming.tasas || {}) as Record<string, unknown>;
-      const tasaLuloSheet = typeof incoming.tasaLulo === 'number'
-        ? incoming.tasaLulo
-        : typeof incomingTasas.lulo === 'number'
-        ? incomingTasas.lulo
-        : undefined;
-
-      const tasaMazdaSheet = typeof incoming.tasaMazda === 'number'
-        ? incoming.tasaMazda
-        : typeof incomingTasas.mazda === 'number'
-        ? incomingTasas.mazda
-        : undefined;
-
-      // Si Google Sheets devuelve transacciones, sincronizarlas con el almacenamiento local
-      let mergedList: Transaccion[] = [];
-      if (Array.isArray(incoming.transacciones)) {
-        const remoteTxs = incoming.transacciones as Transaccion[];
-        const localTxs = getTransacciones();
-        const mergedMap = new Map<number, Transaccion>();
-        for (const t of remoteTxs) {
-          mergedMap.set(t.id, { ...t, sincronizado: true });
-        }
-        for (const t of localTxs) {
-          mergedMap.set(t.id, t);
-        }
-        mergedList = Array.from(mergedMap.values()).sort(
-          (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
-        );
-        saveTransacciones(mergedList);
-      }
-
-      // Presupuestos dinámicos devueltos por Google Apps Script
-      let presupuestos: PresupuestoItem[] = [];
-      if (Array.isArray(incoming.presupuestos)) {
-        presupuestos = incoming.presupuestos as PresupuestoItem[];
-      }
-
-      const result: AppData = {
-        saldos: updatedSaldos,
-        gastadoPorSubcat: updatedGastadoSub,
-        gastadoPorMacro: updatedGastadoMacro,
-        kpis: {
-          ingresos: totalIngresos,
-          gastos: totalGastos,
-          balance,
-          tasaAhorro,
-        },
-        historico,
-        fromCache: false,
-        timestamp: Date.now(),
-        tasas: {
-          lulo: tasaLuloSheet ?? 9.25,
-          mazda: tasaMazdaSheet ?? 21.35,
-        },
-        transacciones: mergedList.length > 0 ? mergedList : (Array.isArray(incoming.transacciones) ? incoming.transacciones as Transaccion[] : []),
-        presupuestos,
-      };
-
-      // Guardar en caché local
-      try {
-        localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: result.timestamp, data: result }));
-      } catch {
-        /* ignore */
-      }
-
-      // Notificar suscriptores reactivos
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: result }));
-        window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: result.saldos }));
-      }
-
-      return result;
+    try {
+      localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: result.timestamp, data: result }));
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* Fallback en caso de desconexión o respuesta opaca */
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: result }));
+      window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: result.saldos }));
+      window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: result.transacciones }));
+    }
+
+    return result;
+  } catch (err) {
+    console.error('Error sincronizando con Supabase:', err);
   }
 
-  // 3. Fallback a caché previa si existe
   try {
     const raw = localStorage.getItem(APPDATA_CACHE_KEY);
     if (raw) {
@@ -673,11 +590,9 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     /* ignore */
   }
 
-  // 4. Fallback por defecto estricto: Todo en $0 (sin montos simulados)
   return { ...DEFAULT_APPDATA };
 }
 
-// ── GET saldos (compatibilidad) ─────────────────────────────
 export interface SaldosResponse {
   saldos: Record<string, number>;
   fromCache: boolean;
@@ -693,7 +608,6 @@ export async function getSaldos(forceRefresh = false): Promise<SaldosResponse> {
   };
 }
 
-// ── Sync offline queue (vaciar cola acumulada enviando cada transacción) ──
 export async function syncOfflineQueue(): Promise<{ synced: number; remaining: number }> {
   const queue = getOfflineQueue();
   if (queue.length === 0) return { synced: 0, remaining: 0 };
@@ -703,51 +617,13 @@ export async function syncOfflineQueue(): Promise<{ synced: number; remaining: n
 
   for (const tx of queue) {
     try {
-      const payload = {
-        id: tx.id,
-        fecha: tx.fecha,
-        tipo: tx.tipo,
-        monto: tx.monto,
-        // Categorías (ambas variantes)
-        macro: tx.macroCategoria || tx.categoria,
-        categoria: tx.macroCategoria || tx.categoria,
-        macroCategoria: tx.macroCategoria || tx.categoria,
-        sub: tx.subcategoria || tx.sub || '',
-        subcategoria: tx.subcategoria || tx.sub || '',
-        // Cuentas según el tipo (GASTO, INGRESO, TRANSFERENCIA, AJUSTE)
-        cuentaOrigen:
-          tx.tipo === 'GASTO'
-            ? (tx.cuenta || tx.cuentaOrigen || '')
-            : (tx.tipo === 'TRANSFERENCIA'
-                ? (tx.cuentaOrigen || tx.cuenta || '')
-                : (tx.tipo === 'AJUSTE' ? (tx.cuentaOrigen || '') : '')),
-        cuentaDestino:
-          tx.tipo === 'INGRESO'
-            ? (tx.cuenta || tx.cuentaDestino || '')
-            : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE' ? (tx.cuentaDestino || '') : ''),
-        cuenta: tx.cuenta || (tx.tipo === 'GASTO' ? tx.cuentaOrigen : (tx.tipo === 'INGRESO' ? tx.cuentaDestino : '')) || '',
-        // Comentario (ambas variantes)
-        detalle: tx.comentario || tx.detalle || '',
-        comentario: tx.comentario || tx.detalle || ''
-      };
-
-      await fetch(API_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        redirect: 'follow',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload),
-      });
-      markTransactionSynced(tx.id, true);
+      await saveTransaction(tx);
       synced++;
     } catch {
       remaining.push(tx);
     }
-    // Breve pausa para no saturar Apps Script
-    await new Promise((r) => setTimeout(r, 200));
   }
 
-  // Vaciar o actualizar la cola acumulada limpiando el storage
   saveOfflineQueue(remaining);
 
   if (typeof window !== 'undefined') {
@@ -757,5 +633,4 @@ export async function syncOfflineQueue(): Promise<{ synced: number; remaining: n
   return { synced, remaining: remaining.length };
 }
 
-// Alias de compatibilidad
 export const syncQueue = syncOfflineQueue;

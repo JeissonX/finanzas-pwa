@@ -95,6 +95,8 @@ export interface AppDataResponse {
     gastos: number;
     balance: number;
     tasaAhorro: number;
+    saldoRemunerados?: number;
+    balanceDisponible?: number;
   };
   historico: { ciclo: string; gastos: number; ingresos: number }[];
   fromCache: boolean;
