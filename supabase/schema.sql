@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- FINANZAS PWA - ESQUEMA DE BASE DE DATOS POSTGRESQL & SUPABASE
--- Versión: 3.1.0 (Hardening RLS por Propietario Autenticado, Restricciones Enteras COP e Idempotencia Integral)
+-- Versión: 4.0.0 (DDL Declarativo Limpio: RLS por Propietario Autenticado y Pesos Enteros COP)
 -- TimeZone Canónica: America/Bogota (Corte Nómina: día 25)
 -- ==============================================================================
 
@@ -9,7 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ==============================================================================
--- 2. TABLAS PRINCIPALES (CREATE TABLE IF NOT EXISTS)
+-- 2. TABLAS PRINCIPALES (DDL DECLARATIVO LIMPIO)
 -- ==============================================================================
 
 -- 2.1 Carteras y Cuentas de Balance
@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS public.carteras (
     orden INT NOT NULL DEFAULT 99,
     permite_gasto BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_carteras_user_nombre UNIQUE (user_id, nombre),
+    CONSTRAINT carteras_saldos_pesos_enteros CHECK (saldo_inicial = trunc(saldo_inicial) AND saldo_actual = trunc(saldo_actual))
 );
 
 -- 2.2 Transacciones de Ingreso, Gasto, Transferencia y Conciliación
@@ -41,7 +43,8 @@ CREATE TABLE IF NOT EXISTS public.transacciones (
     cuenta_destino TEXT,
     detalle TEXT DEFAULT '',
     ciclo TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT transacciones_monto_pesos_enteros CHECK (monto = trunc(monto) AND monto > 0)
 );
 
 -- 2.3 Catálogo Maestro de Categorías y Presupuestos Base
@@ -53,7 +56,9 @@ CREATE TABLE IF NOT EXISTS public.catalogo_categorias (
     presupuesto_base NUMERIC NOT NULL DEFAULT 0,
     activo BOOLEAN NOT NULL DEFAULT true,
     cuenta_defecto TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_catalogo_user_macro_sub UNIQUE (user_id, macro_categoria, subcategoria),
+    CONSTRAINT catalogo_presupuesto_pesos_enteros CHECK (presupuesto_base = trunc(presupuesto_base) AND presupuesto_base >= 0)
 );
 
 -- 2.4 Gastos Recurrentes Programados
@@ -68,7 +73,8 @@ CREATE TABLE IF NOT EXISTS public.gastos_recurrentes (
     dia_pago INT NOT NULL CHECK (dia_pago BETWEEN 1 AND 31),
     activo BOOLEAN NOT NULL DEFAULT true,
     ultimo_ciclo_ejecutado TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT gastos_recurrentes_monto_pesos_enteros CHECK (monto = trunc(monto) AND monto > 0)
 );
 
 -- 2.5 Histórico de Patrimonio Neto
@@ -79,161 +85,16 @@ CREATE TABLE IF NOT EXISTS public.historico_patrimonio (
     total_activos NUMERIC NOT NULL DEFAULT 0,
     total_pasivos NUMERIC NOT NULL DEFAULT 0,
     patrimonio_neto NUMERIC NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT historico_patrimonio_pesos_enteros CHECK (
+        total_activos = trunc(total_activos) AND
+        total_pasivos = trunc(total_pasivos) AND
+        patrimonio_neto = trunc(patrimonio_neto)
+    )
 );
 
 -- ==============================================================================
--- 3. MIGRACIÓN IDEMPOTENTE PARA BASES EXISTENTES (PASOS 1 AL 4)
--- ==============================================================================
-
--- Paso 1: Añadir columna user_id a tablas preexistentes si no existe
-ALTER TABLE public.carteras ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE;
-ALTER TABLE public.transacciones ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE;
-ALTER TABLE public.catalogo_categorias ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE;
-ALTER TABLE public.gastos_recurrentes ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE;
-ALTER TABLE public.historico_patrimonio ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE;
-
--- Paso 2: Bloque DO $$ idempotente que obtiene o aprovisiona el usuario propietario en auth.users,
--- hace el backfill de todas las filas con WHERE user_id IS NULL en las 5 tablas, y luego ejecuta:
--- ALTER TABLE ... ALTER COLUMN user_id SET DEFAULT auth.uid(), ALTER COLUMN user_id SET NOT NULL;
-DO $$
-DECLARE
-    v_owner_id uuid;
-BEGIN
-    -- 1. Intentar obtener el usuario más antiguo registrado en auth.users
-    SELECT id INTO v_owner_id
-    FROM auth.users
-    ORDER BY created_at ASC
-    LIMIT 1;
-
-    -- 2. Si auth.users está vacío (ej. bootstrapping o ambiente CI), aprovisionar usuario inicial seguro
-    IF v_owner_id IS NULL THEN
-        v_owner_id := gen_random_uuid();
-        INSERT INTO auth.users (
-            id,
-            instance_id,
-            aud,
-            role,
-            email,
-            encrypted_password,
-            email_confirmed_at,
-            created_at,
-            updated_at,
-            raw_app_meta_data,
-            raw_user_meta_data,
-            is_super_admin
-        ) VALUES (
-            v_owner_id,
-            '00000000-0000-0000-0000-000000000000',
-            'authenticated',
-            'authenticated',
-            'propietario@finanzas-pwa.local',
-            crypt('PropietarioFinanzas2026*', gen_salt('bf')),
-            NOW(),
-            NOW(),
-            NOW(),
-            '{"provider":"email","providers":["email"]}',
-            '{"name":"Propietario PWA"}',
-            false
-        ) ON CONFLICT (id) DO NOTHING;
-    END IF;
-
-    -- 3. Backfill de todas las filas con user_id IS NULL en las 5 tablas
-    UPDATE public.carteras SET user_id = v_owner_id WHERE user_id IS NULL;
-    UPDATE public.transacciones SET user_id = v_owner_id WHERE user_id IS NULL;
-    UPDATE public.catalogo_categorias SET user_id = v_owner_id WHERE user_id IS NULL;
-    UPDATE public.gastos_recurrentes SET user_id = v_owner_id WHERE user_id IS NULL;
-    UPDATE public.historico_patrimonio SET user_id = v_owner_id WHERE user_id IS NULL;
-
-    -- 4. Establecer DEFAULT auth.uid() y NOT NULL en las 5 tablas
-    ALTER TABLE public.carteras ALTER COLUMN user_id SET DEFAULT auth.uid(), ALTER COLUMN user_id SET NOT NULL;
-    ALTER TABLE public.transacciones ALTER COLUMN user_id SET DEFAULT auth.uid(), ALTER COLUMN user_id SET NOT NULL;
-    ALTER TABLE public.catalogo_categorias ALTER COLUMN user_id SET DEFAULT auth.uid(), ALTER COLUMN user_id SET NOT NULL;
-    ALTER TABLE public.gastos_recurrentes ALTER COLUMN user_id SET DEFAULT auth.uid(), ALTER COLUMN user_id SET NOT NULL;
-    ALTER TABLE public.historico_patrimonio ALTER COLUMN user_id SET DEFAULT auth.uid(), ALTER COLUMN user_id SET NOT NULL;
-END $$;
-
--- Paso 3: Saneamiento de posibles decimales heredados ANTES de instalar constraints
-UPDATE public.transacciones SET monto = trunc(monto) WHERE monto <> trunc(monto);
-UPDATE public.gastos_recurrentes SET monto = trunc(monto) WHERE monto <> trunc(monto);
-UPDATE public.catalogo_categorias SET presupuesto_base = trunc(presupuesto_base) WHERE presupuesto_base <> trunc(presupuesto_base);
-UPDATE public.carteras SET saldo_inicial = trunc(saldo_inicial), saldo_actual = trunc(saldo_actual) WHERE saldo_inicial <> trunc(saldo_inicial) OR saldo_actual <> trunc(saldo_actual);
-
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'public' AND table_name = 'historico_patrimonio' AND column_name = 'activos'
-    ) THEN
-        UPDATE public.historico_patrimonio 
-        SET activos = trunc(activos), 
-            pasivos = trunc(pasivos), 
-            patrimonio_neto = trunc(patrimonio_neto) 
-        WHERE activos <> trunc(activos) OR pasivos <> trunc(pasivos) OR patrimonio_neto <> trunc(patrimonio_neto);
-    END IF;
-
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'public' AND table_name = 'historico_patrimonio' AND column_name = 'total_activos'
-    ) THEN
-        UPDATE public.historico_patrimonio 
-        SET total_activos = trunc(total_activos), 
-            total_pasivos = trunc(total_pasivos), 
-            patrimonio_neto = trunc(patrimonio_neto) 
-        WHERE total_activos <> trunc(total_activos) OR total_pasivos <> trunc(total_pasivos) OR patrimonio_neto <> trunc(patrimonio_neto);
-    END IF;
-END $$;
-
--- Paso 4: Instalación explícita de constraints en tablas existentes
-ALTER TABLE public.transacciones DROP CONSTRAINT IF EXISTS transacciones_monto_pesos_enteros;
-ALTER TABLE public.transacciones DROP CONSTRAINT IF EXISTS chk_transacciones_monto;
-ALTER TABLE public.transacciones ADD CONSTRAINT transacciones_monto_pesos_enteros CHECK (monto = trunc(monto) AND monto > 0);
-
-ALTER TABLE public.gastos_recurrentes DROP CONSTRAINT IF EXISTS gastos_recurrentes_monto_pesos_enteros;
-ALTER TABLE public.gastos_recurrentes DROP CONSTRAINT IF EXISTS chk_recurrentes_monto;
-ALTER TABLE public.gastos_recurrentes ADD CONSTRAINT gastos_recurrentes_monto_pesos_enteros CHECK (monto = trunc(monto) AND monto > 0);
-
-ALTER TABLE public.catalogo_categorias DROP CONSTRAINT IF EXISTS catalogo_presupuesto_pesos_enteros;
-ALTER TABLE public.catalogo_categorias DROP CONSTRAINT IF EXISTS chk_catalogo_presupuesto;
-ALTER TABLE public.catalogo_categorias ADD CONSTRAINT catalogo_presupuesto_pesos_enteros CHECK (presupuesto_base = trunc(presupuesto_base) AND presupuesto_base >= 0);
-
-ALTER TABLE public.carteras DROP CONSTRAINT IF EXISTS carteras_saldos_pesos_enteros;
-ALTER TABLE public.carteras DROP CONSTRAINT IF EXISTS chk_carteras_enteros;
-ALTER TABLE public.carteras ADD CONSTRAINT carteras_saldos_pesos_enteros CHECK (saldo_inicial = trunc(saldo_inicial) AND saldo_actual = trunc(saldo_actual));
-
--- Compatibilidad de constraints únicos por usuario
-ALTER TABLE public.carteras DROP CONSTRAINT IF EXISTS carteras_nombre_key;
-ALTER TABLE public.carteras DROP CONSTRAINT IF EXISTS uq_carteras_user_nombre;
-ALTER TABLE public.carteras ADD CONSTRAINT uq_carteras_user_nombre UNIQUE (user_id, nombre);
-
-ALTER TABLE public.catalogo_categorias DROP CONSTRAINT IF EXISTS uq_catalogo_macro_sub;
-ALTER TABLE public.catalogo_categorias DROP CONSTRAINT IF EXISTS uq_catalogo_user_macro_sub;
-ALTER TABLE public.catalogo_categorias ADD CONSTRAINT uq_catalogo_user_macro_sub UNIQUE (user_id, macro_categoria, subcategoria);
-
--- Constraint enteras para historico_patrimonio adaptativo
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'public' AND table_name = 'historico_patrimonio' AND column_name = 'activos'
-    ) THEN
-        ALTER TABLE public.historico_patrimonio DROP CONSTRAINT IF EXISTS historico_patrimonio_pesos_enteros;
-        ALTER TABLE public.historico_patrimonio DROP CONSTRAINT IF EXISTS chk_historico_patrimonio_enteros;
-        ALTER TABLE public.historico_patrimonio ADD CONSTRAINT historico_patrimonio_pesos_enteros 
-            CHECK (activos = trunc(activos) AND pasivos = trunc(pasivos) AND patrimonio_neto = trunc(patrimonio_neto));
-    ELSIF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_schema = 'public' AND table_name = 'historico_patrimonio' AND column_name = 'total_activos'
-    ) THEN
-        ALTER TABLE public.historico_patrimonio DROP CONSTRAINT IF EXISTS historico_patrimonio_pesos_enteros;
-        ALTER TABLE public.historico_patrimonio DROP CONSTRAINT IF EXISTS chk_historico_patrimonio_enteros;
-        ALTER TABLE public.historico_patrimonio ADD CONSTRAINT historico_patrimonio_pesos_enteros 
-            CHECK (total_activos = trunc(total_activos) AND total_pasivos = trunc(total_pasivos) AND patrimonio_neto = trunc(patrimonio_neto));
-    END IF;
-END $$;
-
--- ==============================================================================
--- 4. ÍNDICES ESTRATÉGICOS (PASO 5: TRAS user_id Y NOT NULL)
+-- 3. ÍNDICES ESTRATÉGICOS
 -- ==============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_carteras_user_orden ON public.carteras (user_id, orden);
@@ -245,10 +106,10 @@ CREATE INDEX IF NOT EXISTS idx_recurrentes_user_activo ON public.gastos_recurren
 CREATE INDEX IF NOT EXISTS idx_historico_patrimonio_user_fecha ON public.historico_patrimonio (user_id, fecha DESC);
 
 -- ==============================================================================
--- 5. FUNCIONES RPC
+-- 4. FUNCIONES RPC
 -- ==============================================================================
 
--- 5.1 Cálculo del ciclo nómina en horario Colombia (Corte 25 - Formato 'YYYY-MM')
+-- 4.1 Cálculo del ciclo nómina en horario Colombia (Corte 25 - Formato 'YYYY-MM')
 CREATE OR REPLACE FUNCTION public.cycle_id_colombia(p_date TIMESTAMPTZ DEFAULT NOW())
 RETURNS TEXT
 LANGUAGE plpgsql
@@ -288,7 +149,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.cycle_id_colombia(TIMESTAMPTZ) FROM public, anon;
 GRANT EXECUTE ON FUNCTION public.cycle_id_colombia(TIMESTAMPTZ) TO authenticated;
 
--- 5.2 Intercambio Transaccional y Seguro del Orden de Carteras
+-- 4.2 Intercambio Transaccional y Seguro del Orden de Carteras
 CREATE OR REPLACE FUNCTION public.swap_carteras_orden(
     id_a TEXT,
     orden_a INT,
@@ -340,7 +201,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.swap_carteras_orden(TEXT, INT, TEXT, INT) FROM public, anon;
 GRANT EXECUTE ON FUNCTION public.swap_carteras_orden(TEXT, INT, TEXT, INT) TO authenticated;
 
--- 5.3 Procesamiento Atómico de Gastos Recurrentes en Base de Datos
+-- 4.3 Procesamiento Atómico de Gastos Recurrentes en Base de Datos
 CREATE OR REPLACE FUNCTION public.process_recurring_expenses_rpc()
 RETURNS INT
 LANGUAGE plpgsql
@@ -431,7 +292,7 @@ REVOKE EXECUTE ON FUNCTION public.process_recurring_expenses_rpc() FROM public, 
 GRANT EXECUTE ON FUNCTION public.process_recurring_expenses_rpc() TO authenticated;
 
 -- ==============================================================================
--- 6. TRIGGER: RECALCULAR SALDOS DE CARTERAS
+-- 5. TRIGGER: RECALCULAR SALDOS DE CARTERAS
 -- ==============================================================================
 
 CREATE OR REPLACE FUNCTION public.recalcular_saldos_carteras()
@@ -500,7 +361,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.recalcular_saldos_carteras();
 
 -- ==============================================================================
--- 7. POLÍTICAS DE SEGURIDAD (RLS) ESTRICTAS POR PROPIETARIO
+-- 6. POLÍTICAS DE SEGURIDAD (RLS) ESTRICTAS POR PROPIETARIO
 -- ==============================================================================
 
 ALTER TABLE public.carteras ENABLE ROW LEVEL SECURITY;
@@ -509,7 +370,7 @@ ALTER TABLE public.catalogo_categorias ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.gastos_recurrentes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.historico_patrimonio ENABLE ROW LEVEL SECURITY;
 
--- Limpieza de políticas previas abiertas y creación de políticas propietarias
+-- Limpieza y creación de políticas propietarias
 DROP POLICY IF EXISTS "Acceso total a carteras" ON public.carteras;
 DROP POLICY IF EXISTS "Propietario carteras" ON public.carteras;
 DROP POLICY IF EXISTS "propietario_carteras" ON public.carteras;
@@ -551,7 +412,7 @@ CREATE POLICY "propietario_historico_patrimonio" ON public.historico_patrimonio
     WITH CHECK (user_id = (SELECT auth.uid()));
 
 -- ==============================================================================
--- 8. PERMISOS EXPLÍCITOS DE TABLAS
+-- 7. PERMISOS EXPLÍCITOS DE TABLAS
 -- ==============================================================================
 
 REVOKE ALL ON TABLE public.carteras FROM anon, public;

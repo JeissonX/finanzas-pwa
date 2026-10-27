@@ -10,6 +10,17 @@ const DB_VERSION = 1;
 const STORE_NAME = 'mutations';
 const LOCK_NAME = 'finanzas_offline_queue_lock';
 const LEGACY_LOCALSTORAGE_KEY = 'finanzas_offline_queue';
+const FALLBACK_LOCK_KEY = 'finanzas_queue_fallback_lock';
+const FALLBACK_LOCK_LEASE_MS = 5000;
+const FALLBACK_LOCK_TIMEOUT_MS = 10000;
+const TAB_ID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+  ? crypto.randomUUID()
+  : `tab_${Math.random().toString(36).substring(2, 10)}_${Date.now()}`;
+
+interface FallbackLockPayload {
+  tabId: string;
+  expiresAt: number;
+}
 
 interface MutationRecord {
   id?: number;
@@ -17,12 +28,87 @@ interface MutationRecord {
   timestamp: number;
 }
 
-/** Ejecuta una operación bajo exclusión mutua de navigator.locks entre pestañas */
+function acquireFallbackLock(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  const now = Date.now();
+  const raw = localStorage.getItem(FALLBACK_LOCK_KEY);
+  if (raw) {
+    try {
+      const current: FallbackLockPayload = JSON.parse(raw);
+      if (current.tabId !== TAB_ID && current.expiresAt > now) {
+        return false;
+      }
+    } catch {
+      // Dato inválido o corrupto, permitir reescritura
+    }
+  }
+
+  const payload: FallbackLockPayload = {
+    tabId: TAB_ID,
+    expiresAt: now + FALLBACK_LOCK_LEASE_MS,
+  };
+  localStorage.setItem(FALLBACK_LOCK_KEY, JSON.stringify(payload));
+
+  // Verificación atómica de carrera
+  const verified = localStorage.getItem(FALLBACK_LOCK_KEY);
+  if (verified) {
+    try {
+      const parsed: FallbackLockPayload = JSON.parse(verified);
+      return parsed.tabId === TAB_ID;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function releaseFallbackLock(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const raw = localStorage.getItem(FALLBACK_LOCK_KEY);
+    if (raw) {
+      const current: FallbackLockPayload = JSON.parse(raw);
+      if (current.tabId === TAB_ID) {
+        localStorage.removeItem(FALLBACK_LOCK_KEY);
+      }
+    }
+  } catch {
+    localStorage.removeItem(FALLBACK_LOCK_KEY);
+  }
+}
+
+async function executeWithFallbackLock<T>(fn: () => Promise<T>): Promise<T> {
+  const startTime = Date.now();
+  let backoffMs = 50;
+
+  while (Date.now() - startTime < FALLBACK_LOCK_TIMEOUT_MS) {
+    if (acquireFallbackLock()) {
+      try {
+        return await fn();
+      } finally {
+        releaseFallbackLock();
+      }
+    }
+
+    const jitter = Math.floor(Math.random() * 30);
+    await new Promise(resolve => setTimeout(resolve, backoffMs + jitter));
+    backoffMs = Math.min(backoffMs * 1.5, 300);
+  }
+
+  console.warn('Fallback lock timeout alcanzado; procediendo con adquisición forzada');
+  try {
+    return await fn();
+  } finally {
+    releaseFallbackLock();
+  }
+}
+
+/** Ejecuta una operación bajo exclusión mutua de navigator.locks o lease lock en localStorage */
 export async function withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
   if (typeof navigator !== 'undefined' && 'locks' in navigator && typeof navigator.locks?.request === 'function') {
     return navigator.locks.request(LOCK_NAME, fn);
   }
-  return fn();
+  return executeWithFallbackLock(fn);
 }
 
 function openDatabase(): Promise<IDBDatabase> {

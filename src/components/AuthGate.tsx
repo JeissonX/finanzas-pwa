@@ -7,10 +7,17 @@ interface AuthGateProps {
   children: ReactNode;
 }
 
+const SAVED_EMAIL_KEY = 'finanzas_saved_login_email';
+
 export default function AuthGate({ children }: AuthGateProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
-  const [email, setEmail] = useState('admin@finanzas.local');
+  const [email, setEmail] = useState(() => {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem(SAVED_EMAIL_KEY) || '';
+    }
+    return '';
+  });
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -48,8 +55,9 @@ export default function AuthGate({ children }: AuthGateProps) {
     setErrorMsg(null);
 
     try {
+      const cleanEmail = email.trim();
       const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email: cleanEmail,
         password,
       });
 
@@ -59,6 +67,10 @@ export default function AuthGate({ children }: AuthGateProps) {
             ? 'Credenciales incorrectas. Verifica el usuario y la contraseña.'
             : error.message
         );
+      } else {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(SAVED_EMAIL_KEY, cleanEmail);
+        }
       }
     } catch (err: any) {
       setErrorMsg(err?.message || 'Error de conexión con el servicio de autenticación.');
@@ -122,7 +134,7 @@ export default function AuthGate({ children }: AuthGateProps) {
               autoComplete="username"
               value={email}
               onChange={e => setEmail(e.target.value)}
-              placeholder="admin@finanzas.local"
+              placeholder="tu@correo.com"
               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition"
             />
           </div>
