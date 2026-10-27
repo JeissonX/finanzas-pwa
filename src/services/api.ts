@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { Transaccion, AppDataResponse, PresupuestoItem, CarteraInfo } from '../types/finance';
+import type { Transaccion, AppDataResponse, PresupuestoItem, CarteraInfo, GastoRecurrente } from '../types/finance';
 import { isDateInCurrentCycle, getCycleLabel } from '../utils/format';
 
 const QUEUE_KEY = 'finanzas_offline_queue';
@@ -11,7 +11,6 @@ export const DEFAULT_SALDOS: Record<string, number> = {
   'Lulo Principal (Cuenta)': 0,
   'Lulo Bolsillo - Ahorro': 0,
   'Lulo Bolsillo - Carro / Moto': 0,
-  'Lulo Bolsillo - Gastos': 0,
   'Lulo Bolsillo - Vacaciones': 0,
   'Nequi': 0,
   'Efectivo': 0,
@@ -46,6 +45,7 @@ export const DEFAULT_APPDATA: AppData = {
   transacciones: [],
   presupuestos: [],
   carteras: [],
+  gastosRecurrentes: [],
 };
 
 export function getOfflineQueue(): Transaccion[] {
@@ -430,6 +430,165 @@ export async function postAjuste(ajuste: AjustePayload): Promise<void> {
   await saveTransaction(payload);
 }
 
+export async function processRecurringExpenses(cicloActivo?: string): Promise<number> {
+  const activeCycle = cicloActivo || getCycleLabel();
+  try {
+    const { data: recurrentes, error } = await supabase
+      .from('gastos_recurrentes')
+      .select('*')
+      .eq('activo', true);
+
+    if (error || !recurrentes || recurrentes.length === 0) {
+      return 0;
+    }
+
+    // Hora local Colombia (GMT-5)
+    const now = new Date();
+    const colDateStr = now.toLocaleString('en-US', { timeZone: 'America/Bogota' });
+    const colDate = new Date(colDateStr);
+    const diaActual = colDate.getDate();
+
+    let executedCount = 0;
+
+    for (const r of recurrentes) {
+      const diaPago = Number(r.dia_pago) || 1;
+      const ultimoCiclo = r.ultimo_ciclo_ejecutado;
+
+      if (diaActual >= diaPago && ultimoCiclo !== activeCycle) {
+        const txId = `TX-REC-${r.id}-${Date.now()}`;
+        const txPayload = {
+          id: txId,
+          fecha: new Date().toISOString(),
+          tipo: 'GASTO' as const,
+          monto: Number(r.monto),
+          macro_categoria: r.macro_categoria || '',
+          subcategoria: r.subcategoria || '',
+          cuenta: r.cuenta || '',
+          cuenta_origen: r.cuenta || null,
+          cuenta_destino: null,
+          ciclo: activeCycle,
+          detalle: `Débito automático programado: ${r.nombre}`,
+        };
+
+        const { error: txErr } = await supabase.from('transacciones').insert([txPayload]);
+        if (!txErr) {
+          executedCount++;
+          await supabase
+            .from('gastos_recurrentes')
+            .update({ ultimo_ciclo_ejecutado: activeCycle })
+            .eq('id', r.id);
+        } else {
+          console.warn(`Error al ejecutar gasto recurrente ${r.nombre}:`, txErr);
+        }
+      }
+    }
+
+    return executedCount;
+  } catch (err) {
+    console.warn('Advertencia en processRecurringExpenses:', err);
+    return 0;
+  }
+}
+
+export async function getGastosRecurrentes(): Promise<GastoRecurrente[]> {
+  try {
+    const { data, error } = await supabase
+      .from('gastos_recurrentes')
+      .select('*')
+      .order('dia_pago', { ascending: true });
+
+    if (error || !data) return [];
+
+    return data.map((r: any) => ({
+      id: r.id,
+      nombre: r.nombre,
+      monto: Number(r.monto) || 0,
+      macroCategoria: r.macro_categoria || '',
+      subcategoria: r.subcategoria || '',
+      cuenta: r.cuenta || '',
+      diaPago: Number(r.dia_pago) || 1,
+      activo: r.activo !== false,
+      ultimoCicloEjecutado: r.ultimo_ciclo_ejecutado || undefined,
+    }));
+  } catch (err) {
+    console.warn('Error obteniendo gastos recurrentes:', err);
+    return [];
+  }
+}
+
+export async function saveGastoRecurrente(gasto: {
+  id?: string;
+  nombre: string;
+  monto: number;
+  macroCategoria: string;
+  subcategoria: string;
+  cuenta: string;
+  diaPago: number;
+  activo?: boolean;
+}): Promise<boolean> {
+  try {
+    const id = gasto.id || `rec-${Date.now()}`;
+    const payload = {
+      id,
+      nombre: gasto.nombre,
+      monto: gasto.monto,
+      macro_categoria: gasto.macroCategoria,
+      subcategoria: gasto.subcategoria,
+      cuenta: gasto.cuenta,
+      dia_pago: gasto.diaPago,
+      activo: gasto.activo !== false,
+    };
+
+    const { error } = await supabase
+      .from('gastos_recurrentes')
+      .upsert([payload]);
+
+    if (error) throw error;
+    await fetchAppData(true);
+    return true;
+  } catch (err) {
+    console.error('Error guardando gasto recurrente:', err);
+    throw err;
+  }
+}
+
+export async function toggleGastoRecurrente(id: string, activo: boolean): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from('gastos_recurrentes')
+      .update({ activo })
+      .eq('id', id);
+
+    if (error) throw error;
+    await fetchAppData(true);
+    return true;
+  } catch (err) {
+    console.error('Error alternando estado de gasto recurrente:', err);
+    throw err;
+  }
+}
+
+export async function deleteGastoRecurrente(id: string): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from('gastos_recurrentes')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    await fetchAppData(true);
+    return true;
+  } catch (err) {
+    console.error('Error eliminando gasto recurrente:', err);
+    throw err;
+  }
+}
+
+export async function updateCarteraOrden(id: string, orden: number): Promise<void> {
+  const { error } = await supabase.from('carteras').update({ orden }).eq('id', id);
+  if (error) throw error;
+}
+
 export async function fetchAppData(forceRefresh = false): Promise<AppData> {
   if (!forceRefresh) {
     try {
@@ -446,15 +605,32 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
   }
 
   try {
-    const [carterasRes, catalogoRes, txsRes] = await Promise.all([
-      supabase.from('carteras').select('*').order('id'),
+    const cicloActivo = getCycleLabel();
+    await processRecurringExpenses(cicloActivo).catch(() => {});
+
+    const [carterasRes, catalogoRes, txsRes, recurrentesRes] = await Promise.all([
+      supabase.from('carteras').select('*').order('orden', { ascending: true, nullsFirst: false }),
       supabase.from('catalogo_categorias').select('*').eq('activo', true),
       supabase.from('transacciones').select('*').order('fecha', { ascending: false }),
+      supabase.from('gastos_recurrentes').select('*').order('dia_pago', { ascending: true }),
     ]);
 
     const carterasData = carterasRes.data || [];
     const catalogoData = catalogoRes.data || [];
     const transaccionesData = txsRes.data || [];
+    const recurrentesData = recurrentesRes.data || [];
+
+    const gastosRecurrentes: GastoRecurrente[] = recurrentesData.map((r: any) => ({
+      id: r.id,
+      nombre: r.nombre,
+      monto: Number(r.monto) || 0,
+      macroCategoria: r.macro_categoria || '',
+      subcategoria: r.subcategoria || '',
+      cuenta: r.cuenta || '',
+      diaPago: Number(r.dia_pago) || 1,
+      activo: r.activo !== false,
+      ultimoCicloEjecutado: r.ultimo_ciclo_ejecutado || undefined,
+    }));
 
     const updatedSaldos: Record<string, number> = { ...DEFAULT_SALDOS };
     let saldoRemunerados = 0;
@@ -508,12 +684,15 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       sincronizado: true,
     }));
 
-    const localTxs = getTransacciones();
+    const queue = getOfflineQueue();
+    const queueIds = new Set(queue.map(q => String(q.id)));
+    const pendingLocalTxs = getTransacciones().filter(t => queueIds.has(String(t.id)));
+
     const mergedMap = new Map<number | string, Transaccion>();
     for (const t of remoteTxs) {
       mergedMap.set(t.id, t);
     }
-    for (const t of localTxs) {
+    for (const t of pendingLocalTxs) {
       if (!mergedMap.has(t.id)) {
         mergedMap.set(t.id, t);
       }
@@ -618,8 +797,9 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         saldoActual: saldoCalculado,
         icono: c.icono || '💳',
         permite_gasto: c.permite_gasto !== false,
+        orden: c.orden != null ? Number(c.orden) : 99,
       };
-    });
+    }).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99));
 
     const result: AppData = {
       saldos: updatedSaldos,
@@ -645,6 +825,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       transacciones: mergedList,
       presupuestos,
       carteras: carterasMapped,
+      gastosRecurrentes,
     };
 
     try {

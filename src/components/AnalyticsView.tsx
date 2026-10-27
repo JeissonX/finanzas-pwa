@@ -140,9 +140,7 @@ export default function AnalyticsView() {
   const saldoBolsillo =
     (saldos['Lulo Bolsillo - Ahorro'] ?? 0) +
     (saldos['Lulo Bolsillo - Carro / Moto'] ?? 0) +
-    (saldos['Lulo Bolsillo - Gastos'] ?? 0) +
-    (saldos['Lulo Bolsillo - Vacaciones'] ?? 0) +
-    (saldos['Lulo Ahorros (Bolsillo 9.25%)'] ?? 0);
+    (saldos['Lulo Bolsillo - Vacaciones'] ?? 0);
 
   const gananciaMesEstimada = saldoBolsillo > 0
     ? Math.round(saldoBolsillo * luloRates.tasaMensual)

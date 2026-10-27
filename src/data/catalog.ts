@@ -163,18 +163,17 @@ export const CATALOG_TRANSFERENCIAS: MacroCategoria[] = [
   },
 ];
 
-// Lista oficial y única de 10 Carteras (CARTERAS_DEFAULT) — Todas estrictamente con saldo inicial 0
+// Lista oficial y única de 9 Carteras (CARTERAS_DEFAULT) — Todas estrictamente con saldo inicial 0
 export const CARTERAS_DEFAULT: Cartera[] = [
-  { id: 'Lulo Principal (Cuenta)', nombre: 'Lulo Principal (Cuenta)', tipo: 'debito', saldo: 0, icono: '🏦' },
-  { id: 'Lulo Bolsillo - Ahorro', nombre: 'Lulo Bolsillo - Ahorro', tipo: 'inversion', saldo: 0, icono: '💰' },
-  { id: 'Lulo Bolsillo - Carro / Moto', nombre: 'Lulo Bolsillo - Carro / Moto', tipo: 'inversion', saldo: 0, icono: '🛵' },
-  { id: 'Lulo Bolsillo - Gastos', nombre: 'Lulo Bolsillo - Gastos', tipo: 'inversion', saldo: 0, icono: '👛' },
-  { id: 'Lulo Bolsillo - Vacaciones', nombre: 'Lulo Bolsillo - Vacaciones', tipo: 'inversion', saldo: 0, icono: '✈️' },
-  { id: 'Nequi', nombre: 'Nequi', tipo: 'debito', saldo: 0, icono: '🟣' },
-  { id: 'Efectivo', nombre: 'Efectivo', tipo: 'efectivo', saldo: 0, icono: '💵' },
-  { id: 'TC Lulo Bank', nombre: 'TC Lulo Bank', tipo: 'credito', saldo: 0, icono: '💳' },
-  { id: 'RappiCard', nombre: 'RappiCard', tipo: 'credito', saldo: 0, icono: '💳' },
-  { id: 'Crédito Mazda 2 (Lulo)', nombre: 'Crédito Mazda 2 (Lulo)', tipo: 'deuda', saldo: 0, icono: '🚗' },
+  { id: 'Lulo Principal (Cuenta)', nombre: 'Lulo Principal (Cuenta)', tipo: 'debito', saldo: 0, icono: '🏦', orden: 1 },
+  { id: 'Lulo Bolsillo - Ahorro', nombre: 'Lulo Bolsillo - Ahorro', tipo: 'inversion', saldo: 0, icono: '💰', orden: 2 },
+  { id: 'Lulo Bolsillo - Carro / Moto', nombre: 'Lulo Bolsillo - Carro / Moto', tipo: 'inversion', saldo: 0, icono: '🛵', orden: 3 },
+  { id: 'Lulo Bolsillo - Vacaciones', nombre: 'Lulo Bolsillo - Vacaciones', tipo: 'inversion', saldo: 0, icono: '✈️', orden: 4 },
+  { id: 'Nequi', nombre: 'Nequi', tipo: 'debito', saldo: 0, icono: '🟣', orden: 5 },
+  { id: 'Efectivo', nombre: 'Efectivo', tipo: 'efectivo', saldo: 0, icono: '💵', orden: 6 },
+  { id: 'TC Lulo Bank', nombre: 'TC Lulo Bank', tipo: 'credito', saldo: 0, icono: '💳', orden: 7 },
+  { id: 'RappiCard', nombre: 'RappiCard', tipo: 'credito', saldo: 0, icono: '💳', orden: 8 },
+  { id: 'Crédito Mazda 2 (Lulo)', nombre: 'Crédito Mazda 2 (Lulo)', tipo: 'deuda', saldo: 0, icono: '🚗', orden: 9 },
 ];
 
 export const CARTERAS = CARTERAS_DEFAULT;

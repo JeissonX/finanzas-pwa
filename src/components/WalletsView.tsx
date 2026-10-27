@@ -1,16 +1,40 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, TrendingUp, TrendingDown, Minus, SlidersHorizontal, Check, Wallet } from 'lucide-react';
-import { getSaldos, DEFAULT_SALDOS, getOfflineQueue, syncOfflineQueue, saveTransaction, fetchAppData } from '../services/api';
+import {
+  RefreshCw,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  SlidersHorizontal,
+  Check,
+  Wallet,
+  Zap,
+  Plus,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  X,
+} from 'lucide-react';
+import {
+  getSaldos,
+  DEFAULT_SALDOS,
+  getOfflineQueue,
+  syncOfflineQueue,
+  saveTransaction,
+  fetchAppData,
+  getGastosRecurrentes,
+  saveGastoRecurrente,
+  toggleGastoRecurrente,
+  deleteGastoRecurrente,
+} from '../services/api';
 import { supabase } from '../services/supabase';
-import { formatCOP, haptic } from '../utils/format';
-import { CARTERAS_DEFAULT } from '../data/catalog';
-import type { CarteraInfo, Transaccion } from '../types/finance';
+import { formatCOP, haptic, getCycleLabel } from '../utils/format';
+import { CARTERAS_DEFAULT, CATALOG_GASTOS } from '../data/catalog';
+import type { CarteraInfo, Transaccion, GastoRecurrente } from '../types/finance';
 
 const ACCOUNT_ICONS: Record<string, string> = {
   'Lulo Principal (Cuenta)': '🏦',
   'Lulo Bolsillo - Ahorro': '💰',
   'Lulo Bolsillo - Carro / Moto': '🛵',
-  'Lulo Bolsillo - Gastos': '👛',
   'Lulo Bolsillo - Vacaciones': '✈️',
   'Nequi': '🟣',
   'Efectivo': '💵',
@@ -23,7 +47,6 @@ const ACCOUNT_TYPES: Record<string, string> = {
   'Lulo Principal (Cuenta)': 'Débito / Líquido',
   'Lulo Bolsillo - Ahorro': 'Ahorro Remunerado',
   'Lulo Bolsillo - Carro / Moto': 'Ahorro Remunerado',
-  'Lulo Bolsillo - Gastos': 'Ahorro Remunerado',
   'Lulo Bolsillo - Vacaciones': 'Ahorro Remunerado',
   'Nequi': 'Billetera Digital',
   'Efectivo': 'Caja Física',
@@ -34,7 +57,21 @@ const ACCOUNT_TYPES: Record<string, string> = {
 
 export default function WalletsView() {
   const [saldos, setSaldos] = useState<Record<string, number>>(DEFAULT_SALDOS);
-  const [carterasDb, setCarterasDb] = useState<CarteraInfo[]>([]);
+  const [carterasDb, setCarterasDb] = useState<CarteraInfo[]>(() =>
+    CARTERAS_DEFAULT.map((c, idx) => ({
+      id: c.id,
+      nombre: c.nombre,
+      tipo: c.tipo,
+      saldo_inicial: 0,
+      saldo_actual: 0,
+      saldo: 0,
+      saldoActual: 0,
+      icono: c.icono,
+      permite_gasto: !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre),
+      orden: c.orden ?? (idx + 1),
+    })).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99))
+  );
+  const [recurrentes, setRecurrentes] = useState<GastoRecurrente[]>([]);
   const [loading, setLoading] = useState(false);
   const [fromCache, setFromCache] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<number>(0);
@@ -48,20 +85,34 @@ export default function WalletsView() {
   const [isAdjusting, setIsAdjusting] = useState<boolean>(false);
   const [adjustSuccessMsg, setAdjustSuccessMsg] = useState<string | null>(null);
 
+  // Estado del gestor de gastos recurrentes
+  const [isRecurrentesCollapsed, setIsRecurrentesCollapsed] = useState(false);
+  const [isFormRecurrenteOpen, setIsFormRecurrenteOpen] = useState(false);
+  const [recNombre, setRecNombre] = useState('');
+  const [recMonto, setRecMonto] = useState('');
+  const [recMacro, setRecMacro] = useState(CATALOG_GASTOS[0].nombre);
+  const [recSub, setRecSub] = useState(CATALOG_GASTOS[0].subcategorias[0].nombre);
+  const [recCuenta, setRecCuenta] = useState('TC Lulo Bank');
+  const [recDia, setRecDia] = useState(1);
+  const [isSavingRec, setIsSavingRec] = useState(false);
+
   const queueCount = getOfflineQueue().length;
+  const cicloActivo = getCycleLabel();
 
   const fetchSaldos = async (force = false) => {
     setLoading(true);
     try {
-      const [result, carterasRes] = await Promise.all([
+      const [result, carterasRes, recList] = await Promise.all([
         getSaldos(force),
-        supabase.from('carteras').select('*').order('id'),
+        supabase.from('carteras').select('*').order('orden', { ascending: true, nullsFirst: false }),
+        getGastosRecurrentes(),
       ]);
       setSaldos(result.saldos);
       setFromCache(result.fromCache);
       setLastUpdated(result.timestamp);
-      if (carterasRes.data) {
-        setCarterasDb(carterasRes.data.map((c: any) => ({
+      setRecurrentes(recList);
+      if (carterasRes.data && carterasRes.data.length > 0) {
+        setCarterasDb(carterasRes.data.map((c: any, idx: number) => ({
           id: c.id,
           nombre: c.nombre,
           tipo: c.tipo,
@@ -71,7 +122,8 @@ export default function WalletsView() {
           saldoActual: Number(c.saldo_actual) || 0,
           icono: c.icono,
           permite_gasto: c.permite_gasto !== false,
-        })));
+          orden: c.orden != null ? Number(c.orden) : (idx + 1),
+        })).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99)));
       }
     } finally {
       setLoading(false);
@@ -107,6 +159,64 @@ export default function WalletsView() {
         ? `${result.remaining} pendientes aún`
         : 'Sin pendientes'
     );
+  };
+
+  const handleMoveUp = async (index: number) => {
+    if (index <= 0) return;
+    haptic(30);
+
+    const current = carterasDb[index];
+    const neighbor = carterasDb[index - 1];
+
+    const newArr = [...carterasDb];
+    newArr[index] = neighbor;
+    newArr[index - 1] = current;
+
+    const updatedWithOrders = newArr.map((item, i) => ({
+      ...item,
+      orden: i + 1,
+    }));
+
+    setCarterasDb(updatedWithOrders);
+
+    try {
+      await Promise.all([
+        supabase.from('carteras').update({ orden: index }).eq('id', current.id),
+        supabase.from('carteras').update({ orden: index + 1 }).eq('id', neighbor.id),
+      ]);
+    } catch (err) {
+      console.error('Error actualizando orden de carteras:', err);
+      fetchSaldos(true);
+    }
+  };
+
+  const handleMoveDown = async (index: number) => {
+    if (index >= carterasDb.length - 1) return;
+    haptic(30);
+
+    const current = carterasDb[index];
+    const neighbor = carterasDb[index + 1];
+
+    const newArr = [...carterasDb];
+    newArr[index] = neighbor;
+    newArr[index + 1] = current;
+
+    const updatedWithOrders = newArr.map((item, i) => ({
+      ...item,
+      orden: i + 1,
+    }));
+
+    setCarterasDb(updatedWithOrders);
+
+    try {
+      await Promise.all([
+        supabase.from('carteras').update({ orden: index + 2 }).eq('id', current.id),
+        supabase.from('carteras').update({ orden: index + 1 }).eq('id', neighbor.id),
+      ]);
+    } catch (err) {
+      console.error('Error actualizando orden de carteras:', err);
+      fetchSaldos(true);
+    }
   };
 
   const handleTogglePermiteGasto = async (walletName: string, currentPermiteGasto: boolean) => {
@@ -159,7 +269,6 @@ export default function WalletsView() {
     const faltabaPlata = diferencia < 0;
     const comentario = motivoInput.trim() || (faltabaPlata ? 'Descuadre de Saldo' : 'Sobrante de Saldo');
 
-    // Actualización inmediata en UI
     const updatedSaldos = { ...saldos, [walletName]: nuevoSaldo };
     setSaldos(updatedSaldos);
     if (typeof window !== 'undefined') {
@@ -198,24 +307,87 @@ export default function WalletsView() {
     }
   };
 
-  const walletItems = CARTERAS_DEFAULT.map(c => {
+  // Handlers para gastos recurrentes
+  const handleToggleRecurrente = async (id: string, currentActivo: boolean) => {
+    haptic(40);
+    const nuevo = !currentActivo;
+    setRecurrentes(prev => prev.map(r => r.id === id ? { ...r, activo: nuevo } : r));
+    try {
+      await toggleGastoRecurrente(id, nuevo);
+      setAdjustSuccessMsg(`Gasto programado ${nuevo ? 'activado' : 'pausado'}.`);
+      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+    } catch (err) {
+      console.error('Error alternando recurrente:', err);
+      setRecurrentes(prev => prev.map(r => r.id === id ? { ...r, activo: currentActivo } : r));
+    }
+  };
+
+  const handleDeleteRecurrente = async (id: string, nombre: string) => {
+    haptic(50);
+    setRecurrentes(prev => prev.filter(r => r.id !== id));
+    try {
+      await deleteGastoRecurrente(id);
+      setAdjustSuccessMsg(`"${nombre}" eliminado de gastos programados.`);
+      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+    } catch (err) {
+      console.error('Error eliminando recurrente:', err);
+      const list = await getGastosRecurrentes();
+      setRecurrentes(list);
+    }
+  };
+
+  const handleSaveRecurrente = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanMonto = Number(recMonto.replace(/[^0-9]/g, ''));
+    if (!recNombre.trim() || cleanMonto <= 0) return;
+
+    setIsSavingRec(true);
+    haptic(50);
+    try {
+      await saveGastoRecurrente({
+        nombre: recNombre.trim(),
+        monto: cleanMonto,
+        macroCategoria: recMacro,
+        subcategoria: recSub,
+        cuenta: recCuenta,
+        diaPago: Math.max(1, Math.min(31, Number(recDia) || 1)),
+        activo: true,
+      });
+
+      const updated = await getGastosRecurrentes();
+      setRecurrentes(updated);
+      setIsFormRecurrenteOpen(false);
+      setRecNombre('');
+      setRecMonto('');
+      setAdjustSuccessMsg('Gasto programado registrado exitosamente.');
+      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+    } catch (err) {
+      console.error('Error guardando gasto recurrente:', err);
+    } finally {
+      setIsSavingRec(false);
+    }
+  };
+
+  const walletItems = carterasDb.map((c, index) => {
     const amount = saldos[c.nombre] ?? saldos[c.id] ?? 0;
-    const dbInfo = carterasDb.find(db => db.nombre === c.nombre || db.id === c.id);
-    const permiteGasto = dbInfo?.permite_gasto ?? !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre);
+    const permiteGasto = c.permite_gasto !== false;
 
     return {
       id: c.id,
       name: c.nombre,
       amount,
-      type: ACCOUNT_TYPES[c.nombre] ?? 'Cuenta',
-      icon: ACCOUNT_ICONS[c.nombre] ?? c.icono,
+      type: ACCOUNT_TYPES[c.nombre] ?? c.tipo ?? 'Cuenta',
+      icon: ACCOUNT_ICONS[c.nombre] ?? c.icono ?? '💳',
       permiteGasto,
+      orden: c.orden ?? (index + 1),
     };
   });
 
   const netTotal = walletItems.reduce((s, w) => s + w.amount, 0);
   const activos = walletItems.filter(w => w.amount > 0).reduce((s, w) => s + w.amount, 0);
   const pasivos = walletItems.filter(w => w.amount < 0).reduce((s, w) => s + Math.abs(w.amount), 0);
+
+  const selectedMacroCat = CATALOG_GASTOS.find(c => c.nombre === recMacro) || CATALOG_GASTOS[0];
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 space-y-4">
@@ -295,9 +467,298 @@ export default function WalletsView() {
         </div>
       </div>
 
-      {/* Lista completa de las 10 carteras */}
+      {/* SECCIÓN: ⚡ Débitos y Gastos Programados */}
+      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all duration-200">
+        <div className="p-4 flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80">
+          <div
+            className="flex items-center gap-2 cursor-pointer select-none"
+            onClick={() => {
+              haptic();
+              setIsRecurrentesCollapsed(prev => !prev);
+            }}
+          >
+            <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex items-center justify-center text-amber-600 dark:text-amber-400 shadow-sm">
+              <Zap size={16} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
+                  Débitos y Gastos Programados
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                  {recurrentes.filter(r => r.activo).length}
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                Cobro automático silencioso por ciclo
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                haptic();
+                setIsFormRecurrenteOpen(prev => !prev);
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-sm transition flex items-center gap-1 cursor-pointer active:scale-95"
+            >
+              <Plus size={13} />
+              <span className="hidden sm:inline">Programar Gasto</span>
+              <span className="sm:hidden">Nuevo</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                haptic();
+                setIsRecurrentesCollapsed(prev => !prev);
+              }}
+              className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer"
+              aria-label="Colapsar sección"
+            >
+              <ChevronDown
+                size={16}
+                className={`transition-transform duration-200 ${isRecurrentesCollapsed ? '-rotate-90' : 'rotate-0'}`}
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* Formulario desplegable: + Programar Gasto */}
+        {isFormRecurrenteOpen && (
+          <form
+            onSubmit={handleSaveRecurrente}
+            className="p-4 bg-slate-50/90 dark:bg-slate-950/50 border-b border-slate-100 dark:border-slate-800 animate-slide-up flex flex-col gap-3"
+          >
+            <div className="flex items-center justify-between pb-1 border-b border-slate-200/60 dark:border-slate-800">
+              <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                Nuevo Gasto Recurrente Automático
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsFormRecurrenteOpen(false)}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Nombre del Servicio
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={recNombre}
+                  onChange={e => setRecNombre(e.target.value)}
+                  placeholder="Ej: YouTube Premium, Seguro Auto"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Monto Mensual (COP)
+                </label>
+                <input
+                  type="number"
+                  required
+                  min={1}
+                  value={recMonto}
+                  onChange={e => setRecMonto(e.target.value)}
+                  placeholder="20900"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Macro-Categoría
+                </label>
+                <select
+                  value={recMacro}
+                  onChange={e => {
+                    const newMacro = e.target.value;
+                    setRecMacro(newMacro);
+                    const cat = CATALOG_GASTOS.find(c => c.nombre === newMacro);
+                    if (cat?.subcategorias[0]) setRecSub(cat.subcategorias[0].nombre);
+                  }}
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-900 dark:text-slate-100 font-medium outline-none cursor-pointer"
+                >
+                  {CATALOG_GASTOS.map(c => (
+                    <option key={c.nombre} value={c.nombre}>
+                      {c.icono} {c.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Subcategoría
+                </label>
+                <select
+                  value={recSub}
+                  onChange={e => setRecSub(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-900 dark:text-slate-100 font-medium outline-none cursor-pointer"
+                >
+                  {selectedMacroCat.subcategorias.map(s => (
+                    <option key={s.nombre} value={s.nombre}>
+                      {s.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Cuenta Débito
+                </label>
+                <select
+                  value={recCuenta}
+                  onChange={e => setRecCuenta(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-900 dark:text-slate-100 font-medium outline-none cursor-pointer"
+                >
+                  {CARTERAS_DEFAULT.map(c => (
+                    <option key={c.id || c.nombre} value={c.nombre}>
+                      {ACCOUNT_ICONS[c.nombre] || '💳'} {c.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                Día de Pago del Mes (1 al 31)
+              </label>
+              <input
+                type="number"
+                required
+                min={1}
+                max={31}
+                value={recDia}
+                onChange={e => setRecDia(Math.max(1, Math.min(31, parseInt(e.target.value) || 1)))}
+                className="w-full sm:w-48 px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 outline-none"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsFormRecurrenteOpen(false)}
+                className="flex-1 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingRec}
+                className="flex-1 py-2 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
+              >
+                {isSavingRec ? (
+                  <>
+                    <RefreshCw size={13} className="animate-spin" />
+                    <span>Guardando…</span>
+                  </>
+                ) : (
+                  <span>Guardar Gasto Programado</span>
+                )}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Lista de Gastos Recurrentes */}
+        {!isRecurrentesCollapsed && (
+          <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
+            {recurrentes.length === 0 ? (
+              <div className="p-4 text-center text-xs text-slate-500 dark:text-slate-400">
+                No tienes gastos recurrentes programados aún.
+              </div>
+            ) : (
+              recurrentes.map(r => {
+                const isCobradoEsteCiclo = r.ultimoCicloEjecutado === cicloActivo;
+                return (
+                  <div
+                    key={r.id}
+                    className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition"
+                  >
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-sm flex-shrink-0">
+                        {ACCOUNT_ICONS[r.cuenta] || '💳'}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                            {r.nombre}
+                          </p>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                            r.activo
+                              ? isCobradoEsteCiclo
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                                : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                              : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                          }`}>
+                            {!r.activo
+                              ? 'Pausado'
+                              : isCobradoEsteCiclo
+                                ? '✓ Cobrado este ciclo'
+                                : `Próximo cobro: Día ${r.diaPago}`}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                          {r.subcategoria} · {r.cuenta} · Día {r.diaPago} de cada mes
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between sm:justify-end gap-3 pl-10 sm:pl-0">
+                      <span className="text-sm font-bold font-mono text-slate-900 dark:text-slate-100">
+                        {formatCOP(r.monto)}
+                      </span>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleRecurrente(r.id, r.activo)}
+                          className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer active:scale-95 ${
+                            r.activo
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                              : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                          }`}
+                          title={r.activo ? 'Pausar gasto recurrente' : 'Activar gasto recurrente'}
+                        >
+                          {r.activo ? 'Activo' : 'Pausado'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRecurrente(r.id, r.nombre)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                          title="Eliminar gasto recurrente"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Lista de 9 carteras en orden numérico establecido */}
       <div className="space-y-3">
-        {walletItems.map((wallet) => {
+        {walletItems.map((wallet, index) => {
           const isDebt = wallet.amount < 0;
           const Icon = isDebt ? TrendingDown : wallet.amount === 0 ? Minus : TrendingUp;
           const isSelected = adjustingWallet === wallet.name;
@@ -311,6 +772,36 @@ export default function WalletsView() {
               className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all duration-200"
             >
               <div className="flex items-center gap-3 p-4">
+                {/* Botones discretos de reordenamiento */}
+                <div className="flex flex-col gap-0.5 -my-1 -ml-1 flex-shrink-0">
+                  <button
+                    type="button"
+                    disabled={index === 0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMoveUp(index);
+                    }}
+                    className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20 disabled:hover:text-slate-400 transition rounded hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:cursor-not-allowed"
+                    aria-label={`Mover ${wallet.name} hacia arriba`}
+                    title="Subir cartera"
+                  >
+                    <ChevronUp size={13} strokeWidth={2.5} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={index === walletItems.length - 1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMoveDown(index);
+                    }}
+                    className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20 disabled:hover:text-slate-400 transition rounded hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer disabled:cursor-not-allowed"
+                    aria-label={`Mover ${wallet.name} hacia abajo`}
+                    title="Bajar cartera"
+                  >
+                    <ChevronDown size={13} strokeWidth={2.5} />
+                  </button>
+                </div>
+
                 <span className="text-2xl flex-shrink-0" role="img" aria-label={wallet.name}>
                   {wallet.icon}
                 </span>

@@ -25,6 +25,7 @@ export interface Cartera {
   tipo: 'efectivo' | 'debito' | 'credito' | 'inversion' | 'deuda';
   saldo: number;
   icono: string;
+  orden?: number;
 }
 
 export interface Subcategoria {
@@ -97,6 +98,19 @@ export interface CarteraInfo {
   saldoActual?: number;
   icono?: string;
   permite_gasto?: boolean;
+  orden?: number;
+}
+
+export interface GastoRecurrente {
+  id: string;
+  nombre: string;
+  monto: number;
+  macroCategoria: string;
+  subcategoria: string;
+  cuenta: string;
+  diaPago: number;
+  activo: boolean;
+  ultimoCicloEjecutado?: string;
 }
 
 export interface AppDataResponse {
@@ -121,5 +135,6 @@ export interface AppDataResponse {
   transacciones?: Transaccion[];
   presupuestos?: PresupuestoItem[];
   carteras?: CarteraInfo[];
+  gastosRecurrentes?: GastoRecurrente[];
 }
 

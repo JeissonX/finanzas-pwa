@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { ChevronDown, Zap } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import type { TipoTransaccion, CarteraInfo } from '../types/finance';
 import type { AppData } from '../services/api';
 import { CATALOG_GASTOS, CATALOG_INGRESOS, CATALOG_TRANSFERENCIAS, CARTERAS, PAYMENT_RULES } from '../data/catalog';
@@ -39,45 +39,6 @@ const TAB_ACCENT: Record<TipoTransaccion, string> = {
 };
 
 const INCREMENTS = [10000, 20000, 50000, 100000];
-
-interface QuickSubItem {
-  label: string;
-  monto: number;
-  macro: string;
-  sub: string;
-  cuenta: string;
-}
-
-const QUICK_SUBS: QuickSubItem[] = [
-  {
-    label: 'Netflix / Spotify',
-    monto: 30000,
-    macro: 'Suscripciones',
-    sub: 'Streaming y Apps Digitales',
-    cuenta: 'TC Lulo Bank',
-  },
-  {
-    label: 'Plan Celular',
-    monto: 40000,
-    macro: 'Servicios Públicos',
-    sub: 'Plan Celular',
-    cuenta: 'Lulo Principal (Cuenta)',
-  },
-  {
-    label: 'Internet Hogar',
-    monto: 80000,
-    macro: 'Servicios Públicos',
-    sub: 'Internet Hogar',
-    cuenta: 'Lulo Principal (Cuenta)',
-  },
-  {
-    label: 'Gimnasio',
-    monto: 100000,
-    macro: 'Salud y Bienestar',
-    sub: 'Gimnasio',
-    cuenta: 'TC Lulo Bank',
-  },
-];
 
 export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegisterProps) {
   const [tipo, setTipo] = useState<TipoTransaccion>('GASTO');
@@ -214,17 +175,6 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
     }
   }, [tipo, carterasDisponibles]);
 
-  // Acción de Acceso Rápido / Suscripción
-  const handleQuickSub = useCallback((sub: QuickSubItem) => {
-    haptic();
-    setTipo('GASTO');
-    setDisplay(formatDisplay(String(sub.monto)));
-    setCategoria(sub.macro);
-    setSubcategoria(sub.sub);
-    setCuenta(sub.cuenta);
-    setComentario(sub.label);
-  }, []);
-
   const handleSave = async () => {
     if (amount <= 0) return;
     haptic(50);
@@ -271,31 +221,6 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
             {t.label}
           </button>
         ))}
-      </div>
-
-      {/* Barra de Accesos Rápidos / Suscripciones */}
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5 px-0.5">
-          <Zap size={12} className="text-amber-500 flex-shrink-0" />
-          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-            Accesos Rápidos / Suscripciones
-          </span>
-        </div>
-        <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
-          {QUICK_SUBS.map(sub => (
-            <button
-              key={sub.label}
-              type="button"
-              onClick={() => handleQuickSub(sub)}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-indigo-400 dark:hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 shadow-sm transition active:scale-95 flex items-center gap-1.5"
-            >
-              <span>{sub.label}</span>
-              <span className="text-[10px] text-slate-400 font-mono font-normal">
-                {sub.monto >= 1000 ? `${sub.monto / 1000}k` : sub.monto}
-              </span>
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Amount display */}

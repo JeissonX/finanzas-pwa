@@ -210,11 +210,67 @@ export default function App() {
     }
 
     const channel = supabase.channel('finanzas-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'transacciones' }, () => {
-        refreshData(true);
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'transacciones' }, (payload) => {
+        const deletedId = (payload.old as { id?: number | string })?.id;
+        if (deletedId) {
+          setTransacciones(prev => prev.filter(t => String(t.id) !== String(deletedId)));
+        }
+        fetchAppData(true);
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transacciones' }, (payload) => {
+        if (payload.new) {
+          const row = payload.new as any;
+          const mapped: Transaccion = {
+            id: Number(row.id) || Date.now(),
+            fecha: row.fecha || new Date().toISOString(),
+            tipo: row.tipo,
+            monto: Number(row.monto) || 0,
+            categoria: row.macro_categoria || '',
+            macroCategoria: row.macro_categoria || '',
+            macro: row.macro_categoria || '',
+            subcategoria: row.subcategoria || '',
+            sub: row.subcategoria || '',
+            cuenta: row.cuenta || row.cuenta_origen || '',
+            cuentaOrigen: row.cuenta_origen || undefined,
+            cuentaDestino: row.cuenta_destino || undefined,
+            detalle: row.detalle || '',
+            comentario: row.detalle || '',
+            sincronizado: true,
+          };
+          setTransacciones(prev => {
+            if (prev.some(t => String(t.id) === String(mapped.id))) return prev;
+            return [mapped, ...prev];
+          });
+        }
+        fetchAppData(true);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'transacciones' }, (payload) => {
+        if (payload.new) {
+          const row = payload.new as any;
+          setTransacciones(prev => prev.map(t => {
+            if (String(t.id) === String(row.id)) {
+              return {
+                ...t,
+                tipo: row.tipo ?? t.tipo,
+                monto: row.monto != null ? Number(row.monto) : t.monto,
+                categoria: row.macro_categoria ?? t.categoria,
+                macroCategoria: row.macro_categoria ?? t.macroCategoria,
+                subcategoria: row.subcategoria ?? t.subcategoria,
+                cuenta: row.cuenta ?? t.cuenta,
+                cuentaOrigen: row.cuenta_origen ?? t.cuentaOrigen,
+                cuentaDestino: row.cuenta_destino ?? t.cuentaDestino,
+                detalle: row.detalle ?? t.detalle,
+                comentario: row.detalle ?? t.comentario,
+                fecha: row.fecha ?? t.fecha,
+              };
+            }
+            return t;
+          }));
+        }
+        fetchAppData(true);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'carteras' }, () => {
-        refreshData(true);
+        fetchAppData(true);
       })
       .subscribe();
 

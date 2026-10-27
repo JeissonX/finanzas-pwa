@@ -181,7 +181,6 @@ const MEDIOS_PAGO = [
   'Lulo Principal (Cuenta)',
   'Nequi',
   'Efectivo',
-  'Lulo Bolsillo - Gastos',
   'Lulo Bolsillo - Carro / Moto',
 ];
 
