@@ -10,6 +10,7 @@ export interface Transaccion {
   cuenta: string;
   cuentaDestino?: string;
   cuentaOrigen?: string;
+  macroCategoria?: string;
   macro?: string;
   sub?: string;
   detalle?: string;

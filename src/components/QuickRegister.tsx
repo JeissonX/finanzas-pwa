@@ -12,7 +12,12 @@ interface QuickRegisterProps {
     subcategoria: string;
     cuenta: string;
     cuentaDestino?: string;
+    cuentaOrigen?: string;
+    macroCategoria?: string;
+    macro?: string;
+    sub?: string;
     comentario?: string;
+    detalle?: string;
   }) => Promise<void>;
   saving: boolean;
 }
@@ -100,7 +105,24 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
   const handleSave = async () => {
     if (amount <= 0) return;
     haptic(50);
-    await onSave({ tipo, monto: amount, categoria, subcategoria, cuenta, cuentaDestino: tipo === 'TRANSFERENCIA' ? cuentaDestino : undefined, comentario: comentario.trim() || undefined });
+    const trimmedComentario = comentario.trim();
+    await onSave({
+      tipo,
+      monto: amount,
+      // Categorías (ambas variantes)
+      macro: categoria,
+      categoria,
+      macroCategoria: categoria,
+      sub: subcategoria,
+      subcategoria,
+      // Cuentas según el tipo
+      cuenta,
+      cuentaOrigen: tipo === 'GASTO' ? cuenta : (tipo === 'TRANSFERENCIA' ? cuenta : ''),
+      cuentaDestino: tipo === 'INGRESO' ? cuenta : (tipo === 'TRANSFERENCIA' ? cuentaDestino : ''),
+      // Comentario (ambas variantes)
+      detalle: trimmedComentario,
+      comentario: trimmedComentario,
+    });
     setDisplay('0');
     setComentario('');
   };

@@ -244,8 +244,27 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
 
 // ── SAVE TRANSACTION (CORS Simple Request + Optimistic Update) ──
 export async function saveTransaction(tx: Transaccion): Promise<void> {
+  const payload = {
+    id: tx.id,
+    fecha: tx.fecha,
+    tipo: tx.tipo,
+    monto: tx.monto,
+    // Categorías (ambas variantes)
+    macro: tx.macroCategoria || tx.categoria,
+    categoria: tx.macroCategoria || tx.categoria,
+    sub: tx.subcategoria,
+    subcategoria: tx.subcategoria,
+    // Cuentas según el tipo
+    cuentaOrigen: tx.tipo === 'GASTO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaOrigen : ''),
+    cuentaDestino: tx.tipo === 'INGRESO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaDestino : ''),
+    cuenta: tx.cuenta || '',
+    // Comentario
+    detalle: tx.comentario || '',
+    comentario: tx.comentario || ''
+  };
+
   // 1. Actualización optimista inmediata en memoria y localStorage
-  applyOptimisticTransaction(tx);
+  applyOptimisticTransaction({ ...tx, ...payload });
 
   // 2. Envío como Simple Request: text/plain;charset=utf-8
   // Evita CORS Preflight (OPTIONS) rechazado por Apps Script en Safari/iOS
@@ -255,13 +274,13 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
       mode: 'no-cors',
       redirect: 'follow',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(tx),
+      body: JSON.stringify(payload),
     });
     // no-cors en petición exitosa se marca como sincronizado
     markTransactionSynced(tx.id, true);
   } catch (err) {
     // Si falla la red, se guarda en la cola offline para sync posterior
-    enqueue({ ...tx, sincronizado: false });
+    enqueue({ ...tx, ...payload, sincronizado: false });
     markTransactionSynced(tx.id, false);
     throw err;
   }
@@ -659,12 +678,31 @@ export async function syncOfflineQueue(): Promise<{ synced: number; remaining: n
 
   for (const tx of queue) {
     try {
+      const payload = {
+        id: tx.id,
+        fecha: tx.fecha,
+        tipo: tx.tipo,
+        monto: tx.monto,
+        // Categorías (ambas variantes)
+        macro: tx.macroCategoria || tx.categoria,
+        categoria: tx.macroCategoria || tx.categoria,
+        sub: tx.subcategoria,
+        subcategoria: tx.subcategoria,
+        // Cuentas según el tipo
+        cuentaOrigen: tx.tipo === 'GASTO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaOrigen : ''),
+        cuentaDestino: tx.tipo === 'INGRESO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaDestino : ''),
+        cuenta: tx.cuenta || '',
+        // Comentario
+        detalle: tx.comentario || '',
+        comentario: tx.comentario || ''
+      };
+
       await fetch(API_URL, {
         method: 'POST',
         mode: 'no-cors',
         redirect: 'follow',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(tx),
+        body: JSON.stringify(payload),
       });
       markTransactionSynced(tx.id, true);
       synced++;

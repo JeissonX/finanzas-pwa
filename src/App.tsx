@@ -111,7 +111,12 @@ export default function App() {
     subcategoria: string;
     cuenta: string;
     cuentaDestino?: string;
+    cuentaOrigen?: string;
+    macroCategoria?: string;
+    macro?: string;
+    sub?: string;
     comentario?: string;
+    detalle?: string;
   }) => {
     setSaving(true);
     const tx: Transaccion = {
