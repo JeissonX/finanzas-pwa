@@ -1,11 +1,10 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import { ListOrdered, Wallet, PieChart, TrendingUp } from 'lucide-react';
 import Header from './components/Header';
 import QuickRegisterModal from './components/QuickRegisterModal';
 import TransactionsView from './components/TransactionsView';
 import WalletsView from './components/WalletsView';
 import BudgetAccordion from './components/BudgetAccordion';
-import AnalyticsView from './components/AnalyticsView';
 import {
   saveTransaction,
   getTransacciones,
@@ -18,13 +17,16 @@ import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
 import type { TabNavegacion, TipoTransaccion, Transaccion } from './types/finance';
 
+// Lazy loading del módulo analítico pesado para code splitting (~97.5 kB gzip ahorrados)
+const AnalyticsView = lazy(() => import('./components/AnalyticsView'));
+
 export type { TabNavegacion };
 
 // Toast notification
 interface ToastState {
   msg: string;
   type: 'ok' | 'warn' | 'err';
-  id: number;
+  id: string;
 }
 
 const NAV_TABS: { key: TabNavegacion; label: string; Icon: typeof ListOrdered }[] = [
@@ -123,22 +125,38 @@ export default function App() {
   // ── Modal de registro ──────────────────────────────────────
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
 
-  // ── Toast ──────────────────────────────────────────────────
+  // ── Toast con Cleanup Seguro de Timer ──────────────────────
   const [toast, setToast] = useState<ToastState | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = useCallback((msg: string, type: ToastState['type'] = 'ok') => {
-    const id = Date.now();
+    const id = crypto.randomUUID();
     setToast({ msg, type, id });
-    setTimeout(() => setToast(prev => prev?.id === id ? null : prev), 3500);
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = setTimeout(() => {
+      setToast(prev => (prev?.id === id ? null : prev));
+    }, 3500);
   }, []);
 
-  // ── Refresh app data ───────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  // ── Refresh app data con Contador de Generación ────────────
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const refreshGenRef = useRef(0);
 
   const refreshData = useCallback(async (force = false) => {
+    const gen = ++refreshGenRef.current;
     try {
       const data = await fetchAppData(force);
-      if (data?.transacciones) {
+      if (gen === refreshGenRef.current && data?.transacciones) {
         setTransacciones(data.transacciones);
       }
     } catch (err) {
@@ -157,10 +175,15 @@ export default function App() {
         /* noop */
       }
 
+      // Filtrar llaves selectivamente con key.startsWith('finanzas-pwa-')
       if (typeof window !== 'undefined' && 'caches' in window) {
         try {
           const cacheKeys = await window.caches.keys();
-          await Promise.all(cacheKeys.map(k => window.caches.delete(k)));
+          await Promise.all(
+            cacheKeys
+              .filter(k => k.startsWith('finanzas-pwa-'))
+              .map(k => window.caches.delete(k))
+          );
         } catch (cErr) {
           console.warn('Error purgando caches:', cErr);
         }
@@ -231,7 +254,7 @@ export default function App() {
     }
   }, [showToast]);
 
-  // ── Save transaction (Optimistic + Realtime) ───────────────
+  // ── Save transaction (UUID + Contingencia) ──────────────────
   const [saving, setSaving] = useState(false);
 
   const handleSave = useCallback(async (payload: {
@@ -250,7 +273,7 @@ export default function App() {
   }) => {
     setSaving(true);
     const tx: Transaccion = {
-      id: Date.now(),
+      id: crypto.randomUUID(),
       fecha: new Date().toISOString(),
       sincronizado: false,
       ...payload,
@@ -271,7 +294,18 @@ export default function App() {
     }
   }, [refreshData, showToast]);
 
-  // ── Initial sync, Realtime & Service Worker ─────────────────
+  // ── Initial sync, Realtime con Debounce de 150ms y Service Worker
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const triggerDebouncedRefresh = useCallback(() => {
+    if (realtimeDebounceRef.current) {
+      clearTimeout(realtimeDebounceRef.current);
+    }
+    realtimeDebounceRef.current = setTimeout(() => {
+      fetchAppData(true);
+    }, 150);
+  }, []);
+
   useEffect(() => {
     refreshData(false);
 
@@ -282,16 +316,17 @@ export default function App() {
     const channel = supabase.channel('finanzas-live')
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'transacciones' }, (payload) => {
         const deletedId = (payload.old as { id?: number | string })?.id;
-        if (deletedId) {
+        // Guardia robusta contra id 0 (deletedId !== undefined && deletedId !== null)
+        if (deletedId !== undefined && deletedId !== null) {
           setTransacciones(prev => prev.filter(t => String(t.id) !== String(deletedId)));
         }
-        fetchAppData(true);
+        triggerDebouncedRefresh();
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transacciones' }, (payload) => {
         if (payload.new) {
           const row = payload.new as any;
           const mapped: Transaccion = {
-            id: row.id ?? Date.now(),
+            id: row.id ?? crypto.randomUUID(),
             fecha: row.fecha || new Date().toISOString(),
             tipo: row.tipo,
             monto: Number(row.monto) || 0,
@@ -312,7 +347,7 @@ export default function App() {
             return [mapped, ...prev];
           });
         }
-        fetchAppData(true);
+        triggerDebouncedRefresh();
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'transacciones' }, (payload) => {
         if (payload.new) {
@@ -337,10 +372,10 @@ export default function App() {
             return t;
           }));
         }
-        fetchAppData(true);
+        triggerDebouncedRefresh();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'carteras' }, () => {
-        fetchAppData(true);
+        triggerDebouncedRefresh();
       })
       .subscribe();
 
@@ -353,10 +388,13 @@ export default function App() {
     window.addEventListener('finanzas_transacciones_updated', handleTxUpdated);
 
     return () => {
+      if (realtimeDebounceRef.current) {
+        clearTimeout(realtimeDebounceRef.current);
+      }
       supabase.removeChannel(channel);
       window.removeEventListener('finanzas_transacciones_updated', handleTxUpdated);
     };
-  }, [refreshData]);
+  }, [refreshData, triggerDebouncedRefresh]);
 
   // ── Render ─────────────────────────────────────────────────
   const TOAST_BG: Record<ToastState['type'], string> = {
@@ -412,7 +450,19 @@ export default function App() {
           )}
           {tab === 'carteras' && <WalletsView />}
           {tab === 'presupuestos' && <BudgetAccordion />}
-          {tab === 'analiticas' && <AnalyticsView />}
+          {tab === 'analiticas' && (
+            <Suspense
+              fallback={
+                <div className="flex flex-col gap-4 p-4 max-w-lg mx-auto animate-pulse">
+                  <div className="h-28 rounded-2xl bg-slate-200/70 dark:bg-slate-800/60" />
+                  <div className="h-44 rounded-2xl bg-slate-200/70 dark:bg-slate-800/60" />
+                  <div className="h-60 rounded-2xl bg-slate-200/70 dark:bg-slate-800/60" />
+                </div>
+              }
+            >
+              <AnalyticsView />
+            </Suspense>
+          )}
         </main>
 
         {/* Bottom navigation bar: 4 pestañas */}

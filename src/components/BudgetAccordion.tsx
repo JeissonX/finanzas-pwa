@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ChevronDown, ChevronRight, Pencil, Plus, X, Check, Loader2 } from 'lucide-react';
 import { formatCOP, formatDisplay, parseAmount, progressColor, progressTextColor, haptic } from '../utils/format';
 import type { PresupuestoItem } from '../types/finance';
@@ -200,6 +200,19 @@ export default function BudgetAccordion() {
   const [isCreating, setIsCreating] = useState(false);
 
   const [feedback, setFeedback] = useState<string | null>(null);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showFeedback = (msg: string) => {
+    setFeedback(msg);
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => setFeedback(null), 3000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     fetchAppData().then(data => {
@@ -279,8 +292,7 @@ export default function BudgetAccordion() {
       if (error) throw error;
 
       await fetchAppData(true);
-      setFeedback(`Presupuesto de "${editingSub.nombre}" actualizado.`);
-      setTimeout(() => setFeedback(null), 3000);
+      showFeedback(`Presupuesto de "${editingSub.nombre}" actualizado.`);
       setEditingSub(null);
     } catch (err) {
       console.error('Error actualizando presupuesto:', err);
@@ -309,8 +321,7 @@ export default function BudgetAccordion() {
       if (error) throw error;
 
       await fetchAppData(true);
-      setFeedback(`Subcategoría "${newSubNombre.trim()}" creada con éxito.`);
-      setTimeout(() => setFeedback(null), 3000);
+      showFeedback(`Subcategoría "${newSubNombre.trim()}" creada con éxito.`);
       setModalNewSub(false);
       setNewSubNombre('');
       setNewPresupuestoDisplay('0');

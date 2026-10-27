@@ -1,11 +1,22 @@
 import { supabase } from './supabase';
 import type { Transaccion, AppDataResponse, PresupuestoItem, CarteraInfo, GastoRecurrente, RunwayData, MatrizGastos } from '../types/finance';
-import { isDateInCurrentCycle, getCycleLabel } from '../utils/format';
+import {
+  isDateInCurrentCycle,
+  getCycleLabel,
+  getPayrollCycleId,
+  getBogotaDateParts,
+  getDaysInBogotaMonth,
+} from '../utils/format';
 
 const QUEUE_KEY = 'finanzas_offline_queue';
 const TRANSACTIONS_KEY = 'finanzas_transacciones_ciclo_v2';
 const APPDATA_CACHE_KEY = 'finanzas_cached_appdata_v4';
 const APPDATA_CACHE_TTL = 5 * 60 * 1000;
+
+export type QueuedMutation =
+  | { op: 'insert'; tx: Transaccion }
+  | { op: 'delete'; id: string }
+  | { op: 'update'; id: string; patch: Partial<Transaccion> };
 
 export const DEFAULT_SALDOS: Record<string, number> = {
   'Lulo Principal (Cuenta)': 0,
@@ -48,16 +59,33 @@ export const DEFAULT_APPDATA: AppData = {
   gastosRecurrentes: [],
 };
 
-export function getOfflineQueue(): Transaccion[] {
+/** Sanitiza montos garantizando enteros seguros */
+export function sanitizeAmount(m: any): number {
+  const num = Number(m);
+  if (!Number.isFinite(num)) return 0;
+  const rounded = Math.round(num);
+  return Number.isSafeInteger(rounded) ? rounded : 0;
+}
+
+// ── Cola Offline basada en Mutaciones Tipadas ─────────────────────────────────
+
+export function getOfflineQueue(): QueuedMutation[] {
   try {
     const raw = localStorage.getItem(QUEUE_KEY);
-    return raw ? (JSON.parse(raw) as Transaccion[]) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // Migración limpia si había transacciones planas legadas
+    return parsed.map((item: any) => {
+      if (item && item.op) return item as QueuedMutation;
+      return { op: 'insert', tx: item as Transaccion };
+    });
   } catch {
     return [];
   }
 }
 
-export function saveOfflineQueue(queue: Transaccion[]): void {
+export function saveOfflineQueue(queue: QueuedMutation[]): void {
   try {
     localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
   } catch {
@@ -65,19 +93,69 @@ export function saveOfflineQueue(queue: Transaccion[]): void {
   }
 }
 
-export function enqueue(tx: Transaccion): void {
+export function enqueueMutation(mutation: QueuedMutation): void {
   const q = getOfflineQueue();
-  const existingIdx = q.findIndex(item => item.id === tx.id);
-  if (existingIdx >= 0) {
-    q[existingIdx] = tx;
-  } else {
-    q.push(tx);
+
+  if (mutation.op === 'insert') {
+    const idx = q.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.tx.id));
+    if (idx >= 0) {
+      q[idx] = mutation;
+    } else {
+      q.push(mutation);
+    }
+  } else if (mutation.op === 'delete') {
+    // Si había un insert o update pendiente de este id, removerlo de la cola
+    const filtered = q.filter(m => {
+      if (m.op === 'insert' && String(m.tx.id) === String(mutation.id)) return false;
+      if (m.op === 'update' && String(m.id) === String(mutation.id)) return false;
+      return true;
+    });
+    filtered.push(mutation);
+    saveOfflineQueue(filtered);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('finanzas_queue_updated', { detail: filtered.length }));
+    }
+    return;
+  } else if (mutation.op === 'update') {
+    const insertIdx = q.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.id));
+    if (insertIdx >= 0 && q[insertIdx].op === 'insert') {
+      // Combinar parche directamente en el insert pendiente
+      const existingTx = (q[insertIdx] as { op: 'insert'; tx: Transaccion }).tx;
+      q[insertIdx] = {
+        op: 'insert',
+        tx: { ...existingTx, ...mutation.patch },
+      };
+    } else {
+      const updateIdx = q.findIndex(m => m.op === 'update' && String(m.id) === String(mutation.id));
+      if (updateIdx >= 0) {
+        const prevPatch = (q[updateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion> }).patch;
+        q[updateIdx] = {
+          op: 'update',
+          id: mutation.id,
+          patch: { ...prevPatch, ...mutation.patch },
+        };
+      } else {
+        q.push(mutation);
+      }
+    }
   }
+
   saveOfflineQueue(q);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('finanzas_queue_updated', { detail: q.length }));
   }
 }
+
+/** Compatibilidad hacia atrás con llamadas directas a enqueue(tx) */
+export function enqueue(txOrMut: Transaccion | QueuedMutation): void {
+  if ('op' in txOrMut) {
+    enqueueMutation(txOrMut);
+  } else {
+    enqueueMutation({ op: 'insert', tx: txOrMut });
+  }
+}
+
+// ── Gestión Local de Transacciones ────────────────────────────────────────────
 
 export function getTransacciones(): Transaccion[] {
   try {
@@ -114,6 +192,8 @@ export function markTransactionSynced(id: number | string, synced = true): void 
   }
 }
 
+// ── Actualización Optimista Local ─────────────────────────────────────────────
+
 export function applyOptimisticTransaction(tx: Transaccion): AppData {
   const txList = getTransacciones();
   const existingIdx = txList.findIndex(t => String(t.id) === String(tx.id));
@@ -144,7 +224,7 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
   const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
   const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
 
-  const monto = Number(tx.monto) || 0;
+  const monto = sanitizeAmount(tx.monto);
   const subcatNombre = tx.subcategoria || tx.sub || '';
   const macroNombre = tx.categoria || tx.macro || '';
   const cuentaNombre = tx.cuenta || tx.cuentaOrigen || '';
@@ -210,7 +290,9 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
   return updatedData;
 }
 
-export async function saveTransaction(tx: Transaccion): Promise<void> {
+// ── Inserción Remota Pura (Separada del Flujo Optimista) ───────────────────────
+
+export async function insertRemote(tx: Transaccion): Promise<void> {
   let cuentaOrigen: string | null = null;
   let cuentaDestino: string | null = null;
 
@@ -244,52 +326,55 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
 
   cuentaOrigen = cuentaOrigen && cuentaOrigen.trim() !== '' ? cuentaOrigen.trim() : null;
   cuentaDestino = cuentaDestino && cuentaDestino.trim() !== '' ? cuentaDestino.trim() : null;
-
   const cuentaPrincipal = tx.cuenta || cuentaDestino || cuentaOrigen || '';
 
+  const txDate = tx.fecha || new Date().toISOString();
+  const canonicalCycle = getPayrollCycleId(txDate);
+
   const payload = {
-    id: tx.id,
-    fecha: tx.fecha || new Date().toISOString(),
+    id: String(tx.id),
+    fecha: txDate,
     tipo: tx.tipo,
-    monto: tx.monto,
+    monto: sanitizeAmount(tx.monto),
     macro_categoria: tx.macroCategoria || tx.categoria || tx.macro || '',
     subcategoria: tx.subcategoria || tx.sub || '',
     cuenta: cuentaPrincipal,
     cuenta_origen: cuentaOrigen,
     cuenta_destino: cuentaDestino,
     detalle: tx.comentario || tx.detalle || '',
-    ciclo: getCycleLabel(new Date(tx.fecha || Date.now())),
+    ciclo: canonicalCycle,
   };
 
+  const { error } = await supabase.from('transacciones').insert([payload]);
+  if (error) {
+    // Si ya existe en PostgreSQL (error 23505), tratar como éxito idempotente
+    if (error.code === '23505') {
+      return;
+    }
+    throw error;
+  }
+}
+
+// ── Guardado de Transacción con Contingencia Offline ──────────────────────────
+
+export async function saveTransaction(tx: Transaccion): Promise<void> {
+  let cuentaOrigen = tx.cuentaOrigen || (tx.tipo === 'GASTO' ? tx.cuenta : undefined);
+  let cuentaDestino = tx.cuentaDestino || (tx.tipo === 'INGRESO' ? tx.cuenta : undefined);
+
+  // 1. Aplicar optimista local de inmediato
   applyOptimisticTransaction({
     ...tx,
-    ...payload,
-    cuentaOrigen: cuentaOrigen ?? undefined,
-    cuentaDestino: cuentaDestino ?? undefined,
+    cuentaOrigen,
+    cuentaDestino,
   });
 
+  // 2. Intentar inserción remota
   try {
-    const { error } = await supabase.from('transacciones').insert([{
-      id: String(payload.id),
-      fecha: payload.fecha,
-      tipo: payload.tipo,
-      monto: payload.monto,
-      macro_categoria: payload.macro_categoria,
-      subcategoria: payload.subcategoria,
-      cuenta: payload.cuenta,
-      cuenta_origen: payload.cuenta_origen,
-      cuenta_destino: payload.cuenta_destino,
-      detalle: payload.detalle,
-      ciclo: payload.ciclo,
-    }]);
-
-    if (error) {
-      throw error;
-    }
-
+    await insertRemote(tx);
     markTransactionSynced(tx.id, true);
   } catch (err) {
-    enqueue({ ...tx, sincronizado: false });
+    // 3. Encolar mutación de inserción en caso de fallo
+    enqueueMutation({ op: 'insert', tx: { ...tx, sincronizado: false } });
     markTransactionSynced(tx.id, false);
     throw err;
   }
@@ -297,9 +382,12 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
 
 export const postTransaccion = saveTransaction;
 
+// ── Eliminación de Transacción con Contingencia Offline ───────────────────────
+
 export async function deleteTransaction(id: number | string): Promise<boolean> {
+  const strId = String(id);
   const list = getTransacciones();
-  const tx = list.find(t => String(t.id) === String(id));
+  const tx = list.find(t => String(t.id) === strId);
 
   if (tx) {
     let current: AppData = { ...DEFAULT_APPDATA };
@@ -318,7 +406,7 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
     const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
     const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
 
-    const monto = Number(tx.monto) || 0;
+    const monto = sanitizeAmount(tx.monto);
     const subcatNombre = tx.subcategoria || tx.sub || '';
     const macroNombre = tx.categoria || tx.macro || '';
     const cuentaNombre = tx.cuenta || tx.cuentaOrigen || '';
@@ -361,30 +449,20 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
     }
   }
 
-  const remainingTxs = list.filter(t => String(t.id) !== String(id));
+  const remainingTxs = list.filter(t => String(t.id) !== strId);
   saveTransacciones(remainingTxs);
 
-  const queue = getOfflineQueue();
-  const filteredQueue = queue.filter(t => String(t.id) !== String(id));
-  if (filteredQueue.length !== queue.length) {
-    saveOfflineQueue(filteredQueue);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('finanzas_queue_updated', { detail: filteredQueue.length }));
-    }
-  }
-
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: remainingTxs }));
-  }
-
+  // Intentar eliminar remotamente
   try {
-    const { error } = await supabase.from('transacciones').delete().eq('id', String(id));
+    const { error } = await supabase.from('transacciones').delete().eq('id', strId);
     if (error) {
-      console.warn('Error al eliminar transacción en Supabase:', error);
+      console.warn('Error al eliminar transacción en Supabase, encolando mutación:', error);
+      enqueueMutation({ op: 'delete', id: strId });
       return false;
     }
   } catch (err) {
-    console.warn('Fallo al eliminar transacción en Supabase:', err);
+    console.warn('Fallo de red al eliminar en Supabase, encolando mutación:', err);
+    enqueueMutation({ op: 'delete', id: strId });
     return false;
   }
 
@@ -393,62 +471,88 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
 
 export const deleteTransaccion = deleteTransaction;
 
+// ── Actualización de Transacción con Contingencia Offline ─────────────────────
+
+function formatUpdatePayload(updatedData: Partial<Transaccion>): Record<string, any> {
+  const cuenta = updatedData.cuenta || '';
+  const macroCategoria = updatedData.macroCategoria || updatedData.categoria || updatedData.macro || '';
+  const subcategoria = updatedData.subcategoria || updatedData.sub || '';
+  const detalle = updatedData.comentario !== undefined ? updatedData.comentario : (updatedData.detalle ?? '');
+
+  const cuentaOrigen = updatedData.tipo === 'GASTO'
+    ? cuenta
+    : (updatedData.cuentaOrigen || null);
+
+  const cuentaDestino = updatedData.tipo === 'INGRESO'
+    ? cuenta
+    : (updatedData.cuentaDestino || null);
+
+  const payload: Record<string, any> = {};
+
+  if (updatedData.monto !== undefined) {
+    payload.monto = sanitizeAmount(updatedData.monto);
+  }
+  if (macroCategoria) payload.macro_categoria = macroCategoria;
+  if (subcategoria) payload.subcategoria = subcategoria;
+  if (cuenta) payload.cuenta = cuenta;
+  if (cuentaOrigen !== undefined) payload.cuenta_origen = cuentaOrigen;
+  if (cuentaDestino !== undefined) payload.cuenta_destino = cuentaDestino;
+  if (detalle !== undefined) payload.detalle = detalle;
+  if (updatedData.tipo) payload.tipo = updatedData.tipo;
+  if (updatedData.fecha) {
+    payload.fecha = updatedData.fecha;
+    payload.ciclo = getPayrollCycleId(updatedData.fecha);
+  }
+
+  return payload;
+}
+
 export async function updateTransaction(
   id: string | number,
   updatedData: Partial<Transaccion>
 ): Promise<boolean> {
+  const strId = String(id);
+
+  // Actualización optimista local en memoria
+  const list = getTransacciones();
+  const updatedList = list.map(t => {
+    if (String(t.id) === strId) {
+      return {
+        ...t,
+        ...updatedData,
+        monto: updatedData.monto !== undefined ? sanitizeAmount(updatedData.monto) : t.monto,
+      };
+    }
+    return t;
+  });
+  saveTransacciones(updatedList);
+
+  const payload = formatUpdatePayload(updatedData);
+
   try {
-    const cuenta = updatedData.cuenta || '';
-    const macroCategoria = updatedData.macroCategoria || updatedData.categoria || updatedData.macro || '';
-    const subcategoria = updatedData.subcategoria || updatedData.sub || '';
-    const detalle = updatedData.comentario !== undefined ? updatedData.comentario : (updatedData.detalle ?? '');
-
-    const cuentaOrigen = updatedData.tipo === 'GASTO'
-      ? cuenta
-      : (updatedData.cuentaOrigen || null);
-
-    const cuentaDestino = updatedData.tipo === 'INGRESO'
-      ? cuenta
-      : (updatedData.cuentaDestino || null);
-
-    const payload: Record<string, any> = {
-      monto: Number(updatedData.monto),
-      macro_categoria: macroCategoria,
-      subcategoria: subcategoria,
-      cuenta: cuenta,
-      cuenta_origen: cuentaOrigen,
-      cuenta_destino: cuentaDestino,
-      detalle: detalle,
-    };
-
-    if (updatedData.tipo) {
-      payload.tipo = updatedData.tipo;
-    }
-    if (updatedData.fecha) {
-      payload.fecha = updatedData.fecha;
-      payload.ciclo = getCycleLabel(new Date(updatedData.fecha));
-    }
-
     const { error } = await supabase
       .from('transacciones')
       .update(payload)
-      .eq('id', String(id));
+      .eq('id', strId);
 
     if (error) {
-      console.error('Error al actualizar transacción en Supabase:', error);
+      console.warn('Error al actualizar transacción en Supabase, encolando mutación:', error);
+      enqueueMutation({ op: 'update', id: strId, patch: updatedData });
       return false;
     }
 
     await fetchAppData(true);
     return true;
   } catch (err) {
-    console.error('Fallo al actualizar transacción:', err);
+    console.warn('Fallo de red al actualizar en Supabase, encolando mutación:', err);
+    enqueueMutation({ op: 'update', id: strId, patch: updatedData });
     return false;
   }
 }
 
 export const updateTransaccion = updateTransaction;
 
+// ── Ajuste / Conciliación de Saldo ────────────────────────────────────────────
 
 export interface AjustePayload {
   tipo: 'AJUSTE';
@@ -464,11 +568,11 @@ export interface AjustePayload {
   subcategoria?: string;
   comentario?: string;
   fecha?: string;
-  id?: number;
+  id?: string | number;
 }
 
 export async function postAjuste(ajuste: AjustePayload): Promise<void> {
-  const payloadId = ajuste.id || Date.now();
+  const payloadId = ajuste.id ? String(ajuste.id) : crypto.randomUUID();
   const payloadDate = ajuste.fecha || new Date().toISOString();
   const macroValue = ajuste.macroCategoria || ajuste.categoria || ajuste.macro || 'Ajuste / Conciliación';
   const subValue = ajuste.subcategoria || ajuste.sub || 'Ajuste de Saldo';
@@ -479,7 +583,7 @@ export async function postAjuste(ajuste: AjustePayload): Promise<void> {
     id: payloadId,
     fecha: payloadDate,
     tipo: 'AJUSTE',
-    monto: ajuste.monto,
+    monto: sanitizeAmount(ajuste.monto),
     cuenta: cuentaPrincipal,
     cuentaOrigen: ajuste.cuentaOrigen || '',
     cuentaDestino: ajuste.cuentaDestino || '',
@@ -496,15 +600,31 @@ export async function postAjuste(ajuste: AjustePayload): Promise<void> {
   await saveTransaction(payload);
 }
 
+// ── Motor de Gastos Recurrentes ───────────────────────────────────────────────
+
 let isProcessingRecurring = false;
 
-export async function processRecurringExpenses(cicloActivo: string = getCycleLabel()): Promise<number> {
+export async function processRecurringExpenses(): Promise<number> {
   if (isProcessingRecurring) {
     return 0;
   }
   isProcessingRecurring = true;
 
   try {
+    // 1. Intentar RPC atómica en PostgreSQL
+    try {
+      const { data: rpcCount, error: rpcErr } = await supabase.rpc('process_recurring_expenses_rpc');
+      if (!rpcErr && typeof rpcCount === 'number') {
+        return rpcCount;
+      }
+    } catch {
+      // RPC no disponible en backend, usar fallback cliente
+    }
+
+    // 2. Fallback Cliente en zona horaria America/Bogota con ciclo canónico 'YYYY-MM'
+    const cycleId = getPayrollCycleId();
+    const cycleLabel = getCycleLabel();
+
     const { data: recurrentes, error } = await supabase
       .from('gastos_recurrentes')
       .select('*')
@@ -514,58 +634,51 @@ export async function processRecurringExpenses(cicloActivo: string = getCycleLab
       return 0;
     }
 
-    // Hora local Colombia (GMT-5)
-    const now = new Date();
-    const colDateStr = now.toLocaleString('en-US', { timeZone: 'America/Bogota' });
-    const colDate = new Date(colDateStr);
-    const diaActual = colDate.getDate();
+    const { year, month, day: diaActual } = getBogotaDateParts();
+    const daysInMonth = getDaysInBogotaMonth(year, month);
 
     let executedCount = 0;
 
     for (const r of recurrentes) {
       const diaPago = Number(r.dia_pago) || 1;
+      const diaPagoEfectivo = Math.min(diaPago, daysInMonth);
       const ultimoCiclo = r.ultimo_ciclo_ejecutado;
 
-      if (diaActual >= diaPago && ultimoCiclo !== cicloActivo) {
-        const deterministicId = 'REC_' + r.id + '_' + cicloActivo.replace(/[^a-zA-Z0-9]/g, '_');
+      if (diaActual >= diaPagoEfectivo && ultimoCiclo !== cycleId && ultimoCiclo !== cycleLabel) {
+        const deterministicId = `REC_${r.id}_${cycleId}`;
 
-        // Antes de insertar, verificar si ya existe una transacción con ese id exacto
-        const { data: existingTx } = await supabase
-          .from('transacciones')
-          .select('id')
-          .eq('id', deterministicId)
-          .maybeSingle();
+        const txPayload = {
+          id: deterministicId,
+          fecha: new Date().toISOString(),
+          tipo: 'GASTO' as const,
+          monto: sanitizeAmount(r.monto),
+          macro_categoria: r.macro_categoria || '',
+          subcategoria: r.subcategoria || '',
+          cuenta: r.cuenta || '',
+          cuenta_origen: r.cuenta || null,
+          cuenta_destino: null,
+          ciclo: cycleId,
+          detalle: `Débito automático programado: ${r.nombre}`,
+        };
 
-        if (!existingTx) {
-          const txPayload = {
-            id: deterministicId,
-            fecha: new Date().toISOString(),
-            tipo: 'GASTO' as const,
-            monto: Number(r.monto),
-            macro_categoria: r.macro_categoria || '',
-            subcategoria: r.subcategoria || '',
-            cuenta: r.cuenta || '',
-            cuenta_origen: r.cuenta || null,
-            cuenta_destino: null,
-            ciclo: cicloActivo,
-            detalle: `Débito automático programado: ${r.nombre}`,
-          };
+        const { error: txErr } = await supabase.from('transacciones').insert([txPayload]);
 
-          const { error: txErr } = await supabase.from('transacciones').insert([txPayload]);
-          if (!txErr) {
-            executedCount++;
+        if (txErr) {
+          if (txErr.code === '23505') {
+            // Ya existía en base de datos (idempotencia)
           } else {
-            // Silenciosamente capturar si es duplicado
-            if (txErr.code !== '23505') {
-              console.warn(`Error al ejecutar gasto recurrente ${r.nombre}:`, txErr);
-            }
+            // Error en base de datos: prohibido actualizar ultimo_ciclo_ejecutado
+            console.warn(`Error al ejecutar gasto recurrente ${r.nombre}:`, txErr);
+            continue;
           }
+        } else {
+          executedCount++;
         }
 
-        // Sellar de inmediato en Supabase
+        // Sellar con ID canónico en Supabase
         await supabase
           .from('gastos_recurrentes')
-          .update({ ultimo_ciclo_ejecutado: cicloActivo })
+          .update({ ultimo_ciclo_ejecutado: cycleId })
           .eq('id', r.id);
       }
     }
@@ -591,7 +704,7 @@ export async function getGastosRecurrentes(): Promise<GastoRecurrente[]> {
     return data.map((r: any) => ({
       id: r.id,
       nombre: r.nombre,
-      monto: Number(r.monto) || 0,
+      monto: sanitizeAmount(r.monto),
       macroCategoria: r.macro_categoria || '',
       subcategoria: r.subcategoria || '',
       cuenta: r.cuenta || '',
@@ -616,11 +729,11 @@ export async function saveGastoRecurrente(gasto: {
   activo?: boolean;
 }): Promise<boolean> {
   try {
-    const id = gasto.id || `rec-${Date.now()}`;
+    const id = gasto.id || `rec-${crypto.randomUUID()}`;
     const payload = {
       id,
       nombre: gasto.nombre,
-      monto: gasto.monto,
+      monto: sanitizeAmount(gasto.monto),
       macro_categoria: gasto.macroCategoria,
       subcategoria: gasto.subcategoria,
       cuenta: gasto.cuenta,
@@ -678,6 +791,10 @@ export async function updateCarteraOrden(id: string, orden: number): Promise<voi
   if (error) throw error;
 }
 
+// ── Sincronización Principal y Consulta de AppData ────────────────────────────
+
+let currentFetchGeneration = 0;
+
 export async function fetchAppData(forceRefresh = false): Promise<AppData> {
   if (!forceRefresh) {
     try {
@@ -693,9 +810,10 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     }
   }
 
+  const thisGen = ++currentFetchGeneration;
+
   try {
-    const cicloActivo = getCycleLabel();
-    await processRecurringExpenses(cicloActivo).catch(() => {});
+    await processRecurringExpenses().catch(() => {});
 
     const [carterasRes, catalogoRes, txsRes, recurrentesRes] = await Promise.all([
       supabase.from('carteras').select('*').order('orden', { ascending: true, nullsFirst: false }),
@@ -703,6 +821,22 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       supabase.from('transacciones').select('*').order('fecha', { ascending: false }),
       supabase.from('gastos_recurrentes').select('*').order('dia_pago', { ascending: true }),
     ]);
+
+    // Validación estricta de respuestas: Si alguna falla, lanzar y caer a caché
+    if (carterasRes.error) throw carterasRes.error;
+    if (catalogoRes.error) throw catalogoRes.error;
+    if (txsRes.error) throw txsRes.error;
+    if (recurrentesRes.error) throw recurrentesRes.error;
+
+    // Si otra petición inició después de esta, descartar la actual para evitar condiciones de carrera
+    if (thisGen !== currentFetchGeneration) {
+      try {
+        const raw = localStorage.getItem(APPDATA_CACHE_KEY);
+        if (raw) return (JSON.parse(raw) as { data: AppData }).data;
+      } catch {
+        /* ignore */
+      }
+    }
 
     const carterasData = carterasRes.data || [];
     const catalogoData = catalogoRes.data || [];
@@ -712,7 +846,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const gastosRecurrentes: GastoRecurrente[] = recurrentesData.map((r: any) => ({
       id: r.id,
       nombre: r.nombre,
-      monto: Number(r.monto) || 0,
+      monto: sanitizeAmount(r.monto),
       macroCategoria: r.macro_categoria || '',
       subcategoria: r.subcategoria || '',
       cuenta: r.cuenta || '',
@@ -726,21 +860,30 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     let balanceDisponible = 0;
 
     for (const c of carterasData) {
-      const entradas = transaccionesData
-        .filter((t: any) => t.cuenta_destino === c.nombre)
-        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
-      const salidas = transaccionesData
-        .filter((t: any) => t.cuenta_origen === c.nombre)
-        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
-      const saldoCalculado = (Number(c.saldo_inicial) || 0) + entradas - salidas;
+      // Saldo autoritativo: si saldo_actual existe y es finito en BD, usarlo directamente
+      const dbSaldoActual = Number(c.saldo_actual);
+      let saldoEfectivo: number;
 
-      updatedSaldos[c.nombre] = saldoCalculado;
+      if (c.saldo_actual !== null && c.saldo_actual !== undefined && Number.isFinite(dbSaldoActual)) {
+        saldoEfectivo = dbSaldoActual;
+      } else {
+        // Fallback a cálculo transaccional si saldo_actual es nulo
+        const entradas = transaccionesData
+          .filter((t: any) => t.cuenta_destino === c.nombre)
+          .reduce((acc: number, t: any) => acc + sanitizeAmount(t.monto), 0);
+        const salidas = transaccionesData
+          .filter((t: any) => t.cuenta_origen === c.nombre)
+          .reduce((acc: number, t: any) => acc + sanitizeAmount(t.monto), 0);
+        saldoEfectivo = (Number(c.saldo_inicial) || 0) + entradas - salidas;
+      }
+
+      updatedSaldos[c.nombre] = saldoEfectivo;
 
       const tipoLower = (c.tipo || '').toLowerCase();
       const nombreLower = (c.nombre || '').toLowerCase();
 
       if (tipoLower.includes('remunerado') || nombreLower.includes('bolsillo')) {
-        saldoRemunerados += saldoCalculado;
+        saldoRemunerados += saldoEfectivo;
       }
 
       if (
@@ -751,14 +894,14 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         tipoLower.includes('líquido') ||
         tipoLower.includes('liquido')
       ) {
-        balanceDisponible += saldoCalculado;
+        balanceDisponible += saldoEfectivo;
       }
     }
 
     const remoteTxs: Transaccion[] = transaccionesData.map((row: any) => ({
-      id: row.id ?? (Date.parse(row.fecha) || Date.now()),
+      id: row.id ?? crypto.randomUUID(),
       tipo: row.tipo,
-      monto: Number(row.monto) || 0,
+      monto: sanitizeAmount(row.monto),
       categoria: row.macro_categoria || '',
       macroCategoria: row.macro_categoria || '',
       macro: row.macro_categoria || '',
@@ -774,7 +917,12 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     }));
 
     const queue = getOfflineQueue();
-    const queueIds = new Set(queue.map(q => String(q.id)));
+    const queueIds = new Set(
+      queue
+        .filter(q => q.op === 'insert')
+        .map(q => (q as { op: 'insert'; tx: Transaccion }).tx.id)
+        .map(String)
+    );
     const pendingLocalTxs = getTransacciones().filter(t => queueIds.has(String(t.id)));
 
     const mergedMap = new Map<number | string, Transaccion>();
@@ -797,7 +945,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     let totalGastos = 0;
 
     for (const tx of cicloTxs) {
-      const monto = Number(tx.monto) || 0;
+      const monto = sanitizeAmount(tx.monto);
       if (tx.tipo === 'GASTO') {
         totalGastos += monto;
       } else if (tx.tipo === 'INGRESO') {
@@ -808,23 +956,20 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const presupuestos: PresupuestoItem[] = catalogoData.map((catRow: any) => {
       const macro = (catRow.macro_categoria || '').trim();
       const sub = (catRow.subcategoria || '').trim();
-      const presupuesto = Number(catRow.presupuesto_base) || 0;
+      const presupuesto = sanitizeAmount(catRow.presupuesto_base);
 
-      // Normalizar la comparación entre transacciones y catalogo:
-      // t.subcategoria.trim().toLowerCase() === p.sub.trim().toLowerCase()
       const matchingTxs = cicloTxs.filter(t => {
         if (t.tipo !== 'GASTO') return false;
         const txSub = (t.subcategoria || t.sub || '').trim().toLowerCase();
         const pSub = sub.toLowerCase();
         if (txSub === pSub) return true;
-        // Compatibilidad adicional para Streaming y Apps Digitales
         if (pSub === 'streaming y apps digitales' && (txSub.includes('streaming') || txSub.includes('apps digitales'))) {
           return true;
         }
         return false;
       });
 
-      const gastado = matchingTxs.reduce((sum, t) => sum + (Number(t.monto) || 0), 0);
+      const gastado = matchingTxs.reduce((sum, t) => sum + sanitizeAmount(t.monto), 0);
       const disponible = presupuesto - gastado;
       const pct = presupuesto > 0 ? (gastado / presupuesto) * 100 : 0;
       return {
@@ -845,7 +990,6 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       gastadoPorMacro[p.macro] = (gastadoPorMacro[p.macro] ?? 0) + (p.gastado || 0);
     }
 
-    // Para cualquier transacción no catalogada en catalogo_categorias
     for (const tx of cicloTxs) {
       if (tx.tipo === 'GASTO') {
         const sub = (tx.subcategoria || tx.sub || '').trim();
@@ -856,9 +1000,9 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
           return txSub === pSub || (pSub === 'streaming y apps digitales' && (txSub.includes('streaming') || txSub.includes('apps digitales')));
         });
         if (!yaContabilizado && sub) {
-          gastadoPorSubcat[sub] = (gastadoPorSubcat[sub] ?? 0) + (Number(tx.monto) || 0);
+          gastadoPorSubcat[sub] = (gastadoPorSubcat[sub] ?? 0) + sanitizeAmount(tx.monto);
           if (macro) {
-            gastadoPorMacro[macro] = (gastadoPorMacro[macro] ?? 0) + (Number(tx.monto) || 0);
+            gastadoPorMacro[macro] = (gastadoPorMacro[macro] ?? 0) + sanitizeAmount(tx.monto);
           }
         }
       }
@@ -868,22 +1012,16 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const tasaAhorro = totalIngresos > 0 ? (balance / totalIngresos) * 100 : 0;
 
     const carterasMapped: CarteraInfo[] = carterasData.map((c: any) => {
-      const entradas = transaccionesData
-        .filter((t: any) => t.cuenta_destino === c.nombre)
-        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
-      const salidas = transaccionesData
-        .filter((t: any) => t.cuenta_origen === c.nombre)
-        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
-      const saldoCalculado = (Number(c.saldo_inicial) || 0) + entradas - salidas;
+      const saldoEfectivo = updatedSaldos[c.nombre] ?? (Number(c.saldo_inicial) || 0);
 
       return {
         id: c.id,
         nombre: c.nombre,
         tipo: c.tipo,
-        saldo_inicial: Number(c.saldo_inicial) || 0,
-        saldo_actual: saldoCalculado,
-        saldo: saldoCalculado,
-        saldoActual: saldoCalculado,
+        saldo_inicial: sanitizeAmount(c.saldo_inicial),
+        saldo_actual: saldoEfectivo,
+        saldo: saldoEfectivo,
+        saldoActual: saldoEfectivo,
         icono: c.icono || '💳',
         permite_gasto: c.permite_gasto !== false,
         orden: c.orden != null ? Number(c.orden) : 99,
@@ -917,28 +1055,34 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       gastosRecurrentes,
     };
 
-    try {
-      localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: result.timestamp, data: result }));
-    } catch {
-      /* ignore */
-    }
+    // Almacenar en caché solo si la generación sigue siendo la más reciente
+    if (thisGen === currentFetchGeneration) {
+      try {
+        localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: result.timestamp, data: result }));
+      } catch {
+        /* ignore */
+      }
 
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: result }));
-      window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: result.saldos }));
-      window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: result.transacciones }));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: result }));
+        window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: result.saldos }));
+        window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: result.transacciones }));
+      }
     }
 
     return result;
   } catch (err) {
-    console.error('Error sincronizando con Supabase:', err);
+    console.warn('Error sincronizando con Supabase, usando caché íntegra:', err);
   }
 
+  // Fallback limpio a la última caché disponible sin destruirla ni sobrescribir con ceros
   try {
     const raw = localStorage.getItem(APPDATA_CACHE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as { timestamp: number; data: AppData };
-      return { ...parsed.data, fromCache: true, timestamp: parsed.timestamp };
+      if (parsed?.data && Object.keys(parsed.data.saldos || {}).length > 0) {
+        return { ...parsed.data, fromCache: true, timestamp: parsed.timestamp };
+      }
     }
   } catch {
     /* ignore */
@@ -962,19 +1106,42 @@ export async function getSaldos(forceRefresh = false): Promise<SaldosResponse> {
   };
 }
 
+// ── Sincronización de Cola Offline (Sin duplicar saldos) ──────────────────────
+
 export async function syncOfflineQueue(): Promise<{ synced: number; remaining: number }> {
   const queue = getOfflineQueue();
   if (queue.length === 0) return { synced: 0, remaining: 0 };
 
-  const remaining: Transaccion[] = [];
+  const remaining: QueuedMutation[] = [];
   let synced = 0;
 
-  for (const tx of queue) {
+  for (const mut of queue) {
     try {
-      await saveTransaction(tx);
-      synced++;
-    } catch {
-      remaining.push(tx);
+      if (mut.op === 'insert') {
+        // Inserción remota directa SIN ejecutar applyOptimisticTransaction
+        await insertRemote(mut.tx);
+        markTransactionSynced(mut.tx.id, true);
+        synced++;
+      } else if (mut.op === 'delete') {
+        const { error } = await supabase.from('transacciones').delete().eq('id', String(mut.id));
+        if (error) throw error;
+        synced++;
+      } else if (mut.op === 'update') {
+        const payload = formatUpdatePayload(mut.patch);
+        const { error } = await supabase.from('transacciones').update(payload).eq('id', String(mut.id));
+        if (error) throw error;
+        synced++;
+      }
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        // Idempotencia: el registro ya existía
+        if (mut.op === 'insert') {
+          markTransactionSynced(mut.tx.id, true);
+        }
+        synced++;
+      } else {
+        remaining.push(mut);
+      }
     }
   }
 
@@ -1012,9 +1179,9 @@ export function computeMatrizGastos(gastadoPorSubcat: Record<string, number>): M
 
   Object.entries(gastadoPorSubcat || {}).forEach(([sub, monto]) => {
     if (setInflexibles.has(sub.trim().toLowerCase())) {
-      totalInflexibles += Number(monto) || 0;
+      totalInflexibles += sanitizeAmount(monto);
     } else {
-      totalDiscrecionales += Number(monto) || 0;
+      totalDiscrecionales += sanitizeAmount(monto);
     }
   });
 

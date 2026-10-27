@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { X, RefreshCw, TrendingUp, TrendingDown, Minus, SlidersHorizontal, Check } from 'lucide-react';
 import { getSaldos, DEFAULT_SALDOS, getOfflineQueue, syncQueue, postAjuste, fetchAppData } from '../services/api';
 import { supabase } from '../services/supabase';
@@ -50,6 +50,13 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
   const [motivoInput, setMotivoInput] = useState<string>('');
   const [isAdjusting, setIsAdjusting] = useState<boolean>(false);
   const [adjustSuccessMsg, setAdjustSuccessMsg] = useState<string | null>(null);
+  const adjustMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+    };
+  }, []);
 
   const queueCount = getOfflineQueue().length;
 
@@ -129,7 +136,8 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
       if (error) throw error;
       await fetchAppData(true);
       setAdjustSuccessMsg(`Gasto ${nuevoValor ? 'habilitado' : 'bloqueado'} en "${walletName}".`);
-      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
     } catch (err) {
       console.error('Error actualizando permite_gasto:', err);
       // Revertir
@@ -185,7 +193,8 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
       // 3. Refrescar fetchAppData en background
       fetchAppData(true).catch(() => {});
       setAdjustSuccessMsg(`Ajuste de ${walletName} aplicado correctamente.`);
-      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
       setAdjustingWallet(null);
     } catch (err) {
       console.error('Error aplicando ajuste:', err);

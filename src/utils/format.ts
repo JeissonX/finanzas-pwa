@@ -21,25 +21,81 @@ export function parseAmount(formatted: string): number {
   return parseInt(formatted.replace(/\D/g, '') || '0', 10);
 }
 
-/** Returns a label like "25 Sep – 24 Oct" for the current nómina cycle. */
-export function getCycleLabel(date: Date = new Date()): string {
-  const day = date.getDate();
-  const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+export interface BogotaDateParts {
+  year: number;
+  month: number; // 1-12
+  day: number;   // 1-31
+}
 
-  let startDay = 25;
-  let startMonth: number;
-  let endDay = 24;
-  let endMonth: number;
+/** Extrae año, mes y día exactos en Colombia (America/Bogota) independientemente del navegador */
+export function getBogotaDateParts(dateInput?: Date | string): BogotaDateParts {
+  const d = dateInput instanceof Date ? dateInput : (dateInput ? new Date(dateInput) : new Date());
+  const validDate = isNaN(d.getTime()) ? new Date() : d;
 
-  if (day >= 25) {
-    startMonth = date.getMonth();
-    endMonth = (date.getMonth() + 1) % 12;
-  } else {
-    startMonth = (date.getMonth() - 1 + 12) % 12;
-    endMonth = date.getMonth();
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Bogota',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  });
+
+  const parts = formatter.formatToParts(validDate);
+  let year = validDate.getFullYear();
+  let month = validDate.getMonth() + 1;
+  let day = validDate.getDate();
+
+  for (const part of parts) {
+    if (part.type === 'year') year = parseInt(part.value, 10);
+    if (part.type === 'month') month = parseInt(part.value, 10);
+    if (part.type === 'day') day = parseInt(part.value, 10);
   }
 
-  return `${startDay} ${MONTHS[startMonth]} – ${endDay} ${MONTHS[endMonth]}`;
+  return { year, month, day };
+}
+
+/** Retorna el ID canónico con año 'YYYY-MM' para el ciclo de nómina (ej. '2026-10' para 25 Oct – 24 Nov) */
+export function getPayrollCycleId(dateInput?: Date | string): string {
+  const { year, month, day } = getBogotaDateParts(dateInput);
+
+  let cycleYear = year;
+  let cycleMonth = month;
+
+  if (day >= 25) {
+    cycleYear = year;
+    cycleMonth = month;
+  } else {
+    cycleMonth = month - 1;
+    if (cycleMonth < 1) {
+      cycleMonth = 12;
+      cycleYear = year - 1;
+    }
+  }
+
+  return `${cycleYear}-${String(cycleMonth).padStart(2, '0')}`;
+}
+
+/** Retorna la cantidad de días de un mes específico en el calendario gregoriano */
+export function getDaysInBogotaMonth(year: number, month: number): number {
+  return new Date(year, month, 0).getDate();
+}
+
+/** Returns a label like "25 Sep – 24 Oct" for the current nómina cycle in America/Bogota. */
+export function getCycleLabel(dateInput?: Date | string): string {
+  const { month, day } = getBogotaDateParts(dateInput);
+  const MONTHS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+  let startMonthIdx: number;
+  let endMonthIdx: number;
+
+  if (day >= 25) {
+    startMonthIdx = month - 1;
+    endMonthIdx = month % 12;
+  } else {
+    startMonthIdx = (month - 2 + 12) % 12;
+    endMonthIdx = month - 1;
+  }
+
+  return `25 ${MONTHS[startMonthIdx]} – 24 ${MONTHS[endMonthIdx]}`;
 }
 
 /** Haptic feedback (30 ms, silent on platforms without support). */
@@ -68,49 +124,45 @@ export function formatDateSpanish(isoString: string): string {
     const date = new Date(isoString);
     if (isNaN(date.getTime())) return isoString;
     const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
-    const day = date.getDate();
-    const month = MONTHS[date.getMonth()];
-    let hours = date.getHours();
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const ampm = hours >= 12 ? 'p. m.' : 'a. m.';
-    hours = hours % 12;
-    hours = hours ? hours : 12;
-    return `${day} ${month} · ${hours}:${minutes} ${ampm}`;
+    const { month, day } = getBogotaDateParts(date);
+    const monthName = MONTHS[month - 1];
+
+    // Formatear hora en horario Colombia
+    const timeFormatter = new Intl.DateTimeFormat('es-CO', {
+      timeZone: 'America/Bogota',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+    const timeStr = timeFormatter.format(date);
+
+    return `${day} ${monthName} · ${timeStr}`;
   } catch {
     return isoString;
   }
 }
 
-/** Check if a date string or object falls within the current payroll cycle (25th to 24th) */
-export function isDateInCurrentCycle(dateInput: Date | string, refDate: Date = new Date()): boolean {
+/**
+ * Check if a date string, object or cycle label falls within the current payroll cycle (25th to 24th)
+ * strictly evaluated in America/Bogota timezone. Supports both canonical 'YYYY-MM' and legacy labels.
+ */
+export function isDateInCurrentCycle(dateInput: Date | string, refDateInput?: Date | string): boolean {
   try {
-    const date = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
-    if (isNaN(date.getTime())) return true;
-    const refDay = refDate.getDate();
-    let startYear = refDate.getFullYear();
-    let startMonth: number;
-    let endYear = refDate.getFullYear();
-    let endMonth: number;
+    const currentCanonicalCycle = getPayrollCycleId(refDateInput);
+    const currentLegacyLabel = getCycleLabel(refDateInput);
 
-    if (refDay >= 25) {
-      startMonth = refDate.getMonth();
-      endMonth = refDate.getMonth() + 1;
-      if (endMonth > 11) {
-        endMonth = 0;
-        endYear++;
+    if (typeof dateInput === 'string') {
+      const trimmed = dateInput.trim();
+      if (/^\d{4}-\d{2}$/.test(trimmed)) {
+        return trimmed === currentCanonicalCycle;
       }
-    } else {
-      startMonth = refDate.getMonth() - 1;
-      if (startMonth < 0) {
-        startMonth = 11;
-        startYear--;
+      if (/^\d{1,2}\s+[A-Za-z]{3}\s+[–-]\s+\d{1,2}\s+[A-Za-z]{3}$/.test(trimmed)) {
+        return trimmed === currentLegacyLabel;
       }
-      endMonth = refDate.getMonth();
     }
 
-    const startDate = new Date(startYear, startMonth, 25, 0, 0, 0, 0);
-    const endDate = new Date(endYear, endMonth, 24, 23, 59, 59, 999);
-    return date.getTime() >= startDate.getTime() && date.getTime() <= endDate.getTime();
+    const targetCycleId = getPayrollCycleId(dateInput);
+    return targetCycleId === currentCanonicalCycle;
   } catch {
     return true;
   }
@@ -135,4 +187,3 @@ export function calcEquivalentesEA(eaPct: number) {
     tasaDiariaPct: tasaDiaria * 100,
   };
 }
-

@@ -94,6 +94,76 @@ function KPICard({ label, value, sub, accent = 'text-slate-900 dark:text-slate-1
   );
 }
 
+export interface AmortizationRun {
+  months: number;
+  interestTotal: number;
+  principalTotal: number;
+  paymentsTotal: number;
+}
+
+/** Simula el cronograma mes a mes hasta saldo 0 con sistema de amortización francés */
+export function amortizeSchedule(
+  principal: number,
+  monthlyPayment: number,
+  monthlyRate: number
+): AmortizationRun {
+  if (principal <= 0 || monthlyPayment <= 0 || monthlyRate <= 0) {
+    return { months: 0, interestTotal: 0, principalTotal: 0, paymentsTotal: 0 };
+  }
+
+  const firstMonthInterest = principal * monthlyRate;
+  if (monthlyPayment <= firstMonthInterest) {
+    return { months: 999, interestTotal: Infinity, principalTotal: principal, paymentsTotal: Infinity };
+  }
+
+  let balance = principal;
+  let months = 0;
+  let interestTotal = 0;
+  let principalTotal = 0;
+  let paymentsTotal = 0;
+  const MAX_MONTHS = 360;
+
+  while (balance > 0.01 && months < MAX_MONTHS) {
+    months++;
+    const interest = balance * monthlyRate;
+    interestTotal += interest;
+
+    const totalDue = balance + interest;
+    if (monthlyPayment >= totalDue) {
+      principalTotal += balance;
+      paymentsTotal += totalDue;
+      balance = 0;
+      break;
+    } else {
+      const principalPaid = monthlyPayment - interest;
+      principalTotal += principalPaid;
+      paymentsTotal += monthlyPayment;
+      balance -= principalPaid;
+    }
+  }
+
+  return {
+    months,
+    interestTotal: Math.round(interestTotal),
+    principalTotal: Math.round(principalTotal),
+    paymentsTotal: Math.round(paymentsTotal),
+  };
+}
+
+/** Calcula la nueva cuota fija exacta (anualidad) sobre el nuevo saldo y meses restantes */
+export function calculateNewPayment(
+  principal: number,
+  monthlyRate: number,
+  remainingMonths: number
+): number {
+  if (principal <= 0 || remainingMonths <= 0) return 0;
+  if (monthlyRate <= 0) return Math.round(principal / remainingMonths);
+
+  const factor = Math.pow(1 + monthlyRate, remainingMonths);
+  const payment = principal * ((monthlyRate * factor) / (factor - 1));
+  return Math.round(payment);
+}
+
 export default function AnalyticsView() {
   const [appData, setAppData] = useState<AppData>(DEFAULT_APPDATA);
 
@@ -206,22 +276,37 @@ export default function AnalyticsView() {
 
   // ── WIDGET 3: SIMULADOR MAZDA 2 · DESPIECE A CAPITAL & ARBITRAJE ────
   const cuotaRegular = 815_731;
-  const mazdaRates = calcEquivalentesEA(tasaMazda);
   const rawDeudaMazda = saldos['Crédito Mazda 2 (Lulo)'] ?? 0;
   const deudaViva = Math.abs(rawDeudaMazda);
 
-  // i_mes exacto según fórmula de tasas equivalentes
-  const i_mes = mazdaRates.tasaMensual;
+  // Tasa mensual efectiva: (1 + EA)^(1/12) - 1 (~1.6259% MV con 21.35% EA)
+  const i_mes = Math.pow(1 + (tasaMazda / 100), 1 / 12) - 1;
   const interesMesBanco = deudaViva > 0 ? Math.round(deudaViva * i_mes) : 0;
   const abonoCapitalCuota = deudaViva > 0 ? Math.max(0, cuotaRegular - interesMesBanco) : cuotaRegular;
 
+  // Abono simulado efectivo acotado a la deuda viva
+  const abonoEfectivo = Math.min(abonoSimulado, deudaViva);
+
+  // Simulación período a período con sistema francés
+  const baseRun = useMemo(() => {
+    return amortizeSchedule(deudaViva, cuotaRegular, i_mes);
+  }, [deudaViva, cuotaRegular, i_mes]);
+
+  const extraRun = useMemo(() => {
+    const principalConAbono = Math.max(0, deudaViva - abonoEfectivo);
+    return amortizeSchedule(principalConAbono, cuotaRegular, i_mes);
+  }, [deudaViva, abonoEfectivo, cuotaRegular, i_mes]);
+
   // Escenario Reducir Plazo
-  const cuotasAhorradas = abonoCapitalCuota > 0 ? (abonoSimulado / abonoCapitalCuota).toFixed(1) : '0';
-  const interesAhorradoAnual = Math.round(abonoSimulado * (tasaMazda / 100));
+  const cuotasAhorradas = Math.max(0, baseRun.months - extraRun.months);
+  const interesTotalAhorrado = Math.max(0, baseRun.interestTotal - extraRun.interestTotal);
 
   // Escenario Reducir Cuota
-  const reduccionCuotaMensual = Math.round(abonoSimulado * i_mes);
-  const nuevaCuotaEstimada = Math.max(cuotaRegular - reduccionCuotaMensual, 0);
+  const nuevoSaldoCuota = Math.max(0, deudaViva - abonoEfectivo);
+  const nuevaCuotaEstimada = baseRun.months > 0 && nuevoSaldoCuota > 0
+    ? calculateNewPayment(nuevoSaldoCuota, i_mes, baseRun.months)
+    : 0;
+  const reduccionCuotaMensual = Math.max(0, cuotaRegular - nuevaCuotaEstimada);
 
   // ── WIDGET 4: EVOLUCIÓN DE PATRIMONIO NETO ─────────────────────────
   const { patrimonioNetoActual, totalActivos, totalPasivos, evolucionPatrimonio } = useMemo(() => {
@@ -723,15 +808,15 @@ export default function AnalyticsView() {
                     Cuotas descontadas de deuda:
                   </span>
                   <span className="text-sm font-black text-slate-900 dark:text-slate-100 font-mono">
-                    ~{cuotasAhorradas} {cuotasAhorradas === '1.0' ? 'cuota menos' : 'cuotas menos'}
+                    ~{cuotasAhorradas} {cuotasAhorradas === 1 ? 'cuota menos' : 'cuotas menos'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Ahorro en intereses proyectado:
+                    Ahorro total en intereses:
                   </span>
                   <span className="text-sm font-black text-rose-600 dark:text-rose-400 font-mono">
-                    +{formatCOP(interesAhorradoAnual)}/año
+                    +{formatCOP(interesTotalAhorrado)}
                   </span>
                 </div>
               </>

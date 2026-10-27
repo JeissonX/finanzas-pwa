@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -56,6 +56,19 @@ export default function TransactionsView({
   const [busqueda, setBusqueda] = useState('');
   
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showFeedback = (msg: string) => {
+    setFeedbackMsg(msg);
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => setFeedbackMsg(null), 3000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    };
+  }, []);
 
   // Filtrado de transacciones
   const filteredTxs = useMemo(() => {
@@ -108,8 +121,7 @@ export default function TransactionsView({
       try {
         const ok = await onDeleteTransaction(id);
         if (ok) {
-          setFeedbackMsg('Movimiento eliminado correctamente.');
-          setTimeout(() => setFeedbackMsg(null), 3000);
+          showFeedback('Movimiento eliminado correctamente.');
         }
       } catch (err) {
         console.error('Error al eliminar movimiento:', err);
@@ -124,13 +136,11 @@ export default function TransactionsView({
     haptic(40);
     const toExport = filteredTxs.length > 0 ? filteredTxs : transacciones;
     if (toExport.length === 0) {
-      setFeedbackMsg('No hay movimientos para exportar.');
-      setTimeout(() => setFeedbackMsg(null), 3000);
+      showFeedback('No hay movimientos para exportar.');
       return;
     }
     exportTransactionsToCSV(toExport, soloCicloActivo ? cicloLabel : 'Todos_Los_Ciclos');
-    setFeedbackMsg(`Se exportaron ${toExport.length} movimientos a CSV.`);
-    setTimeout(() => setFeedbackMsg(null), 3000);
+    showFeedback(`Se exportaron ${toExport.length} movimientos a CSV.`);
   };
 
   // Badges y estilos sobrios según el tipo de transacción
@@ -463,8 +473,7 @@ export default function TransactionsView({
         onSave={async (id, updated) => {
           if (onUpdateTransaction) {
             await onUpdateTransaction(id, updated);
-            setFeedbackMsg('Movimiento actualizado correctamente.');
-            setTimeout(() => setFeedbackMsg(null), 3000);
+            showFeedback('Movimiento actualizado correctamente.');
           }
         }}
       />

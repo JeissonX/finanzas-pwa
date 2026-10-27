@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { X, PlusCircle } from 'lucide-react';
 import QuickRegister from './QuickRegister';
 import type { TipoTransaccion } from '../types/finance';
@@ -44,10 +44,19 @@ export default function QuickRegisterModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [open, onClose]);
 
+  const modalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (modalTimerRef.current) clearTimeout(modalTimerRef.current);
+    };
+  }, []);
+
   if (!open) return null;
 
   const handleSuccess = () => {
-    setTimeout(() => {
+    if (modalTimerRef.current) clearTimeout(modalTimerRef.current);
+    modalTimerRef.current = setTimeout(() => {
       haptic(50);
       onClose();
     }, 500);

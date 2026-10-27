@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import {
   RefreshCw,
   TrendingUp,
@@ -84,6 +84,15 @@ export default function WalletsView() {
   const [motivoInput, setMotivoInput] = useState<string>('');
   const [isAdjusting, setIsAdjusting] = useState<boolean>(false);
   const [adjustSuccessMsg, setAdjustSuccessMsg] = useState<string | null>(null);
+  const adjustMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (adjustMsgTimerRef.current) {
+        clearTimeout(adjustMsgTimerRef.current);
+      }
+    };
+  }, []);
 
   // Estado del gestor de gastos recurrentes
   const [isRecurrentesCollapsed, setIsRecurrentesCollapsed] = useState(false);
@@ -168,6 +177,9 @@ export default function WalletsView() {
     const current = carterasDb[index];
     const neighbor = carterasDb[index - 1];
 
+    const targetOrderCurrent = index;
+    const targetOrderNeighbor = index + 1;
+
     const newArr = [...carterasDb];
     newArr[index] = neighbor;
     newArr[index - 1] = current;
@@ -180,10 +192,20 @@ export default function WalletsView() {
     setCarterasDb(updatedWithOrders);
 
     try {
-      await Promise.all([
-        supabase.from('carteras').update({ orden: index }).eq('id', current.id),
-        supabase.from('carteras').update({ orden: index + 1 }).eq('id', neighbor.id),
-      ]);
+      const { error: rpcErr } = await supabase.rpc('swap_carteras_orden', {
+        id_a: current.id,
+        orden_a: targetOrderCurrent,
+        id_b: neighbor.id,
+        orden_b: targetOrderNeighbor,
+      });
+
+      if (rpcErr) {
+        // Fallback si la RPC no existe en la base de datos
+        await Promise.all([
+          supabase.from('carteras').update({ orden: targetOrderCurrent }).eq('id', current.id),
+          supabase.from('carteras').update({ orden: targetOrderNeighbor }).eq('id', neighbor.id),
+        ]);
+      }
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
       fetchSaldos(true);
@@ -197,6 +219,9 @@ export default function WalletsView() {
     const current = carterasDb[index];
     const neighbor = carterasDb[index + 1];
 
+    const targetOrderCurrent = index + 2;
+    const targetOrderNeighbor = index + 1;
+
     const newArr = [...carterasDb];
     newArr[index] = neighbor;
     newArr[index + 1] = current;
@@ -209,10 +234,20 @@ export default function WalletsView() {
     setCarterasDb(updatedWithOrders);
 
     try {
-      await Promise.all([
-        supabase.from('carteras').update({ orden: index + 2 }).eq('id', current.id),
-        supabase.from('carteras').update({ orden: index + 1 }).eq('id', neighbor.id),
-      ]);
+      const { error: rpcErr } = await supabase.rpc('swap_carteras_orden', {
+        id_a: current.id,
+        orden_a: targetOrderCurrent,
+        id_b: neighbor.id,
+        orden_b: targetOrderNeighbor,
+      });
+
+      if (rpcErr) {
+        // Fallback si la RPC no existe en la base de datos
+        await Promise.all([
+          supabase.from('carteras').update({ orden: targetOrderCurrent }).eq('id', current.id),
+          supabase.from('carteras').update({ orden: targetOrderNeighbor }).eq('id', neighbor.id),
+        ]);
+      }
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
       fetchSaldos(true);
@@ -277,7 +312,7 @@ export default function WalletsView() {
 
     try {
       const tx: Transaccion = {
-        id: Date.now(),
+        id: crypto.randomUUID(),
         fecha: new Date().toISOString(),
         tipo: 'AJUSTE',
         monto: Math.abs(diferencia),
@@ -298,7 +333,8 @@ export default function WalletsView() {
       await fetchAppData(true);
 
       setAdjustSuccessMsg(`Ajuste de ${walletName} aplicado correctamente.`);
-      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
       setAdjustingWallet(null);
     } catch (err) {
       console.error('Error aplicando ajuste:', err);
@@ -315,7 +351,8 @@ export default function WalletsView() {
     try {
       await toggleGastoRecurrente(id, nuevo);
       setAdjustSuccessMsg(`Gasto programado ${nuevo ? 'activado' : 'pausado'}.`);
-      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
     } catch (err) {
       console.error('Error alternando recurrente:', err);
       setRecurrentes(prev => prev.map(r => r.id === id ? { ...r, activo: currentActivo } : r));
@@ -328,7 +365,8 @@ export default function WalletsView() {
     try {
       await deleteGastoRecurrente(id);
       setAdjustSuccessMsg(`"${nombre}" eliminado de gastos programados.`);
-      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
     } catch (err) {
       console.error('Error eliminando recurrente:', err);
       const list = await getGastosRecurrentes();
@@ -360,7 +398,8 @@ export default function WalletsView() {
       setRecNombre('');
       setRecMonto('');
       setAdjustSuccessMsg('Gasto programado registrado exitosamente.');
-      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
     } catch (err) {
       console.error('Error guardando gasto recurrente:', err);
     } finally {
