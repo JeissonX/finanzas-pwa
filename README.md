@@ -1,37 +1,42 @@
 # Finanzas PWA 🚀
 
-Aplicación web progresiva (PWA) offline-first para el control financiero personal, sincronizada bidireccionalmente con Google Sheets mediante Google Apps Script.
+Aplicación web progresiva (PWA) offline-first para el control financiero personal y gestión patrimonial, respaldada por Supabase (PostgreSQL + Realtime) con cálculo automático de saldos mediante triggers de base de datos.
 
 ---
 
 ## 🌟 Características Principales
 
-1. **Sincronización Bidireccional con Google Sheets (GAS v8.1)**:
-   - Registro optimista instantáneo en memoria y `localStorage`.
-   - Normalización de payload tolerante y redundante enviando claves descriptivas y abreviadas (`macro`, `categoria`, `sub`, `subcategoria`, `cuentaOrigen`, `cuentaDestino`, `cuenta`, `detalle`, `comentario`).
-   - Sincronización en segundo plano de saldos oficiales, presupuestos dinámicos y transacciones históricas.
+1. **Arquitectura Reactiva con Supabase**:
+   - Suscripción en tiempo real a transacciones (`INSERT`, `UPDATE`, `DELETE`) y carteras.
+   - Sincronización bidireccional y actualización optimista instantánea en memoria y almacenamiento local.
+   - Trigger PostgreSQL `trg_actualizar_saldos` que recalcula automáticamente los saldos de carteras ante inserciones, modificaciones y eliminaciones.
+   - Botón de sincronización limpia y purga forzada en cabecera que vacía la caché de runtime y refresca el estado en caliente.
 
-2. **Offline-First & Cola de Contingencia**:
-   - Registro y edición de transacciones sin conexión.
-   - Cola offline en `localStorage` con reintento automático y descarte de duplicados al reconectar.
-   - PWA Service Worker (`finanzas-pwa-v4`) con estrategia cache-first para assets estáticos y bypass explícito para Google Apps Script.
+2. **Registro Rápido Simplificado & Edición de Movimientos**:
+   - Input numérico directo, centrado y estilizado con autoFocus y tipografía grande (`text-3xl` / `text-4xl`).
+   - Formateo en COP en tiempo real (`$ #,##0`) con botón discreto de borrado rápido.
+   - Modal slide-up de edición de transacciones para modificar montos, macro-categorías, subcategorías, medios de pago y comentarios sin perder integridad contable.
 
-3. **Presupuestos 100% Dinámicos**:
-   - Renderizado dinámico de subcategorías y montos asignados directamente desde la hoja de cálculo.
-   - Mensajes limpios de estado cuando no hay subcategorías asignadas en el ciclo activo.
+3. **Analíticas Avanzadas de Crédito y Flujo**:
+   - **Ritmo de Gasto Diario Sugerido (Burn Rate)**: Calcula los días restantes exactos hasta el día 24 del ciclo salarial y proyecta el tope de gasto diario sobre el balance disponible.
+   - **Carga Financiera (DTI)**: Ratio deuda/ingreso que consolida la cuota del crédito de consumo y el gasto mensual en tarjetas de crédito, clasificado con semáforo inteligente (*Saludable*, *Alerta*, *Elevado*).
+   - **Crédito Mazda 2 · Simulador y Despiece a Capital**: Desglose de cuota regular ($815.731), costo real de intereses bancarios y simulador interactivo de abono extraordinario a capital con cálculo de interés ahorrado por año y cuotas descontadas de deuda.
+   - Historial comparativo de gastos vs. ingresos y desglose porcentual por categorías.
 
-4. **Experiencia Multiplataforma**:
-   - Diseño responsivo adaptado para PC, tabletas y teléfonos (iPhone 16 Pro Max y dispositivos Android).
-   - Scroll vertical natural sin atrapamiento en desktop y pestañas persistentes tras recarga (F5).
-   - Temas Claro (Fintech sobrio) y Oscuro con contraste estricto WCAG AA.
+4. **Offline-First & PWA**:
+   - Registro y edición de transacciones sin conexión a internet.
+   - Cola de contingencia local que reintenta sincronizaciones al recuperar conectividad.
+   - Service Worker (`finanzas-pwa-v13`) con estrategia cache-first para recursos estáticos y bypass selectivo para APIs de datos.
+   - Diseño Light/Dark Fintech con contraste estricto WCAG AA y soporte completo para dispositivos móviles y escritorio.
 
 ---
 
-## 🏗️ Arquitectura y Tecnologías
+## 🏗️ Tecnologías
 
 - **Framework**: React 19 + TypeScript
 - **Bundler**: Vite 8
-- **Estilos**: TailwindCSS (diseño sobrio, cero bloatware visual)
+- **Base de Datos & Backend**: Supabase (PostgreSQL, Triggers SQL, Realtime WebSockets)
+- **Estilos**: TailwindCSS
 - **Iconografía**: Lucide React
 - **Gráficos**: Recharts
 - **Despliegue**: Vercel Production
@@ -45,27 +50,3 @@ Aplicación web progresiva (PWA) offline-first para el control financiero person
 - `npm run build`: Compilación de producción (`tsc -b && vite build`).
 - `npm run preview`: Previsualización local del bundle generado en `dist/`.
 - `npx vercel --prod --yes`: Despliegue directo a producción en Vercel.
-
----
-
-## 🔒 Estructura Unificada del Payload
-
-Cada transacción procesada por `saveTransaction()`, `postAjuste()` o la cola offline implementa el siguiente esquema:
-
-```typescript
-const payload = {
-  id: tx.id,
-  fecha: tx.fecha,
-  tipo: tx.tipo,
-  monto: tx.monto,
-  macro: tx.macroCategoria || tx.categoria,
-  categoria: tx.macroCategoria || tx.categoria,
-  sub: tx.subcategoria,
-  subcategoria: tx.subcategoria,
-  cuentaOrigen: tx.tipo === 'GASTO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaOrigen : ''),
-  cuentaDestino: tx.tipo === 'INGRESO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaDestino : ''),
-  cuenta: tx.cuenta || '',
-  detalle: tx.comentario || '',
-  comentario: tx.comentario || ''
-};
-```

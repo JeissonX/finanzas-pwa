@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 import type { TipoTransaccion, CarteraInfo } from '../types/finance';
 import type { AppData } from '../services/api';
 import { CATALOG_GASTOS, CATALOG_INGRESOS, CATALOG_TRANSFERENCIAS, CARTERAS, PAYMENT_RULES } from '../data/catalog';
@@ -37,8 +37,6 @@ const TAB_ACCENT: Record<TipoTransaccion, string> = {
   TRANSFERENCIA: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800 shadow-sm font-bold',
   AJUSTE: 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/60 dark:text-indigo-300 dark:border-indigo-800 shadow-sm font-bold',
 };
-
-const INCREMENTS = [10000, 20000, 50000, 100000];
 
 export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegisterProps) {
   const [tipo, setTipo] = useState<TipoTransaccion>('GASTO');
@@ -127,10 +125,7 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
 
   const amount = parseAmount(display);
 
-  const handleIncrement = useCallback((add: number) => {
-    haptic();
-    setDisplay(prev => formatDisplay(String(parseAmount(prev) + add)));
-  }, []);
+
 
   const handleClear = useCallback(() => {
     haptic();
@@ -223,44 +218,36 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
         ))}
       </div>
 
-      {/* Amount display */}
-      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm flex flex-col items-center gap-3">
-        <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+      {/* Amount direct input */}
+      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm flex flex-col items-center gap-2">
+        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
           Monto · COP
         </span>
-        <div className="flex items-baseline gap-1 w-full justify-center">
-          <span className="text-2xl font-extrabold text-slate-300 dark:text-slate-600">$</span>
+        <div className="relative flex items-center justify-center w-full max-w-sm">
+          <span className="text-2xl sm:text-3xl font-black text-slate-400 dark:text-slate-500 mr-1 select-none">
+            $
+          </span>
           <input
             type="text"
             inputMode="numeric"
-            value={display}
-            onFocus={e => { if (parseAmount(e.target.value) === 0) setDisplay(''); }}
-            onBlur={() => { if (!display) setDisplay('0'); }}
+            autoFocus
+            value={display === '0' ? '' : display}
+            placeholder="0"
             onChange={e => handleInput(e.target.value)}
-            className="flex-1 max-w-[300px] text-center text-5xl font-black text-slate-900 dark:text-slate-100 bg-transparent focus:outline-none selection:bg-rose-100 dark:selection:bg-rose-900/50 font-mono tabular-nums"
+            className="w-full text-center text-3xl sm:text-4xl font-black text-slate-900 dark:text-slate-100 bg-transparent focus:outline-none selection:bg-rose-100 dark:selection:bg-rose-900/50 font-mono tabular-nums pr-8 pl-4"
             aria-label="Monto de la transacción"
           />
-        </div>
-
-        {/* Quick increment row */}
-        <div className="grid grid-cols-5 gap-1.5 w-full">
-          {INCREMENTS.map(v => (
+          {amount > 0 && (
             <button
-              key={v}
               type="button"
-              onClick={() => handleIncrement(v)}
-              className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-[11px] font-bold text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 border border-slate-200/60 dark:border-slate-700 transition active:scale-95 shadow-sm"
+              onClick={handleClear}
+              className="absolute right-1 p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              aria-label="Borrar monto"
+              title="Borrar monto"
             >
-              +{v >= 1000 ? `${v / 1000}k` : v}
+              <X size={18} />
             </button>
-          ))}
-          <button
-            type="button"
-            onClick={handleClear}
-            className="py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-[11px] font-bold text-rose-600 border border-rose-200/70 dark:bg-rose-950/40 dark:text-rose-400 dark:border-rose-800/60 transition active:scale-95 shadow-sm"
-          >
-            C
-          </button>
+          )}
         </div>
       </div>
 
