@@ -1,11 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
-import { PenLine, History, BarChart3, TrendingUp } from 'lucide-react';
+import { ListOrdered, Wallet, PieChart, TrendingUp } from 'lucide-react';
 import Header from './components/Header';
-import QuickRegister from './components/QuickRegister';
+import QuickRegisterModal from './components/QuickRegisterModal';
 import TransactionsView from './components/TransactionsView';
+import WalletsView from './components/WalletsView';
 import BudgetAccordion from './components/BudgetAccordion';
 import AnalyticsView from './components/AnalyticsView';
-import WalletsModal from './components/WalletsModal';
 import {
   saveTransaction,
   deleteTransaction,
@@ -16,7 +16,9 @@ import {
 } from './services/api';
 import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
-import type { TabPrincipal, TipoTransaccion, Transaccion } from './types/finance';
+import type { TabNavegacion, TipoTransaccion, Transaccion } from './types/finance';
+
+export type { TabNavegacion };
 
 // Toast notification
 interface ToastState {
@@ -25,10 +27,10 @@ interface ToastState {
   id: number;
 }
 
-const NAV_TABS: { key: TabPrincipal; label: string; Icon: typeof PenLine }[] = [
-  { key: 'registro', label: 'Registro', Icon: PenLine },
-  { key: 'movimientos', label: 'Movimientos', Icon: History },
-  { key: 'presupuestos', label: 'Presupuesto', Icon: BarChart3 },
+const NAV_TABS: { key: TabNavegacion; label: string; Icon: typeof ListOrdered }[] = [
+  { key: 'movimientos', label: 'Movimientos', Icon: ListOrdered },
+  { key: 'carteras', label: 'Carteras', Icon: Wallet },
+  { key: 'presupuestos', label: 'Presupuestos', Icon: PieChart },
   { key: 'analiticas', label: 'Analíticas', Icon: TrendingUp },
 ];
 
@@ -98,15 +100,15 @@ export default function App() {
   }, []);
 
   // ── Navigation (persistencia en F5) ────────────────────────
-  const [tab, setTab] = useState<TabPrincipal>(() => {
+  const [tab, setTab] = useState<TabNavegacion>(() => {
     try {
-      const stored = localStorage.getItem('finanzas_active_tab') as TabPrincipal;
-      if (stored && ['registro', 'movimientos', 'presupuestos', 'analiticas', 'presupuesto'].includes(stored)) {
+      const stored = localStorage.getItem('finanzas_active_tab') as TabNavegacion;
+      if (stored && ['movimientos', 'carteras', 'presupuestos', 'analiticas'].includes(stored)) {
         return stored;
       }
-      return 'registro';
+      return 'movimientos';
     } catch {
-      return 'registro';
+      return 'movimientos';
     }
   });
 
@@ -118,8 +120,8 @@ export default function App() {
     }
   }, [tab]);
 
-  // ── Modals ─────────────────────────────────────────────────
-  const [modalCarteras, setModalCarteras] = useState(false);
+  // ── Modal de registro ──────────────────────────────────────
+  const [isRegisterOpen, setIsRegisterOpen] = useState(false);
 
   // ── Toast ──────────────────────────────────────────────────
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -250,8 +252,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Wallets modal */}
-      <WalletsModal open={modalCarteras} onClose={() => setModalCarteras(false)} />
+      {/* Modal de Registro Rápido */}
+      <QuickRegisterModal
+        open={isRegisterOpen}
+        onClose={() => setIsRegisterOpen(false)}
+        onSave={handleSave}
+        saving={saving}
+      />
 
       {/* App shell con scroll vertical natural en PC y móvil */}
       <div className="flex flex-col min-h-screen min-h-[100dvh] bg-[#F8FAFC] dark:bg-[#0B0F19] text-slate-900 dark:text-slate-100">
@@ -262,22 +269,20 @@ export default function App() {
           sincronizando={sincronizando}
           queueCount={queueCount}
           tabActiva={tab}
-          onCarteras={() => setModalCarteras(true)}
         />
 
         {/* Main scrollable area con scroll natural en PC y seguro en móvil */}
         <main className="flex-1 w-full md:overflow-visible overflow-y-auto overscroll-y-contain pb-32 pb-[calc(env(safe-area-inset-bottom)+8rem)]">
-          {tab === 'registro' && (
-            <QuickRegister onSave={handleSave} saving={saving} />
-          )}
           {tab === 'movimientos' && (
             <TransactionsView
               transacciones={transacciones}
               onDeleteTransaction={handleDeleteTransaction}
-              onNavigateToRegister={() => setTab('registro')}
+              onOpenRegister={() => setIsRegisterOpen(true)}
+              onNavigateToRegister={() => setIsRegisterOpen(true)}
             />
           )}
-          {(tab === 'presupuestos' || tab === 'presupuesto') && <BudgetAccordion />}
+          {tab === 'carteras' && <WalletsView />}
+          {tab === 'presupuestos' && <BudgetAccordion />}
           {tab === 'analiticas' && <AnalyticsView />}
         </main>
 
@@ -296,7 +301,7 @@ export default function App() {
           aria-label="Navegación principal"
         >
           {NAV_TABS.map(({ key, label, Icon }) => {
-            const active = tab === key || (key === 'presupuestos' && tab === 'presupuesto');
+            const active = tab === key;
             return (
               <button
                 key={key}
@@ -304,7 +309,7 @@ export default function App() {
                 onClick={() => { haptic(); setTab(key); }}
                 className={`
                   flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl
-                  transition-all duration-150 min-w-[70px]
+                  transition-all duration-150 min-w-[70px] cursor-pointer
                   ${active
                     ? 'text-slate-900 dark:text-slate-100 font-bold'
                     : 'text-slate-400 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}

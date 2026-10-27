@@ -25,6 +25,7 @@ import {
 import { exportTransactionsToCSV } from '../utils/exportCsv';
 
 interface TransactionsViewProps {
+  onOpenRegister?: () => void;
   onNavigateToRegister?: () => void;
   transacciones: Transaccion[];
   onDeleteTransaction: (id: number | string) => Promise<boolean>;
@@ -33,10 +34,19 @@ interface TransactionsViewProps {
 type FiltroTipo = 'TODOS' | TipoTransaccion;
 
 export default function TransactionsView({
+  onOpenRegister,
   onNavigateToRegister,
   transacciones,
   onDeleteTransaction,
 }: TransactionsViewProps) {
+  const handleRegister = () => {
+    haptic();
+    if (onOpenRegister) {
+      onOpenRegister();
+    } else if (onNavigateToRegister) {
+      onNavigateToRegister();
+    }
+  };
   const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>('TODOS');
   const [soloCicloActivo, setSoloCicloActivo] = useState(true);
   const [busqueda, setBusqueda] = useState('');
@@ -238,6 +248,16 @@ export default function TransactionsView({
           </div>
         </div>
 
+        {/* Botón principal: + REGISTRAR MOVIMIENTO */}
+        <button
+          type="button"
+          onClick={handleRegister}
+          className="w-full py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 font-bold text-xs uppercase tracking-wider shadow-md hover:shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+        >
+          <PlusCircle size={16} />
+          <span>+ REGISTRAR MOVIMIENTO</span>
+        </button>
+
         {/* Barra de búsqueda y exportación */}
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
@@ -301,14 +321,11 @@ export default function TransactionsView({
               ? 'No hay movimientos que coincidan con el término de búsqueda.'
               : `No se han registrado transacciones dentro del ciclo activo (${cicloLabel}).`}
           </p>
-          {onNavigateToRegister && !busqueda && (
+          {(onOpenRegister || onNavigateToRegister) && !busqueda && (
             <button
               type="button"
-              onClick={() => {
-                haptic();
-                onNavigateToRegister();
-              }}
-              className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs font-bold shadow-md hover:opacity-90 transition active:scale-95"
+              onClick={handleRegister}
+              className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs font-bold shadow-md hover:opacity-90 transition active:scale-95 cursor-pointer"
             >
               <PlusCircle size={14} />
               <span>Registrar primer movimiento</span>

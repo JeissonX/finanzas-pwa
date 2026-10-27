@@ -66,11 +66,12 @@ export interface KPIs {
   pendientesOffline: number;
 }
 
-export type TabPrincipal = 'registro' | 'movimientos' | 'presupuestos' | 'analiticas' | 'presupuesto';
+export type TabNavegacion = 'movimientos' | 'carteras' | 'presupuestos' | 'analiticas';
+export type TabPrincipal = TabNavegacion | 'registro' | 'presupuesto';
 
 export interface EstadoApp {
   tema: 'dark' | 'light';
-  tabActiva: TabPrincipal;
+  tabActiva: TabNavegacion;
   modalCarteras: boolean;
   online: boolean;
   sincronizando: boolean;
@@ -92,6 +93,8 @@ export interface CarteraInfo {
   tipo: string;
   saldo_inicial?: number;
   saldo_actual?: number;
+  saldo?: number;
+  saldoActual?: number;
   icono?: string;
   permite_gasto?: boolean;
 }

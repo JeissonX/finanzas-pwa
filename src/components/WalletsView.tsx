@@ -1,0 +1,483 @@
+import { useEffect, useState } from 'react';
+import { RefreshCw, TrendingUp, TrendingDown, Minus, SlidersHorizontal, Check, Wallet } from 'lucide-react';
+import { getSaldos, DEFAULT_SALDOS, getOfflineQueue, syncOfflineQueue, saveTransaction, fetchAppData } from '../services/api';
+import { supabase } from '../services/supabase';
+import { formatCOP, haptic } from '../utils/format';
+import { CARTERAS_DEFAULT } from '../data/catalog';
+import type { CarteraInfo, Transaccion } from '../types/finance';
+
+const ACCOUNT_ICONS: Record<string, string> = {
+  'Lulo Principal (Cuenta)': '🏦',
+  'Lulo Bolsillo - Ahorro': '💰',
+  'Lulo Bolsillo - Carro / Moto': '🛵',
+  'Lulo Bolsillo - Gastos': '👛',
+  'Lulo Bolsillo - Vacaciones': '✈️',
+  'Nequi': '🟣',
+  'Efectivo': '💵',
+  'TC Lulo Bank': '💳',
+  'RappiCard': '💳',
+  'Crédito Mazda 2 (Lulo)': '🚗',
+};
+
+const ACCOUNT_TYPES: Record<string, string> = {
+  'Lulo Principal (Cuenta)': 'Débito / Líquido',
+  'Lulo Bolsillo - Ahorro': 'Ahorro Remunerado',
+  'Lulo Bolsillo - Carro / Moto': 'Ahorro Remunerado',
+  'Lulo Bolsillo - Gastos': 'Ahorro Remunerado',
+  'Lulo Bolsillo - Vacaciones': 'Ahorro Remunerado',
+  'Nequi': 'Billetera Digital',
+  'Efectivo': 'Caja Física',
+  'TC Lulo Bank': 'Tarjeta de Crédito',
+  'RappiCard': 'Tarjeta de Crédito',
+  'Crédito Mazda 2 (Lulo)': 'Crédito de Consumo',
+};
+
+export default function WalletsView() {
+  const [saldos, setSaldos] = useState<Record<string, number>>(DEFAULT_SALDOS);
+  const [carterasDb, setCarterasDb] = useState<CarteraInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [fromCache, setFromCache] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<number>(0);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
+
+  // Estado del mini-formulario de ajuste / conciliación
+  const [adjustingWallet, setAdjustingWallet] = useState<string | null>(null);
+  const [nuevoSaldoInput, setNuevoSaldoInput] = useState<string>('');
+  const [motivoInput, setMotivoInput] = useState<string>('');
+  const [isAdjusting, setIsAdjusting] = useState<boolean>(false);
+  const [adjustSuccessMsg, setAdjustSuccessMsg] = useState<string | null>(null);
+
+  const queueCount = getOfflineQueue().length;
+
+  const fetchSaldos = async (force = false) => {
+    setLoading(true);
+    try {
+      const [result, carterasRes] = await Promise.all([
+        getSaldos(force),
+        supabase.from('carteras').select('*').order('id'),
+      ]);
+      setSaldos(result.saldos);
+      setFromCache(result.fromCache);
+      setLastUpdated(result.timestamp);
+      if (carterasRes.data) {
+        setCarterasDb(carterasRes.data.map((c: any) => ({
+          id: c.id,
+          nombre: c.nombre,
+          tipo: c.tipo,
+          saldo_inicial: Number(c.saldo_inicial) || 0,
+          saldo_actual: Number(c.saldo_actual) || 0,
+          saldo: Number(c.saldo_actual) || 0,
+          saldoActual: Number(c.saldo_actual) || 0,
+          icono: c.icono,
+          permite_gasto: c.permite_gasto !== false,
+        })));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSaldos();
+  }, []);
+
+  useEffect(() => {
+    const handleSaldosUpdated = (e: Event) => {
+      const custom = e as CustomEvent<Record<string, number>>;
+      if (custom.detail) {
+        setSaldos(custom.detail);
+        setFromCache(false);
+        setLastUpdated(Date.now());
+      }
+    };
+    window.addEventListener('finanzas_saldos_updated', handleSaldosUpdated);
+    return () => window.removeEventListener('finanzas_saldos_updated', handleSaldosUpdated);
+  }, []);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    haptic();
+    const result = await syncOfflineQueue();
+    setSyncing(false);
+    setSyncResult(result.synced > 0
+      ? `✓ ${result.synced} sincronizadas`
+      : result.remaining > 0
+        ? `${result.remaining} pendientes aún`
+        : 'Sin pendientes'
+    );
+  };
+
+  const handleTogglePermiteGasto = async (walletName: string, currentPermiteGasto: boolean) => {
+    haptic(40);
+    const nuevoValor = !currentPermiteGasto;
+
+    setCarterasDb(prev => prev.map(c => c.nombre === walletName ? { ...c, permite_gasto: nuevoValor } : c));
+
+    try {
+      const { error } = await supabase
+        .from('carteras')
+        .update({ permite_gasto: nuevoValor })
+        .eq('nombre', walletName);
+
+      if (error) throw error;
+      await fetchAppData(true);
+      setAdjustSuccessMsg(`Gasto ${nuevoValor ? 'habilitado' : 'bloqueado'} en "${walletName}".`);
+      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+    } catch (err) {
+      console.error('Error actualizando permite_gasto:', err);
+      setCarterasDb(prev => prev.map(c => c.nombre === walletName ? { ...c, permite_gasto: currentPermiteGasto } : c));
+    }
+  };
+
+  const handleOpenAdjust = (walletName: string, currentAmount: number) => {
+    haptic();
+    if (adjustingWallet === walletName) {
+      setAdjustingWallet(null);
+    } else {
+      setAdjustingWallet(walletName);
+      setNuevoSaldoInput(String(currentAmount));
+      setMotivoInput('');
+      setAdjustSuccessMsg(null);
+    }
+  };
+
+  const handleApplyAdjustment = async (walletName: string, currentAmount: number) => {
+    const cleaned = nuevoSaldoInput.replace(/[^0-9\-]/g, '');
+    const nuevoSaldo = Number(cleaned);
+    if (isNaN(nuevoSaldo)) return;
+
+    const diferencia = nuevoSaldo - currentAmount;
+    if (diferencia === 0) {
+      setAdjustingWallet(null);
+      return;
+    }
+
+    setIsAdjusting(true);
+    haptic(50);
+    const faltabaPlata = diferencia < 0;
+    const comentario = motivoInput.trim() || (faltabaPlata ? 'Descuadre de Saldo' : 'Sobrante de Saldo');
+
+    // Actualización inmediata en UI
+    const updatedSaldos = { ...saldos, [walletName]: nuevoSaldo };
+    setSaldos(updatedSaldos);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: updatedSaldos }));
+    }
+
+    try {
+      const tx: Transaccion = {
+        id: Date.now(),
+        fecha: new Date().toISOString(),
+        tipo: 'AJUSTE',
+        monto: Math.abs(diferencia),
+        cuenta: walletName,
+        cuentaOrigen: faltabaPlata ? walletName : undefined,
+        cuentaDestino: faltabaPlata ? undefined : walletName,
+        macro: 'Ajuste / Conciliación',
+        categoria: 'Ajuste / Conciliación',
+        macroCategoria: 'Ajuste / Conciliación',
+        sub: faltabaPlata ? 'Descuadre de Saldo' : 'Sobrante de Saldo',
+        subcategoria: faltabaPlata ? 'Descuadre de Saldo' : 'Sobrante de Saldo',
+        detalle: comentario,
+        comentario: comentario,
+        sincronizado: false,
+      };
+
+      await saveTransaction(tx);
+      await fetchAppData(true);
+
+      setAdjustSuccessMsg(`Ajuste de ${walletName} aplicado correctamente.`);
+      setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      setAdjustingWallet(null);
+    } catch (err) {
+      console.error('Error aplicando ajuste:', err);
+    } finally {
+      setIsAdjusting(false);
+    }
+  };
+
+  const walletItems = CARTERAS_DEFAULT.map(c => {
+    const amount = saldos[c.nombre] ?? saldos[c.id] ?? 0;
+    const dbInfo = carterasDb.find(db => db.nombre === c.nombre || db.id === c.id);
+    const permiteGasto = dbInfo?.permite_gasto ?? !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre);
+
+    return {
+      id: c.id,
+      name: c.nombre,
+      amount,
+      type: ACCOUNT_TYPES[c.nombre] ?? 'Cuenta',
+      icon: ACCOUNT_ICONS[c.nombre] ?? c.icono,
+      permiteGasto,
+    };
+  });
+
+  const netTotal = walletItems.reduce((s, w) => s + w.amount, 0);
+  const activos = walletItems.filter(w => w.amount > 0).reduce((s, w) => s + w.amount, 0);
+  const pasivos = walletItems.filter(w => w.amount < 0).reduce((s, w) => s + Math.abs(w.amount), 0);
+
+  return (
+    <div className="max-w-2xl mx-auto px-4 py-4 space-y-4">
+      {/* Encabezado */}
+      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-800 dark:text-slate-100">
+            <Wallet size={20} />
+          </div>
+          <div>
+            <h1 className="text-base font-black text-slate-900 dark:text-slate-100 tracking-tight">
+              Mis Carteras
+            </h1>
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              {loading
+                ? 'Actualizando…'
+                : fromCache
+                  ? lastUpdated > 0
+                    ? `Caché · ${new Date(lastUpdated).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`
+                    : 'Datos locales'
+                  : `En vivo · ${new Date(lastUpdated).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`
+              }
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            haptic();
+            fetchSaldos(true);
+          }}
+          disabled={loading}
+          className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 transition shadow-sm cursor-pointer disabled:opacity-50"
+          aria-label="Actualizar saldos de carteras"
+          title="Actualizar saldos"
+        >
+          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+        </button>
+      </div>
+
+      {/* Alerta de confirmación */}
+      {adjustSuccessMsg && (
+        <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-300 text-xs font-semibold flex items-center gap-2 animate-fade-in shadow-sm">
+          <Check size={16} className="text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+          <span>{adjustSuccessMsg}</span>
+        </div>
+      )}
+
+      {/* Métricas de resumen: Activos, Pasivos, Patrimonio Neto */}
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-3 sm:p-4 text-center shadow-sm">
+          <p className="text-[10px] sm:text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            Activos
+          </p>
+          <p className="text-sm sm:text-base font-black text-emerald-600 dark:text-emerald-400 mt-1 font-mono">
+            {formatCOP(activos)}
+          </p>
+        </div>
+
+        <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-3 sm:p-4 text-center shadow-sm">
+          <p className="text-[10px] sm:text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            Pasivos
+          </p>
+          <p className="text-sm sm:text-base font-black text-rose-600 dark:text-rose-400 mt-1 font-mono">
+            {formatCOP(pasivos)}
+          </p>
+        </div>
+
+        <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-3 sm:p-4 text-center shadow-sm">
+          <p className="text-[10px] sm:text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            Patrimonio Neto
+          </p>
+          <p className={`text-sm sm:text-base font-black mt-1 font-mono ${netTotal >= 0 ? 'text-slate-900 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+            {formatCOP(netTotal)}
+          </p>
+        </div>
+      </div>
+
+      {/* Lista completa de las 10 carteras */}
+      <div className="space-y-3">
+        {walletItems.map((wallet) => {
+          const isDebt = wallet.amount < 0;
+          const Icon = isDebt ? TrendingDown : wallet.amount === 0 ? Minus : TrendingUp;
+          const isSelected = adjustingWallet === wallet.name;
+          const cleanedInput = nuevoSaldoInput.replace(/[^0-9\-]/g, '');
+          const parsedNewSaldo = cleanedInput !== '' && cleanedInput !== '-' ? Number(cleanedInput) : wallet.amount;
+          const diff = isNaN(parsedNewSaldo) ? 0 : parsedNewSaldo - wallet.amount;
+
+          return (
+            <div
+              key={wallet.id}
+              className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all duration-200"
+            >
+              <div className="flex items-center gap-3 p-4">
+                <span className="text-2xl flex-shrink-0" role="img" aria-label={wallet.name}>
+                  {wallet.icon}
+                </span>
+
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+                    {wallet.name}
+                  </p>
+                  <p className="text-[10px] sm:text-xs font-medium text-slate-500 dark:text-slate-400">
+                    {wallet.type}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-1.5 text-right">
+                    <Icon size={14} className={isDebt ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'} />
+                    <span className={`text-sm sm:text-base font-bold tabular-nums font-mono ${isDebt ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-slate-100'}`}>
+                      {formatCOP(wallet.amount)}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOpenAdjust(wallet.name, wallet.amount)}
+                    className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-950/60 dark:border-indigo-700 dark:text-indigo-300'
+                        : 'bg-slate-50 border-slate-200/80 text-slate-500 hover:text-slate-800 hover:bg-slate-100 dark:bg-slate-800/80 dark:border-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                    }`}
+                    title={`Ajustar o conciliar saldo de ${wallet.name}`}
+                    aria-label={`Ajustar saldo de ${wallet.name}`}
+                  >
+                    <SlidersHorizontal size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Control de Permitir Gasto */}
+              <div className="px-4 pb-3 pt-1.5 flex items-center justify-between border-t border-slate-100 dark:border-slate-800/60 bg-slate-50/50 dark:bg-slate-950/20">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  Permitir registrar gastos:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleTogglePermiteGasto(wallet.name, wallet.permiteGasto)}
+                  className={`px-3 py-1 rounded-xl text-[11px] font-bold border transition flex items-center gap-1.5 cursor-pointer active:scale-95 ${
+                    wallet.permiteGasto
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                      : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                  }`}
+                  title={`Alternar si ${wallet.name} permite gasto`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${wallet.permiteGasto ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                  <span>{wallet.permiteGasto ? 'Permite gasto' : 'Gasto bloqueado'}</span>
+                </button>
+              </div>
+
+              {/* Formulario desplegable para Ajustar saldo */}
+              {isSelected && (
+                <div className="px-4 pb-4 pt-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/50 animate-slide-up flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                      Ajuste / Conciliación de Saldo
+                    </span>
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      Actual: <strong className="text-slate-800 dark:text-slate-200 font-mono">{formatCOP(wallet.amount)}</strong>
+                    </span>
+                  </div>
+
+                  <div>
+                    <label htmlFor={`nuevo-saldo-${wallet.id}`} className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                      Nuevo Saldo Real en Banco (COP)
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 dark:text-slate-500">$</span>
+                      <input
+                        id={`nuevo-saldo-${wallet.id}`}
+                        type="number"
+                        step="any"
+                        value={nuevoSaldoInput}
+                        onChange={e => setNuevoSaldoInput(e.target.value)}
+                        placeholder="0"
+                        className="w-full pl-7 pr-3 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Diferencia calculada */}
+                  {diff !== 0 && !isNaN(diff) && (
+                    <div className={`p-2.5 rounded-xl text-xs flex items-center justify-between font-bold ${
+                      diff > 0
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/60'
+                        : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800/60'
+                    }`}>
+                      <span>{diff > 0 ? 'Sobrante (+)' : 'Descuadre (-)'}</span>
+                      <span className="font-mono">{diff > 0 ? `+${formatCOP(diff)}` : `-${formatCOP(Math.abs(diff))}`}</span>
+                    </div>
+                  )}
+
+                  <div>
+                    <label htmlFor={`motivo-${wallet.id}`} className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                      Motivo / Comentario del Ajuste
+                    </label>
+                    <input
+                      id={`motivo-${wallet.id}`}
+                      type="text"
+                      value={motivoInput}
+                      onChange={e => setMotivoInput(e.target.value)}
+                      placeholder="Ej: Conciliación bancaria, descuadre caja"
+                      className="w-full px-3 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setAdjustingWallet(null)}
+                      disabled={isAdjusting}
+                      className="flex-1 py-2.5 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleApplyAdjustment(wallet.name, wallet.amount)}
+                      disabled={isAdjusting || diff === 0 || isNaN(diff)}
+                      className="flex-1 py-2.5 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                    >
+                      {isAdjusting ? (
+                        <>
+                          <RefreshCw size={14} className="animate-spin" />
+                          <span>Guardando…</span>
+                        </>
+                      ) : (
+                        <span>Guardar Ajuste</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Sincronización de cola offline */}
+      {queueCount > 0 && (
+        <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">
+              Cola de pendientes offline
+            </span>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              {queueCount} movimiento{queueCount > 1 ? 's' : ''} pendiente{queueCount > 1 ? 's' : ''}
+              {syncResult && ` · ${syncResult}`}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleSync}
+            disabled={syncing}
+            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 text-xs font-bold border border-slate-200/80 dark:border-slate-700 transition shadow-sm cursor-pointer disabled:opacity-50"
+          >
+            {syncing ? 'Sincronizando…' : 'Sincronizar ahora'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

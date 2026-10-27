@@ -174,11 +174,12 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
       saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) + monto;
     }
   } else if (tx.tipo === 'AJUSTE') {
-    if (cuentaNombre && cuentaDestino) {
-      saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
-      saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) + monto;
-    } else if (cuentaNombre) {
-      saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
+    if (tx.cuentaDestino || cuentaDestino) {
+      const dest = (tx.cuentaDestino || cuentaDestino)!;
+      saldos[dest] = (saldos[dest] ?? 0) + monto;
+    } else if (tx.cuentaOrigen || cuentaNombre) {
+      const orig = (tx.cuentaOrigen || cuentaNombre)!;
+      saldos[orig] = (saldos[orig] ?? 0) - monto;
     }
   }
 
@@ -210,6 +211,42 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
 }
 
 export async function saveTransaction(tx: Transaccion): Promise<void> {
+  let cuentaOrigen: string | null = null;
+  let cuentaDestino: string | null = null;
+
+  if (tx.tipo === 'GASTO') {
+    cuentaOrigen = tx.cuentaOrigen || tx.cuenta || null;
+    cuentaDestino = null;
+  } else if (tx.tipo === 'INGRESO') {
+    cuentaOrigen = null;
+    cuentaDestino = tx.cuentaDestino || tx.cuenta || null;
+  } else if (tx.tipo === 'TRANSFERENCIA') {
+    cuentaOrigen = tx.cuentaOrigen || null;
+    cuentaDestino = tx.cuentaDestino || null;
+  } else if (tx.tipo === 'AJUSTE') {
+    if (tx.cuentaDestino && !tx.cuentaOrigen) {
+      cuentaDestino = tx.cuentaDestino;
+      cuentaOrigen = null;
+    } else if (tx.cuentaOrigen && !tx.cuentaDestino) {
+      cuentaOrigen = tx.cuentaOrigen;
+      cuentaDestino = null;
+    } else if (tx.cuentaDestino) {
+      cuentaDestino = tx.cuentaDestino;
+      cuentaOrigen = null;
+    } else if (tx.cuentaOrigen) {
+      cuentaOrigen = tx.cuentaOrigen;
+      cuentaDestino = null;
+    } else if (tx.cuenta) {
+      cuentaDestino = tx.cuenta;
+      cuentaOrigen = null;
+    }
+  }
+
+  cuentaOrigen = cuentaOrigen && cuentaOrigen.trim() !== '' ? cuentaOrigen.trim() : null;
+  cuentaDestino = cuentaDestino && cuentaDestino.trim() !== '' ? cuentaDestino.trim() : null;
+
+  const cuentaPrincipal = tx.cuenta || cuentaDestino || cuentaOrigen || '';
+
   const payload = {
     id: tx.id,
     fecha: tx.fecha || new Date().toISOString(),
@@ -217,24 +254,19 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
     monto: tx.monto,
     macro_categoria: tx.macroCategoria || tx.categoria || tx.macro || '',
     subcategoria: tx.subcategoria || tx.sub || '',
-    cuenta: tx.cuenta || (tx.tipo === 'GASTO' ? tx.cuentaOrigen : (tx.tipo === 'INGRESO' ? tx.cuentaDestino : '')) || '',
-    cuenta_origen:
-      tx.tipo === 'GASTO'
-        ? (tx.cuenta || tx.cuentaOrigen || '')
-        : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE'
-            ? (tx.cuentaOrigen || tx.cuenta || '')
-            : ''),
-    cuenta_destino:
-      tx.tipo === 'INGRESO'
-        ? (tx.cuenta || tx.cuentaDestino || '')
-        : (tx.tipo === 'TRANSFERENCIA' || tx.tipo === 'AJUSTE'
-            ? (tx.cuentaDestino || '')
-            : ''),
+    cuenta: cuentaPrincipal,
+    cuenta_origen: cuentaOrigen,
+    cuenta_destino: cuentaDestino,
     detalle: tx.comentario || tx.detalle || '',
     ciclo: getCycleLabel(new Date(tx.fecha || Date.now())),
   };
 
-  applyOptimisticTransaction({ ...tx, ...payload });
+  applyOptimisticTransaction({
+    ...tx,
+    ...payload,
+    cuentaOrigen: cuentaOrigen ?? undefined,
+    cuentaDestino: cuentaDestino ?? undefined,
+  });
 
   try {
     const { error } = await supabase.from('transacciones').insert([{
@@ -417,26 +449,33 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const [carterasRes, catalogoRes, txsRes] = await Promise.all([
       supabase.from('carteras').select('*').order('id'),
       supabase.from('catalogo_categorias').select('*').eq('activo', true),
-      supabase.from('transacciones').select('*').order('fecha', { ascending: false }).limit(100),
+      supabase.from('transacciones').select('*').order('fecha', { ascending: false }),
     ]);
 
     const carterasData = carterasRes.data || [];
     const catalogoData = catalogoRes.data || [];
-    const txsData = txsRes.data || [];
+    const transaccionesData = txsRes.data || [];
 
     const updatedSaldos: Record<string, number> = { ...DEFAULT_SALDOS };
     let saldoRemunerados = 0;
     let balanceDisponible = 0;
 
     for (const c of carterasData) {
-      const saldoVal = Number(c.saldo_actual) || 0;
-      updatedSaldos[c.nombre] = saldoVal;
+      const entradas = transaccionesData
+        .filter((t: any) => t.cuenta_destino === c.nombre)
+        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
+      const salidas = transaccionesData
+        .filter((t: any) => t.cuenta_origen === c.nombre)
+        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
+      const saldoCalculado = (Number(c.saldo_inicial) || 0) + entradas - salidas;
+
+      updatedSaldos[c.nombre] = saldoCalculado;
 
       const tipoLower = (c.tipo || '').toLowerCase();
       const nombreLower = (c.nombre || '').toLowerCase();
 
       if (tipoLower.includes('remunerado') || nombreLower.includes('bolsillo')) {
-        saldoRemunerados += saldoVal;
+        saldoRemunerados += saldoCalculado;
       }
 
       if (
@@ -447,11 +486,11 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         tipoLower.includes('líquido') ||
         tipoLower.includes('liquido')
       ) {
-        balanceDisponible += saldoVal;
+        balanceDisponible += saldoCalculado;
       }
     }
 
-    const remoteTxs: Transaccion[] = txsData.map((row: any) => ({
+    const remoteTxs: Transaccion[] = transaccionesData.map((row: any) => ({
       id: Number(row.id) || Date.parse(row.fecha) || Date.now(),
       tipo: row.tipo,
       monto: Number(row.monto) || 0,
@@ -560,15 +599,27 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const balance = totalIngresos - totalGastos;
     const tasaAhorro = totalIngresos > 0 ? (balance / totalIngresos) * 100 : 0;
 
-    const carterasMapped: CarteraInfo[] = carterasData.map((c: any) => ({
-      id: c.id,
-      nombre: c.nombre,
-      tipo: c.tipo,
-      saldo_inicial: Number(c.saldo_inicial) || 0,
-      saldo_actual: Number(c.saldo_actual) || 0,
-      icono: c.icono || '💳',
-      permite_gasto: c.permite_gasto !== false,
-    }));
+    const carterasMapped: CarteraInfo[] = carterasData.map((c: any) => {
+      const entradas = transaccionesData
+        .filter((t: any) => t.cuenta_destino === c.nombre)
+        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
+      const salidas = transaccionesData
+        .filter((t: any) => t.cuenta_origen === c.nombre)
+        .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
+      const saldoCalculado = (Number(c.saldo_inicial) || 0) + entradas - salidas;
+
+      return {
+        id: c.id,
+        nombre: c.nombre,
+        tipo: c.tipo,
+        saldo_inicial: Number(c.saldo_inicial) || 0,
+        saldo_actual: saldoCalculado,
+        saldo: saldoCalculado,
+        saldoActual: saldoCalculado,
+        icono: c.icono || '💳',
+        permite_gasto: c.permite_gasto !== false,
+      };
+    });
 
     const result: AppData = {
       saldos: updatedSaldos,

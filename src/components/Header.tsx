@@ -1,4 +1,4 @@
-import { WifiOff, RefreshCw, Wallet, Sun, Moon, CheckCircle2 } from 'lucide-react';
+import { WifiOff, RefreshCw, Sun, Moon, CheckCircle2 } from 'lucide-react';
 import type { TabPrincipal } from '../types/finance';
 import { getCycleLabel } from '../utils/format';
 
@@ -8,8 +8,7 @@ interface HeaderProps {
   online: boolean;
   sincronizando: boolean;
   queueCount: number;
-  tabActiva: TabPrincipal;
-  onCarteras: () => void;
+  tabActiva?: TabPrincipal;
 }
 
 export default function Header({
@@ -18,7 +17,6 @@ export default function Header({
   online,
   sincronizando,
   queueCount,
-  onCarteras,
 }: HeaderProps) {
   const cicloLabel = getCycleLabel();
 
@@ -64,24 +62,6 @@ export default function Header({
       <div className="flex items-center gap-2 flex-shrink-0">
         <button
           type="button"
-          onClick={onCarteras}
-          className="
-            flex items-center gap-1.5 px-3 py-1.5
-            rounded-xl text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100
-            bg-white dark:bg-slate-800/80 hover:bg-slate-50 dark:hover:bg-slate-800
-            border border-slate-200/90 dark:border-slate-700
-            shadow-sm
-            transition-all duration-150
-            text-xs font-semibold
-          "
-          aria-label="Ver saldos de carteras"
-        >
-          <Wallet size={14} className="text-slate-500 dark:text-slate-400" />
-          <span>Carteras</span>
-        </button>
-
-        <button
-          type="button"
           onClick={onTemaToggle}
           className="
             p-2 rounded-xl
@@ -89,7 +69,7 @@ export default function Header({
             bg-white dark:bg-slate-800/80 hover:bg-slate-50 dark:hover:bg-slate-800
             border border-slate-200/90 dark:border-slate-700
             shadow-sm
-            transition-all duration-150
+            transition-all duration-150 cursor-pointer
           "
           aria-label={tema === 'dark' ? 'Activar modo claro' : 'Activar modo oscuro'}
         >

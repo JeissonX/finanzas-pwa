@@ -21,6 +21,8 @@ interface QuickRegisterProps {
     detalle?: string;
   }) => Promise<void>;
   saving: boolean;
+  onSuccess?: () => void;
+  onClose?: () => void;
 }
 
 const TABS: { key: TipoTransaccion; label: string }[] = [
@@ -77,7 +79,7 @@ const QUICK_SUBS: QuickSubItem[] = [
   },
 ];
 
-export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
+export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegisterProps) {
   const [tipo, setTipo] = useState<TipoTransaccion>('GASTO');
   const [display, setDisplay] = useState('0');
   const [categoria, setCategoria] = useState('Alimentación');
@@ -246,6 +248,7 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
     });
     setDisplay('0');
     setComentario('');
+    onSuccess?.();
   };
 
   return (
