@@ -6,10 +6,8 @@ export const CATALOG_GASTOS: MacroCategoria[] = [
     icono: '🛒',
     presupuesto: 600000,
     subcategorias: [
-      { nombre: 'Mercado', presupuesto: 350000, gastado: 0, cuentaDefecto: 'TC Lulo Bank' },
-      { nombre: 'Restaurante / Domicilios', presupuesto: 150000, gastado: 0, cuentaDefecto: 'Nequi' },
-      { nombre: 'Cafetería / Snacks', presupuesto: 60000, gastado: 0, cuentaDefecto: 'Nequi' },
-      { nombre: 'Panadería / Varios', presupuesto: 40000, gastado: 0, cuentaDefecto: 'Efectivo' },
+      { nombre: 'Mercado del Hogar', presupuesto: 500000, gastado: 0, cuentaDefecto: 'TC Lulo Bank' },
+      { nombre: 'Restaurantes y Almuerzos', presupuesto: 250000, gastado: 0, cuentaDefecto: 'Nequi' },
     ],
   },
   {
@@ -175,8 +173,9 @@ export const PAYMENT_RULES: Record<string, string> = {
   'Gasolina': 'RappiCard',
   'Uber / Taxi': 'RappiCard',
 
-  // Mercado / Suscripciones / Gym -> TC Lulo Bank
-  'Mercado': 'TC Lulo Bank',
+  // Mercado del Hogar / Suscripciones / Gym -> TC Lulo Bank
+  'Mercado del Hogar': 'TC Lulo Bank',
+  'Restaurantes y Almuerzos': 'Nequi',
   'Aseo / Artículos Hogar': 'TC Lulo Bank',
   'Comida Mascota': 'TC Lulo Bank',
   'Gimnasio': 'TC Lulo Bank',

@@ -1,4 +1,4 @@
-import type { Transaccion } from '../types/finance';
+import type { Transaccion, AppDataResponse, PresupuestoItem } from '../types/finance';
 import { CATALOG_GASTOS } from '../data/catalog';
 
 export const API_URL = 'https://script.google.com/macros/s/AKfycbwMXl1h2dBkA5--xHRHw-DTvmWrQ9dXij47yIR-KAu5aw95sVS9B6UqBDA_0BVV4Haa/exec';
@@ -21,24 +21,7 @@ export const DEFAULT_SALDOS: Record<string, number> = {
   'Crédito Mazda 2 (Lulo)': 0,
 };
 
-export interface AppData {
-  saldos: Record<string, number>;
-  gastadoPorSubcat: Record<string, number>;
-  gastadoPorMacro: Record<string, number>;
-  kpis: {
-    ingresos: number;
-    gastos: number;
-    balance: number;
-    tasaAhorro: number;
-  };
-  historico: { ciclo: string; gastos: number; ingresos: number }[];
-  fromCache: boolean;
-  timestamp: number;
-  tasas?: {
-    lulo?: number;
-    mazda?: number;
-  };
-}
+export interface AppData extends AppDataResponse {}
 
 export const DEFAULT_APPDATA: AppData = {
   saldos: { ...DEFAULT_SALDOS },
@@ -59,6 +42,8 @@ export const DEFAULT_APPDATA: AppData = {
     lulo: 9.25,
     mazda: 21.35,
   },
+  transacciones: [],
+  presupuestos: [],
 };
 
 // Purgar cachés obsoletas con datos ficticios
@@ -613,6 +598,30 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         ? incomingTasas.mazda
         : undefined;
 
+      // Si Google Sheets devuelve transacciones, sincronizarlas con el almacenamiento local
+      let mergedList: Transaccion[] = [];
+      if (Array.isArray(incoming.transacciones)) {
+        const remoteTxs = incoming.transacciones as Transaccion[];
+        const localTxs = getTransacciones();
+        const mergedMap = new Map<number, Transaccion>();
+        for (const t of remoteTxs) {
+          mergedMap.set(t.id, { ...t, sincronizado: true });
+        }
+        for (const t of localTxs) {
+          mergedMap.set(t.id, t);
+        }
+        mergedList = Array.from(mergedMap.values()).sort(
+          (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+        );
+        saveTransacciones(mergedList);
+      }
+
+      // Presupuestos dinámicos devueltos por Google Apps Script
+      let presupuestos: PresupuestoItem[] = [];
+      if (Array.isArray(incoming.presupuestos)) {
+        presupuestos = incoming.presupuestos as PresupuestoItem[];
+      }
+
       const result: AppData = {
         saldos: updatedSaldos,
         gastadoPorSubcat: updatedGastadoSub,
@@ -630,26 +639,9 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
           lulo: tasaLuloSheet ?? 9.25,
           mazda: tasaMazdaSheet ?? 21.35,
         },
+        transacciones: mergedList.length > 0 ? mergedList : (Array.isArray(incoming.transacciones) ? incoming.transacciones as Transaccion[] : []),
+        presupuestos,
       };
-
-      // Si Google Sheets devuelve transacciones, sincronizarlas con el almacenamiento local
-      if (Array.isArray(incoming.transacciones)) {
-        const remoteTxs = incoming.transacciones as Transaccion[];
-        const localTxs = getTransacciones();
-        const mergedMap = new Map<number, Transaccion>();
-        // Primero añadir remotas
-        for (const t of remoteTxs) {
-          mergedMap.set(t.id, { ...t, sincronizado: true });
-        }
-        // Conservar locales recientes
-        for (const t of localTxs) {
-          mergedMap.set(t.id, t);
-        }
-        const mergedList = Array.from(mergedMap.values()).sort(
-          (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
-        );
-        saveTransacciones(mergedList);
-      }
 
       // Guardar en caché local
       try {

@@ -1,32 +1,71 @@
-# React + TypeScript + Vite
+# Finanzas PWA 🚀
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Aplicación web progresiva (PWA) offline-first para el control financiero personal, sincronizada bidireccionalmente con Google Sheets mediante Google Apps Script.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 🌟 Características Principales
 
-## React Compiler
+1. **Sincronización Bidireccional con Google Sheets (GAS v8.1)**:
+   - Registro optimista instantáneo en memoria y `localStorage`.
+   - Normalización de payload tolerante y redundante enviando claves descriptivas y abreviadas (`macro`, `categoria`, `sub`, `subcategoria`, `cuentaOrigen`, `cuentaDestino`, `cuenta`, `detalle`, `comentario`).
+   - Sincronización en segundo plano de saldos oficiales, presupuestos dinámicos y transacciones históricas.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+2. **Offline-First & Cola de Contingencia**:
+   - Registro y edición de transacciones sin conexión.
+   - Cola offline en `localStorage` con reintento automático y descarte de duplicados al reconectar.
+   - PWA Service Worker (`finanzas-pwa-v4`) con estrategia cache-first para assets estáticos y bypass explícito para Google Apps Script.
 
-## Expanding the Oxlint configuration
+3. **Presupuestos 100% Dinámicos**:
+   - Renderizado dinámico de subcategorías y montos asignados directamente desde la hoja de cálculo.
+   - Mensajes limpios de estado cuando no hay subcategorías asignadas en el ciclo activo.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+4. **Experiencia Multiplataforma**:
+   - Diseño responsivo adaptado para PC, tabletas y teléfonos (iPhone 16 Pro Max y dispositivos Android).
+   - Scroll vertical natural sin atrapamiento en desktop y pestañas persistentes tras recarga (F5).
+   - Temas Claro (Fintech sobrio) y Oscuro con contraste estricto WCAG AA.
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+---
+
+## 🏗️ Arquitectura y Tecnologías
+
+- **Framework**: React 19 + TypeScript
+- **Bundler**: Vite 8
+- **Estilos**: TailwindCSS (diseño sobrio, cero bloatware visual)
+- **Iconografía**: Lucide React
+- **Gráficos**: Recharts
+- **Despliegue**: Vercel Production
+
+---
+
+## 📋 Scripts Disponibles
+
+- `npm run dev`: Inicia el servidor de desarrollo local con recarga en caliente (HMR).
+- `npx tsc --noEmit`: Validación estricta de tipos TypeScript.
+- `npm run build`: Compilación de producción (`tsc -b && vite build`).
+- `npm run preview`: Previsualización local del bundle generado en `dist/`.
+- `npx vercel --prod --yes`: Despliegue directo a producción en Vercel.
+
+---
+
+## 🔒 Estructura Unificada del Payload
+
+Cada transacción procesada por `saveTransaction()`, `postAjuste()` o la cola offline implementa el siguiente esquema:
+
+```typescript
+const payload = {
+  id: tx.id,
+  fecha: tx.fecha,
+  tipo: tx.tipo,
+  monto: tx.monto,
+  macro: tx.macroCategoria || tx.categoria,
+  categoria: tx.macroCategoria || tx.categoria,
+  sub: tx.subcategoria,
+  subcategoria: tx.subcategoria,
+  cuentaOrigen: tx.tipo === 'GASTO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaOrigen : ''),
+  cuentaDestino: tx.tipo === 'INGRESO' ? tx.cuenta : (tx.tipo === 'TRANSFERENCIA' ? tx.cuentaDestino : ''),
+  cuenta: tx.cuenta || '',
+  detalle: tx.comentario || '',
+  comentario: tx.comentario || ''
+};
 ```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.

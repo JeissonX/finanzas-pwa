@@ -6,7 +6,7 @@ import TransactionsView from './components/TransactionsView';
 import BudgetAccordion from './components/BudgetAccordion';
 import AnalyticsView from './components/AnalyticsView';
 import WalletsModal from './components/WalletsModal';
-import { saveTransaction, getOfflineQueue, syncOfflineQueue, fetchAppData } from './services/api';
+import { saveTransaction, getOfflineQueue, syncOfflineQueue, fetchAppData, saveTransacciones } from './services/api';
 import { haptic } from './utils/format';
 import type { TabPrincipal, TipoTransaccion, Transaccion } from './types/finance';
 
@@ -86,8 +86,26 @@ export default function App() {
     };
   }, []);
 
-  // ── Navigation ─────────────────────────────────────────────
-  const [tab, setTab] = useState<TabPrincipal>('registro');
+  // ── Navigation (persistencia en F5) ────────────────────────
+  const [tab, setTab] = useState<TabPrincipal>(() => {
+    try {
+      const stored = localStorage.getItem('finanzas_active_tab') as TabPrincipal;
+      if (stored && ['registro', 'movimientos', 'presupuestos', 'analiticas', 'presupuesto'].includes(stored)) {
+        return stored;
+      }
+      return 'registro';
+    } catch {
+      return 'registro';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('finanzas_active_tab', tab);
+    } catch {
+      /* ignore */
+    }
+  }, [tab]);
 
   // ── Modals ─────────────────────────────────────────────────
   const [modalCarteras, setModalCarteras] = useState(false);
@@ -142,7 +160,14 @@ export default function App() {
 
   // ── Initial sync & Service Worker ──────────────────────────
   useEffect(() => {
-    fetchAppData().catch(() => {});
+    fetchAppData().then(data => {
+      if (data?.transacciones && Array.isArray(data.transacciones)) {
+        saveTransacciones(data.transacciones);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: data.transacciones }));
+        }
+      }
+    }).catch(() => {});
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(console.warn);
     }
@@ -171,8 +196,8 @@ export default function App() {
       {/* Wallets modal */}
       <WalletsModal open={modalCarteras} onClose={() => setModalCarteras(false)} />
 
-      {/* App shell */}
-      <div className="flex flex-col min-h-screen min-h-[100dvh] bg-[#F8FAFC] dark:bg-[#0B0F19] text-slate-900 dark:text-slate-100 overflow-x-hidden">
+      {/* App shell con scroll vertical natural en PC y móvil */}
+      <div className="flex flex-col min-h-screen min-h-[100dvh] bg-[#F8FAFC] dark:bg-[#0B0F19] text-slate-900 dark:text-slate-100">
         <Header
           tema={tema}
           onTemaToggle={toggleTema}
@@ -183,8 +208,8 @@ export default function App() {
           onCarteras={() => setModalCarteras(true)}
         />
 
-        {/* Main scrollable area with pb-32 to guarantee full clearance on iPhone 16 Pro Max */}
-        <main className="flex-1 overflow-y-auto overscroll-y-contain pb-32 pb-[calc(env(safe-area-inset-bottom)+8rem)]">
+        {/* Main scrollable area con scroll natural en PC y seguro en móvil */}
+        <main className="flex-1 w-full md:overflow-visible overflow-y-auto overscroll-y-contain pb-32 pb-[calc(env(safe-area-inset-bottom)+8rem)]">
           {tab === 'registro' && (
             <QuickRegister onSave={handleSave} saving={saving} />
           )}

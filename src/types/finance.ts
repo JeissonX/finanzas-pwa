@@ -76,3 +76,34 @@ export interface EstadoApp {
   sincronizando: boolean;
   colaOffline: Transaccion[];
 }
+
+export interface PresupuestoItem {
+  macro: string;
+  sub: string;
+  presupuesto: number;
+  gastado?: number;
+  disponible?: number;
+  pct?: number;
+}
+
+export interface AppDataResponse {
+  saldos: Record<string, number>;
+  gastadoPorSubcat: Record<string, number>;
+  gastadoPorMacro: Record<string, number>;
+  kpis: {
+    ingresos: number;
+    gastos: number;
+    balance: number;
+    tasaAhorro: number;
+  };
+  historico: { ciclo: string; gastos: number; ingresos: number }[];
+  fromCache: boolean;
+  timestamp: number;
+  tasas?: {
+    lulo?: number;
+    mazda?: number;
+  };
+  transacciones?: Transaccion[];
+  presupuestos?: PresupuestoItem[];
+}
+

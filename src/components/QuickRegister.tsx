@@ -41,7 +41,7 @@ export default function QuickRegister({ onSave, saving }: QuickRegisterProps) {
   const [tipo, setTipo] = useState<TipoTransaccion>('GASTO');
   const [display, setDisplay] = useState('0');
   const [categoria, setCategoria] = useState('Alimentación');
-  const [subcategoria, setSubcategoria] = useState('Mercado');
+  const [subcategoria, setSubcategoria] = useState('Mercado del Hogar');
   const [cuenta, setCuenta] = useState('TC Lulo Bank');
   const [cuentaDestino, setCuentaDestino] = useState('Lulo Principal (Cuenta)');
   const [comentario, setComentario] = useState('');
