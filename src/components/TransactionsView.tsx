@@ -8,7 +8,6 @@ import {
   Calendar,
   Search,
   PlusCircle,
-  AlertCircle,
   CheckCircle2,
   Clock,
   Wallet,
@@ -51,9 +50,6 @@ export default function TransactionsView({
   const [soloCicloActivo, setSoloCicloActivo] = useState(true);
   const [busqueda, setBusqueda] = useState('');
   
-  // Modal de confirmación de eliminación
-  const [txToDelete, setTxToDelete] = useState<Transaccion | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
   // Filtrado de transacciones
@@ -100,20 +96,19 @@ export default function TransactionsView({
     return { gastos, ingresos, count: filteredTxs.length };
   }, [filteredTxs]);
 
-  // Confirmar y procesar eliminación con reversión
-  const handleDeleteConfirm = async () => {
-    if (!txToDelete) return;
-    setIsDeleting(true);
-    haptic(50);
-    try {
-      const ok = await onDeleteTransaction(txToDelete.id);
-      if (ok) {
-        setFeedbackMsg(`Transacción revertida y eliminada correctamente.`);
-        setTimeout(() => setFeedbackMsg(null), 3000);
+  // Eliminar transacción con confirmación nativa window.confirm
+  const handleDelete = async (id: number | string) => {
+    if (window.confirm('¿Estás seguro de que deseas eliminar este movimiento?')) {
+      haptic(50);
+      try {
+        const ok = await onDeleteTransaction(id);
+        if (ok) {
+          setFeedbackMsg('Movimiento eliminado correctamente.');
+          setTimeout(() => setFeedbackMsg(null), 3000);
+        }
+      } catch (err) {
+        console.error('Error al eliminar movimiento:', err);
       }
-    } finally {
-      setIsDeleting(false);
-      setTxToDelete(null);
     }
   };
 
@@ -384,11 +379,8 @@ export default function TransactionsView({
 
                     <button
                       type="button"
-                      onClick={() => {
-                        haptic();
-                        setTxToDelete(tx);
-                      }}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                      onClick={() => handleDelete(tx.id)}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
                       aria-label="Eliminar y revertir movimiento"
                       title="Eliminar y revertir movimiento"
                     >
@@ -445,81 +437,6 @@ export default function TransactionsView({
         </div>
       )}
 
-      {/* Modal de confirmación de eliminación y reversión */}
-      {txToDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-4 animate-scale-up">
-            <div className="flex items-center gap-3 text-rose-600 dark:text-rose-400">
-              <div className="w-10 h-10 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 flex items-center justify-center">
-                <AlertCircle size={22} />
-              </div>
-              <div>
-                <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                  ¿Eliminar este movimiento?
-                </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Esta acción revertirá los saldos y actualizará el presupuesto.
-                </p>
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs flex flex-col gap-1.5">
-              <div className="flex justify-between font-bold">
-                <span className="text-slate-600 dark:text-slate-400">Concepto:</span>
-                <span className="text-slate-900 dark:text-slate-100">
-                  {txToDelete.subcategoria || txToDelete.categoria}
-                </span>
-              </div>
-              <div className="flex justify-between font-bold">
-                <span className="text-slate-600 dark:text-slate-400">Monto:</span>
-                <span className="font-mono text-slate-900 dark:text-slate-100">
-                  {formatCOP(txToDelete.monto)}
-                </span>
-              </div>
-              <div className="flex justify-between text-[11px]">
-                <span className="text-slate-500 dark:text-slate-400">Cuenta:</span>
-                <span className="text-slate-700 dark:text-slate-300 font-semibold truncate max-w-[180px]">
-                  {txToDelete.cuenta || txToDelete.cuentaOrigen}
-                </span>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
-              Se eliminará del historial local y se registrará un evento de reversión en Google Sheets para mantener la contabilidad exacta.
-            </p>
-
-            <div className="flex gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setTxToDelete(null)}
-                disabled={isDeleting}
-                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={handleDeleteConfirm}
-                disabled={isDeleting}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md shadow-rose-600/20 transition flex items-center justify-center gap-1.5"
-              >
-                {isDeleting ? (
-                  <span>Revirtiendo...</span>
-                ) : (
-                  <>
-                    <Trash2 size={13} />
-                    <span>Eliminar y revertir</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

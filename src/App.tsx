@@ -8,12 +8,12 @@ import BudgetAccordion from './components/BudgetAccordion';
 import AnalyticsView from './components/AnalyticsView';
 import {
   saveTransaction,
-  deleteTransaction,
   getTransacciones,
   getOfflineQueue,
   syncOfflineQueue,
   fetchAppData,
 } from './services/api';
+import * as api from './services/api';
 import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
 import type { TabNavegacion, TipoTransaccion, Transaccion } from './types/finance';
@@ -149,17 +149,17 @@ export default function App() {
     haptic(50);
     setTransacciones(prev => prev.filter(t => String(t.id) !== String(id)));
     try {
-      const ok = await deleteTransaction(id);
+      const ok = await api.deleteTransaction(id);
       showToast('Movimiento eliminado y revertido', 'ok');
-      await refreshData(true);
+      await fetchAppData(true);
       return ok;
     } catch (err) {
       console.error('Error al eliminar transacción:', err);
       showToast('Error al eliminar movimiento', 'err');
-      await refreshData(true);
+      await fetchAppData(true);
       return false;
     }
-  }, [refreshData, showToast]);
+  }, [showToast]);
 
   // ── Save transaction (Optimistic + Realtime) ───────────────
   const [saving, setSaving] = useState(false);
@@ -221,7 +221,7 @@ export default function App() {
         if (payload.new) {
           const row = payload.new as any;
           const mapped: Transaccion = {
-            id: Number(row.id) || Date.now(),
+            id: row.id ?? Date.now(),
             fecha: row.fecha || new Date().toISOString(),
             tipo: row.tipo,
             monto: Number(row.monto) || 0,

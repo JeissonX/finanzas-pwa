@@ -300,59 +300,65 @@ export const postTransaccion = saveTransaction;
 export async function deleteTransaction(id: number | string): Promise<boolean> {
   const list = getTransacciones();
   const tx = list.find(t => String(t.id) === String(id));
-  if (!tx) return false;
 
-  let current: AppData = { ...DEFAULT_APPDATA };
-  try {
-    const raw = localStorage.getItem(APPDATA_CACHE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as { timestamp: number; data: AppData };
-      if (parsed?.data) current = parsed.data;
+  if (tx) {
+    let current: AppData = { ...DEFAULT_APPDATA };
+    try {
+      const raw = localStorage.getItem(APPDATA_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { timestamp: number; data: AppData };
+        if (parsed?.data) current = parsed.data;
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
-  }
 
-  const saldos = { ...DEFAULT_SALDOS, ...(current.saldos || {}) };
-  const gastadoPorSubcat = { ...(current.gastadoPorSubcat || {}) };
-  const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
-  const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
+    const saldos = { ...DEFAULT_SALDOS, ...(current.saldos || {}) };
+    const gastadoPorSubcat = { ...(current.gastadoPorSubcat || {}) };
+    const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
+    const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
 
-  const monto = Number(tx.monto) || 0;
-  const subcatNombre = tx.subcategoria || tx.sub || '';
-  const macroNombre = tx.categoria || tx.macro || '';
-  const cuentaNombre = tx.cuenta || tx.cuentaOrigen || '';
-  const cuentaDestino = tx.cuentaDestino || '';
+    const monto = Number(tx.monto) || 0;
+    const subcatNombre = tx.subcategoria || tx.sub || '';
+    const macroNombre = tx.categoria || tx.macro || '';
+    const cuentaNombre = tx.cuenta || tx.cuentaOrigen || '';
+    const cuentaDestino = tx.cuentaDestino || '';
 
-  if (tx.tipo === 'GASTO') {
-    if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
-    if (subcatNombre) gastadoPorSubcat[subcatNombre] = Math.max(0, (gastadoPorSubcat[subcatNombre] ?? 0) - monto);
-    if (macroNombre) gastadoPorMacro[macroNombre] = Math.max(0, (gastadoPorMacro[macroNombre] ?? 0) - monto);
-    kpis.gastos = Math.max(0, (kpis.gastos ?? 0) - monto);
-  } else if (tx.tipo === 'INGRESO') {
-    if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
-    kpis.ingresos = Math.max(0, (kpis.ingresos ?? 0) - monto);
-  } else if (tx.tipo === 'TRANSFERENCIA') {
-    if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
-    if (cuentaDestino) saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) - monto;
-  }
+    if (tx.tipo === 'GASTO') {
+      if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
+      if (subcatNombre) gastadoPorSubcat[subcatNombre] = Math.max(0, (gastadoPorSubcat[subcatNombre] ?? 0) - monto);
+      if (macroNombre) gastadoPorMacro[macroNombre] = Math.max(0, (gastadoPorMacro[macroNombre] ?? 0) - monto);
+      kpis.gastos = Math.max(0, (kpis.gastos ?? 0) - monto);
+    } else if (tx.tipo === 'INGRESO') {
+      if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
+      kpis.ingresos = Math.max(0, (kpis.ingresos ?? 0) - monto);
+    } else if (tx.tipo === 'TRANSFERENCIA') {
+      if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
+      if (cuentaDestino) saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) - monto;
+    }
 
-  kpis.balance = (kpis.ingresos ?? 0) - (kpis.gastos ?? 0);
-  kpis.tasaAhorro = kpis.ingresos > 0 ? (kpis.balance / kpis.ingresos) * 100 : 0;
+    kpis.balance = (kpis.ingresos ?? 0) - (kpis.gastos ?? 0);
+    kpis.tasaAhorro = kpis.ingresos > 0 ? (kpis.balance / kpis.ingresos) * 100 : 0;
 
-  const updatedData: AppData = {
-    ...current,
-    saldos,
-    gastadoPorSubcat,
-    gastadoPorMacro,
-    kpis,
-    timestamp: Date.now(),
-  };
+    const updatedData: AppData = {
+      ...current,
+      saldos,
+      gastadoPorSubcat,
+      gastadoPorMacro,
+      kpis,
+      timestamp: Date.now(),
+    };
 
-  try {
-    localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: updatedData.timestamp, data: updatedData }));
-  } catch {
-    /* ignore */
+    try {
+      localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: updatedData.timestamp, data: updatedData }));
+    } catch {
+      /* ignore */
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: updatedData }));
+      window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: updatedData.saldos }));
+    }
   }
 
   const remainingTxs = list.filter(t => String(t.id) !== String(id));
@@ -368,15 +374,18 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
   }
 
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: updatedData }));
-    window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: updatedData.saldos }));
     window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: remainingTxs }));
   }
 
   try {
-    await supabase.from('transacciones').delete().eq('id', String(id));
+    const { error } = await supabase.from('transacciones').delete().eq('id', String(id));
+    if (error) {
+      console.warn('Error al eliminar transacción en Supabase:', error);
+      return false;
+    }
   } catch (err) {
     console.warn('Fallo al eliminar transacción en Supabase:', err);
+    return false;
   }
 
   return true;
@@ -430,8 +439,14 @@ export async function postAjuste(ajuste: AjustePayload): Promise<void> {
   await saveTransaction(payload);
 }
 
-export async function processRecurringExpenses(cicloActivo?: string): Promise<number> {
-  const activeCycle = cicloActivo || getCycleLabel();
+let isProcessingRecurring = false;
+
+export async function processRecurringExpenses(cicloActivo: string = getCycleLabel()): Promise<number> {
+  if (isProcessingRecurring) {
+    return 0;
+  }
+  isProcessingRecurring = true;
+
   try {
     const { data: recurrentes, error } = await supabase
       .from('gastos_recurrentes')
@@ -454,32 +469,47 @@ export async function processRecurringExpenses(cicloActivo?: string): Promise<nu
       const diaPago = Number(r.dia_pago) || 1;
       const ultimoCiclo = r.ultimo_ciclo_ejecutado;
 
-      if (diaActual >= diaPago && ultimoCiclo !== activeCycle) {
-        const txId = `TX-REC-${r.id}-${Date.now()}`;
-        const txPayload = {
-          id: txId,
-          fecha: new Date().toISOString(),
-          tipo: 'GASTO' as const,
-          monto: Number(r.monto),
-          macro_categoria: r.macro_categoria || '',
-          subcategoria: r.subcategoria || '',
-          cuenta: r.cuenta || '',
-          cuenta_origen: r.cuenta || null,
-          cuenta_destino: null,
-          ciclo: activeCycle,
-          detalle: `Débito automático programado: ${r.nombre}`,
-        };
+      if (diaActual >= diaPago && ultimoCiclo !== cicloActivo) {
+        const deterministicId = 'REC_' + r.id + '_' + cicloActivo.replace(/[^a-zA-Z0-9]/g, '_');
 
-        const { error: txErr } = await supabase.from('transacciones').insert([txPayload]);
-        if (!txErr) {
-          executedCount++;
-          await supabase
-            .from('gastos_recurrentes')
-            .update({ ultimo_ciclo_ejecutado: activeCycle })
-            .eq('id', r.id);
-        } else {
-          console.warn(`Error al ejecutar gasto recurrente ${r.nombre}:`, txErr);
+        // Antes de insertar, verificar si ya existe una transacción con ese id exacto
+        const { data: existingTx } = await supabase
+          .from('transacciones')
+          .select('id')
+          .eq('id', deterministicId)
+          .maybeSingle();
+
+        if (!existingTx) {
+          const txPayload = {
+            id: deterministicId,
+            fecha: new Date().toISOString(),
+            tipo: 'GASTO' as const,
+            monto: Number(r.monto),
+            macro_categoria: r.macro_categoria || '',
+            subcategoria: r.subcategoria || '',
+            cuenta: r.cuenta || '',
+            cuenta_origen: r.cuenta || null,
+            cuenta_destino: null,
+            ciclo: cicloActivo,
+            detalle: `Débito automático programado: ${r.nombre}`,
+          };
+
+          const { error: txErr } = await supabase.from('transacciones').insert([txPayload]);
+          if (!txErr) {
+            executedCount++;
+          } else {
+            // Silenciosamente capturar si es duplicado
+            if (txErr.code !== '23505') {
+              console.warn(`Error al ejecutar gasto recurrente ${r.nombre}:`, txErr);
+            }
+          }
         }
+
+        // Sellar de inmediato en Supabase
+        await supabase
+          .from('gastos_recurrentes')
+          .update({ ultimo_ciclo_ejecutado: cicloActivo })
+          .eq('id', r.id);
       }
     }
 
@@ -487,6 +517,8 @@ export async function processRecurringExpenses(cicloActivo?: string): Promise<nu
   } catch (err) {
     console.warn('Advertencia en processRecurringExpenses:', err);
     return 0;
+  } finally {
+    isProcessingRecurring = false;
   }
 }
 
@@ -667,7 +699,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     }
 
     const remoteTxs: Transaccion[] = transaccionesData.map((row: any) => ({
-      id: Number(row.id) || Date.parse(row.fecha) || Date.now(),
+      id: row.id ?? (Date.parse(row.fecha) || Date.now()),
       tipo: row.tipo,
       monto: Number(row.monto) || 0,
       categoria: row.macro_categoria || '',
