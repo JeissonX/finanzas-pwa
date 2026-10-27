@@ -12,6 +12,7 @@ import {
   Clock,
   Wallet,
   Download,
+  Pencil,
 } from 'lucide-react';
 import type { Transaccion, TipoTransaccion } from '../types/finance';
 import {
@@ -22,12 +23,14 @@ import {
   haptic,
 } from '../utils/format';
 import { exportTransactionsToCSV } from '../utils/exportCsv';
+import EditTransactionModal from './EditTransactionModal';
 
 interface TransactionsViewProps {
   onOpenRegister?: () => void;
   onNavigateToRegister?: () => void;
   transacciones: Transaccion[];
   onDeleteTransaction: (id: number | string) => Promise<boolean>;
+  onUpdateTransaction?: (id: number | string, updated: Partial<Transaccion>) => Promise<boolean | void>;
 }
 
 type FiltroTipo = 'TODOS' | TipoTransaccion;
@@ -37,7 +40,9 @@ export default function TransactionsView({
   onNavigateToRegister,
   transacciones,
   onDeleteTransaction,
+  onUpdateTransaction,
 }: TransactionsViewProps) {
+  const [editingTx, setEditingTx] = useState<Transaccion | null>(null);
   const handleRegister = () => {
     haptic();
     if (onOpenRegister) {
@@ -379,6 +384,19 @@ export default function TransactionsView({
 
                     <button
                       type="button"
+                      onClick={() => {
+                        haptic();
+                        setEditingTx(tx);
+                      }}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                      aria-label="Editar movimiento"
+                      title="Editar movimiento"
+                    >
+                      <Pencil size={14} />
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() => handleDelete(tx.id)}
                       className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
                       aria-label="Eliminar y revertir movimiento"
@@ -437,6 +455,19 @@ export default function TransactionsView({
         </div>
       )}
 
+      {/* Modal de edición */}
+      <EditTransactionModal
+        isOpen={Boolean(editingTx)}
+        onClose={() => setEditingTx(null)}
+        transaccion={editingTx}
+        onSave={async (id, updated) => {
+          if (onUpdateTransaction) {
+            await onUpdateTransaction(id, updated);
+            setFeedbackMsg('Movimiento actualizado correctamente.');
+            setTimeout(() => setFeedbackMsg(null), 3000);
+          }
+        }}
+      />
     </div>
   );
 }

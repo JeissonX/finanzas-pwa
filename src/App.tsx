@@ -133,6 +133,8 @@ export default function App() {
   }, []);
 
   // ── Refresh app data ───────────────────────────────────────
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   const refreshData = useCallback(async (force = false) => {
     try {
       const data = await fetchAppData(force);
@@ -143,6 +145,74 @@ export default function App() {
       console.error('Error sincronizando datos:', err);
     }
   }, []);
+
+  const handleForceRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    haptic(30);
+    try {
+      try {
+        localStorage.removeItem('finanzas_appdata_cache_v3');
+        localStorage.removeItem('finanzas_cached_appdata_v4');
+      } catch {
+        /* noop */
+      }
+
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        try {
+          const cacheKeys = await window.caches.keys();
+          await Promise.all(cacheKeys.map(k => window.caches.delete(k)));
+        } catch (cErr) {
+          console.warn('Error purgando caches:', cErr);
+        }
+      }
+
+      await refreshData(true);
+      showToast('Datos sincronizados y caché purgada', 'ok');
+    } catch (err) {
+      console.error('Error durante la sincronización limpia:', err);
+      showToast('Error al sincronizar datos', 'err');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [refreshData, showToast]);
+
+  // ── Update transaction (Optimistic + Realtime) ─────────────
+  const handleUpdateTransaction = useCallback(async (id: number | string, updated: Partial<Transaccion>): Promise<void> => {
+    haptic(40);
+    setTransacciones(prev => prev.map(t => {
+      if (String(t.id) === String(id)) {
+        const cuentaFinal = updated.cuenta || t.cuenta;
+        return {
+          ...t,
+          ...updated,
+          monto: updated.monto !== undefined ? Number(updated.monto) : t.monto,
+          categoria: updated.macroCategoria || updated.categoria || t.categoria,
+          macroCategoria: updated.macroCategoria || updated.categoria || t.macroCategoria,
+          subcategoria: updated.subcategoria || t.subcategoria,
+          cuenta: cuentaFinal,
+          cuentaOrigen: updated.tipo === 'GASTO' ? cuentaFinal : (updated.cuentaOrigen ?? t.cuentaOrigen),
+          cuentaDestino: updated.tipo === 'INGRESO' ? cuentaFinal : (updated.cuentaDestino ?? t.cuentaDestino),
+          comentario: updated.comentario !== undefined ? updated.comentario : t.comentario,
+          detalle: updated.detalle !== undefined ? updated.detalle : t.detalle,
+        };
+      }
+      return t;
+    }));
+
+    try {
+      const ok = await api.updateTransaction(id, updated);
+      if (ok) {
+        showToast('Movimiento actualizado', 'ok');
+      } else {
+        showToast('Error al actualizar movimiento', 'err');
+      }
+      await fetchAppData(true);
+    } catch (err) {
+      console.error('Error al actualizar transacción:', err);
+      showToast('Error al actualizar movimiento', 'err');
+      await fetchAppData(true);
+    }
+  }, [showToast]);
 
   // ── Delete transaction (reactivo e instantáneo) ────────────
   const handleDeleteTransaction = useCallback(async (id: number | string): Promise<boolean> => {
@@ -325,6 +395,8 @@ export default function App() {
           sincronizando={sincronizando}
           queueCount={queueCount}
           tabActiva={tab}
+          onForceRefresh={handleForceRefresh}
+          isRefreshing={isRefreshing}
         />
 
         {/* Main scrollable area con scroll natural en PC y seguro en móvil */}
@@ -333,6 +405,7 @@ export default function App() {
             <TransactionsView
               transacciones={transacciones}
               onDeleteTransaction={handleDeleteTransaction}
+              onUpdateTransaction={handleUpdateTransaction}
               onOpenRegister={() => setIsRegisterOpen(true)}
               onNavigateToRegister={() => setIsRegisterOpen(true)}
             />

@@ -393,6 +393,63 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
 
 export const deleteTransaccion = deleteTransaction;
 
+export async function updateTransaction(
+  id: string | number,
+  updatedData: Partial<Transaccion>
+): Promise<boolean> {
+  try {
+    const cuenta = updatedData.cuenta || '';
+    const macroCategoria = updatedData.macroCategoria || updatedData.categoria || updatedData.macro || '';
+    const subcategoria = updatedData.subcategoria || updatedData.sub || '';
+    const detalle = updatedData.comentario !== undefined ? updatedData.comentario : (updatedData.detalle ?? '');
+
+    const cuentaOrigen = updatedData.tipo === 'GASTO'
+      ? cuenta
+      : (updatedData.cuentaOrigen || null);
+
+    const cuentaDestino = updatedData.tipo === 'INGRESO'
+      ? cuenta
+      : (updatedData.cuentaDestino || null);
+
+    const payload: Record<string, any> = {
+      monto: Number(updatedData.monto),
+      macro_categoria: macroCategoria,
+      subcategoria: subcategoria,
+      cuenta: cuenta,
+      cuenta_origen: cuentaOrigen,
+      cuenta_destino: cuentaDestino,
+      detalle: detalle,
+    };
+
+    if (updatedData.tipo) {
+      payload.tipo = updatedData.tipo;
+    }
+    if (updatedData.fecha) {
+      payload.fecha = updatedData.fecha;
+      payload.ciclo = getCycleLabel(new Date(updatedData.fecha));
+    }
+
+    const { error } = await supabase
+      .from('transacciones')
+      .update(payload)
+      .eq('id', String(id));
+
+    if (error) {
+      console.error('Error al actualizar transacción en Supabase:', error);
+      return false;
+    }
+
+    await fetchAppData(true);
+    return true;
+  } catch (err) {
+    console.error('Fallo al actualizar transacción:', err);
+    return false;
+  }
+}
+
+export const updateTransaccion = updateTransaction;
+
+
 export interface AjustePayload {
   tipo: 'AJUSTE';
   monto: number;

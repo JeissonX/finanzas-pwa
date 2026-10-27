@@ -1,4 +1,4 @@
-import { WifiOff, RefreshCw, Sun, Moon, CheckCircle2 } from 'lucide-react';
+import { WifiOff, RefreshCw, Sun, Moon, CheckCircle2, RotateCw } from 'lucide-react';
 import type { TabPrincipal } from '../types/finance';
 import { getCycleLabel } from '../utils/format';
 
@@ -9,6 +9,8 @@ interface HeaderProps {
   sincronizando: boolean;
   queueCount: number;
   tabActiva?: TabPrincipal;
+  onForceRefresh?: () => void | Promise<void>;
+  isRefreshing?: boolean;
 }
 
 export default function Header({
@@ -17,6 +19,8 @@ export default function Header({
   online,
   sincronizando,
   queueCount,
+  onForceRefresh,
+  isRefreshing,
 }: HeaderProps) {
   const cicloLabel = getCycleLabel();
 
@@ -60,6 +64,24 @@ export default function Header({
 
       {/* Right: actions */}
       <div className="flex items-center gap-2 flex-shrink-0">
+        <button
+          type="button"
+          onClick={onForceRefresh}
+          disabled={isRefreshing}
+          className="
+            p-2 rounded-xl
+            text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100
+            bg-white dark:bg-slate-800/80 hover:bg-slate-50 dark:hover:bg-slate-800
+            border border-slate-200/90 dark:border-slate-700
+            shadow-sm
+            transition-all duration-150 cursor-pointer disabled:opacity-50
+          "
+          title="Forzar sincronización limpia"
+          aria-label="Forzar sincronización limpia"
+        >
+          <RotateCw size={15} className={isRefreshing ? 'animate-spin text-amber-500' : ''} />
+        </button>
+
         <button
           type="button"
           onClick={onTemaToggle}
