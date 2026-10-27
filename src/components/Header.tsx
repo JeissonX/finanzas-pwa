@@ -1,6 +1,7 @@
-import { WifiOff, RefreshCw, Sun, Moon, CheckCircle2, RotateCw } from 'lucide-react';
+import { WifiOff, RefreshCw, Sun, Moon, CheckCircle2, RotateCw, LogOut } from 'lucide-react';
 import type { TabPrincipal } from '../types/finance';
 import { getCycleLabel } from '../utils/format';
+import { supabase } from '../services/supabase';
 
 interface HeaderProps {
   tema: 'dark' | 'light';
@@ -23,6 +24,14 @@ export default function Header({
   isRefreshing,
 }: HeaderProps) {
   const cicloLabel = getCycleLabel();
+
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn('Error al cerrar sesión:', err);
+    }
+  };
 
   return (
     <header className="
@@ -96,6 +105,23 @@ export default function Header({
           aria-label={tema === 'dark' ? 'Activar modo claro' : 'Activar modo oscuro'}
         >
           {tema === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
+
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="
+            p-2 rounded-xl
+            text-slate-700 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400
+            bg-white dark:bg-slate-800/80 hover:bg-slate-50 dark:hover:bg-slate-800
+            border border-slate-200/90 dark:border-slate-700
+            shadow-sm
+            transition-all duration-150 cursor-pointer
+          "
+          title="Cerrar sesión de propietario"
+          aria-label="Cerrar sesión"
+        >
+          <LogOut size={15} />
         </button>
       </div>
     </header>

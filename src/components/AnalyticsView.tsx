@@ -99,6 +99,7 @@ export interface AmortizationRun {
   interestTotal: number;
   principalTotal: number;
   paymentsTotal: number;
+  residualBalance: number;
 }
 
 /** Simula el cronograma mes a mes hasta saldo 0 con sistema de amortización francés */
@@ -107,13 +108,30 @@ export function amortizeSchedule(
   monthlyPayment: number,
   monthlyRate: number
 ): AmortizationRun {
-  if (principal <= 0 || monthlyPayment <= 0 || monthlyRate <= 0) {
-    return { months: 0, interestTotal: 0, principalTotal: 0, paymentsTotal: 0 };
+  if (principal <= 0 || monthlyPayment <= 0) {
+    return { months: 0, interestTotal: 0, principalTotal: 0, paymentsTotal: 0, residualBalance: 0 };
   }
 
-  const firstMonthInterest = principal * monthlyRate;
+  if (monthlyRate <= 0) {
+    const months = Math.ceil(principal / monthlyPayment);
+    return {
+      months,
+      interestTotal: 0,
+      principalTotal: Math.round(principal),
+      paymentsTotal: Math.round(principal),
+      residualBalance: 0,
+    };
+  }
+
+  const firstMonthInterest = Math.round(principal * monthlyRate);
   if (monthlyPayment <= firstMonthInterest) {
-    return { months: 999, interestTotal: Infinity, principalTotal: principal, paymentsTotal: Infinity };
+    return {
+      months: 999,
+      interestTotal: Infinity,
+      principalTotal: Math.round(principal),
+      paymentsTotal: Infinity,
+      residualBalance: Math.round(principal),
+    };
   }
 
   let balance = principal;
@@ -125,7 +143,7 @@ export function amortizeSchedule(
 
   while (balance > 0.01 && months < MAX_MONTHS) {
     months++;
-    const interest = balance * monthlyRate;
+    const interest = Math.round(balance * monthlyRate);
     interestTotal += interest;
 
     const totalDue = balance + interest;
@@ -147,6 +165,7 @@ export function amortizeSchedule(
     interestTotal: Math.round(interestTotal),
     principalTotal: Math.round(principalTotal),
     paymentsTotal: Math.round(paymentsTotal),
+    residualBalance: Math.round(balance),
   };
 }
 
@@ -841,6 +860,15 @@ export default function AnalyticsView() {
               </>
             )}
           </div>
+
+          {/* Alerta de saldo residual si no se amortiza a 360 meses */}
+          {(baseRun.residualBalance > 0 || extraRun.residualBalance > 0) && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-semibold flex items-center gap-2">
+              <span>
+                Atención: La proyección alcanzó el límite máximo de 360 meses con un saldo residual de {formatCOP(Math.max(baseRun.residualBalance, extraRun.residualBalance))}. La cuota actual no amortiza la totalidad del capital en el plazo proyectado.
+              </span>
+            </div>
+          )}
 
           {/* INSIGHT DE ARBITRAJE FINANCIERO (SPREAD) */}
           <div className="p-3.5 rounded-2xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 flex items-start gap-2.5">

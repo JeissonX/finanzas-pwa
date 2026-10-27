@@ -7,16 +7,28 @@ import {
   getBogotaDateParts,
   getDaysInBogotaMonth,
 } from '../utils/format';
+import {
+  getQueuedMutations,
+  enqueueMutation,
+  removeProcessedMutations,
+  clearMutationQueue,
+  withQueueLock,
+  type QueuedMutation,
+} from '../utils/offlineQueueDb';
 
-const QUEUE_KEY = 'finanzas_offline_queue';
+export {
+  getQueuedMutations,
+  enqueueMutation,
+  removeProcessedMutations,
+  clearMutationQueue,
+  withQueueLock,
+};
+export type { QueuedMutation };
+export const getOfflineQueue = getQueuedMutations;
+
 const TRANSACTIONS_KEY = 'finanzas_transacciones_ciclo_v2';
 const APPDATA_CACHE_KEY = 'finanzas_cached_appdata_v4';
 const APPDATA_CACHE_TTL = 5 * 60 * 1000;
-
-export type QueuedMutation =
-  | { op: 'insert'; tx: Transaccion }
-  | { op: 'delete'; id: string }
-  | { op: 'update'; id: string; patch: Partial<Transaccion> };
 
 export const DEFAULT_SALDOS: Record<string, number> = {
   'Lulo Principal (Cuenta)': 0,
@@ -59,99 +71,20 @@ export const DEFAULT_APPDATA: AppData = {
   gastosRecurrentes: [],
 };
 
-/** Sanitiza montos garantizando enteros seguros */
+/** Sanitiza montos garantizando enteros seguros en COP */
 export function sanitizeAmount(m: any): number {
   const num = Number(m);
   if (!Number.isFinite(num)) return 0;
-  const rounded = Math.round(num);
+  const rounded = Math.trunc(Math.round(num));
   return Number.isSafeInteger(rounded) ? rounded : 0;
 }
 
-// ── Cola Offline basada en Mutaciones Tipadas ─────────────────────────────────
-
-export function getOfflineQueue(): QueuedMutation[] {
-  try {
-    const raw = localStorage.getItem(QUEUE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    // Migración limpia si había transacciones planas legadas
-    return parsed.map((item: any) => {
-      if (item && item.op) return item as QueuedMutation;
-      return { op: 'insert', tx: item as Transaccion };
-    });
-  } catch {
-    return [];
-  }
-}
-
-export function saveOfflineQueue(queue: QueuedMutation[]): void {
-  try {
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-  } catch {
-    /* ignore */
-  }
-}
-
-export function enqueueMutation(mutation: QueuedMutation): void {
-  const q = getOfflineQueue();
-
-  if (mutation.op === 'insert') {
-    const idx = q.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.tx.id));
-    if (idx >= 0) {
-      q[idx] = mutation;
-    } else {
-      q.push(mutation);
-    }
-  } else if (mutation.op === 'delete') {
-    // Si había un insert o update pendiente de este id, removerlo de la cola
-    const filtered = q.filter(m => {
-      if (m.op === 'insert' && String(m.tx.id) === String(mutation.id)) return false;
-      if (m.op === 'update' && String(m.id) === String(mutation.id)) return false;
-      return true;
-    });
-    filtered.push(mutation);
-    saveOfflineQueue(filtered);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('finanzas_queue_updated', { detail: filtered.length }));
-    }
-    return;
-  } else if (mutation.op === 'update') {
-    const insertIdx = q.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.id));
-    if (insertIdx >= 0 && q[insertIdx].op === 'insert') {
-      // Combinar parche directamente en el insert pendiente
-      const existingTx = (q[insertIdx] as { op: 'insert'; tx: Transaccion }).tx;
-      q[insertIdx] = {
-        op: 'insert',
-        tx: { ...existingTx, ...mutation.patch },
-      };
-    } else {
-      const updateIdx = q.findIndex(m => m.op === 'update' && String(m.id) === String(mutation.id));
-      if (updateIdx >= 0) {
-        const prevPatch = (q[updateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion> }).patch;
-        q[updateIdx] = {
-          op: 'update',
-          id: mutation.id,
-          patch: { ...prevPatch, ...mutation.patch },
-        };
-      } else {
-        q.push(mutation);
-      }
-    }
-  }
-
-  saveOfflineQueue(q);
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('finanzas_queue_updated', { detail: q.length }));
-  }
-}
-
 /** Compatibilidad hacia atrás con llamadas directas a enqueue(tx) */
-export function enqueue(txOrMut: Transaccion | QueuedMutation): void {
+export async function enqueue(txOrMut: Transaccion | QueuedMutation): Promise<void> {
   if ('op' in txOrMut) {
-    enqueueMutation(txOrMut);
+    await enqueueMutation(txOrMut);
   } else {
-    enqueueMutation({ op: 'insert', tx: txOrMut });
+    await enqueueMutation({ op: 'insert', tx: txOrMut });
   }
 }
 
@@ -331,11 +264,13 @@ export async function insertRemote(tx: Transaccion): Promise<void> {
   const txDate = tx.fecha || new Date().toISOString();
   const canonicalCycle = getPayrollCycleId(txDate);
 
+  const cleanMonto = sanitizeAmount(tx.monto);
+
   const payload = {
     id: String(tx.id),
     fecha: txDate,
     tipo: tx.tipo,
-    monto: sanitizeAmount(tx.monto),
+    monto: cleanMonto,
     macro_categoria: tx.macroCategoria || tx.categoria || tx.macro || '',
     subcategoria: tx.subcategoria || tx.sub || '',
     cuenta: cuentaPrincipal,
@@ -347,9 +282,26 @@ export async function insertRemote(tx: Transaccion): Promise<void> {
 
   const { error } = await supabase.from('transacciones').insert([payload]);
   if (error) {
-    // Si ya existe en PostgreSQL (error 23505), tratar como éxito idempotente
+    // Si ya existe en PostgreSQL (error 23505), verificar coincidencia en monto y tipo antes de darlo por idempotente
     if (error.code === '23505') {
-      return;
+      const { data: remoteRow, error: fetchErr } = await supabase
+        .from('transacciones')
+        .select('monto, tipo')
+        .eq('id', String(tx.id))
+        .maybeSingle();
+
+      if (fetchErr || !remoteRow) {
+        throw error;
+      }
+
+      const remoteMonto = sanitizeAmount(remoteRow.monto);
+      if (remoteMonto === cleanMonto && remoteRow.tipo === tx.tipo) {
+        return;
+      }
+
+      throw new Error(
+        `Discrepancia en colisión 23505 para transacción ${tx.id}: remoto (${remoteRow.tipo}, ${remoteMonto}) vs local (${tx.tipo}, ${cleanMonto})`
+      );
     }
     throw error;
   }
@@ -374,7 +326,7 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
     markTransactionSynced(tx.id, true);
   } catch (err) {
     // 3. Encolar mutación de inserción en caso de fallo
-    enqueueMutation({ op: 'insert', tx: { ...tx, sincronizado: false } });
+    await enqueueMutation({ op: 'insert', tx: { ...tx, sincronizado: false } });
     markTransactionSynced(tx.id, false);
     throw err;
   }
@@ -457,12 +409,12 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
     const { error } = await supabase.from('transacciones').delete().eq('id', strId);
     if (error) {
       console.warn('Error al eliminar transacción en Supabase, encolando mutación:', error);
-      enqueueMutation({ op: 'delete', id: strId });
+      await enqueueMutation({ op: 'delete', id: strId });
       return false;
     }
   } catch (err) {
     console.warn('Fallo de red al eliminar en Supabase, encolando mutación:', err);
-    enqueueMutation({ op: 'delete', id: strId });
+    await enqueueMutation({ op: 'delete', id: strId });
     return false;
   }
 
@@ -537,7 +489,7 @@ export async function updateTransaction(
 
     if (error) {
       console.warn('Error al actualizar transacción en Supabase, encolando mutación:', error);
-      enqueueMutation({ op: 'update', id: strId, patch: updatedData });
+      await enqueueMutation({ op: 'update', id: strId, patch: updatedData });
       return false;
     }
 
@@ -545,7 +497,7 @@ export async function updateTransaction(
     return true;
   } catch (err) {
     console.warn('Fallo de red al actualizar en Supabase, encolando mutación:', err);
-    enqueueMutation({ op: 'update', id: strId, patch: updatedData });
+    await enqueueMutation({ op: 'update', id: strId, patch: updatedData });
     return false;
   }
 }
@@ -843,6 +795,11 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const transaccionesData = txsRes.data || [];
     const recurrentesData = recurrentesRes.data || [];
 
+    // CORRECCIÓN D: Si carterasData.length === 0, lanzar error para impedir sobrescribir caché con ceros
+    if (carterasData.length === 0) {
+      throw new Error('Snapshot inválido: cero carteras retornadas');
+    }
+
     const gastosRecurrentes: GastoRecurrente[] = recurrentesData.map((r: any) => ({
       id: r.id,
       nombre: r.nombre,
@@ -860,30 +817,19 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     let balanceDisponible = 0;
 
     for (const c of carterasData) {
-      // Saldo autoritativo: si saldo_actual existe y es finito en BD, usarlo directamente
-      const dbSaldoActual = Number(c.saldo_actual);
-      let saldoEfectivo: number;
-
-      if (c.saldo_actual !== null && c.saldo_actual !== undefined && Number.isFinite(dbSaldoActual)) {
-        saldoEfectivo = dbSaldoActual;
-      } else {
-        // Fallback a cálculo transaccional si saldo_actual es nulo
-        const entradas = transaccionesData
-          .filter((t: any) => t.cuenta_destino === c.nombre)
-          .reduce((acc: number, t: any) => acc + sanitizeAmount(t.monto), 0);
-        const salidas = transaccionesData
-          .filter((t: any) => t.cuenta_origen === c.nombre)
-          .reduce((acc: number, t: any) => acc + sanitizeAmount(t.monto), 0);
-        saldoEfectivo = (Number(c.saldo_inicial) || 0) + entradas - salidas;
+      // CORRECCIÓN D: Saldo autoritativo estricto calculado por trigger en Supabase
+      const saldoAutoritativo = Math.trunc(Number(c.saldo_actual));
+      if (!Number.isFinite(saldoAutoritativo)) {
+        throw new Error(`Saldo autoritativo inválido para cartera ${c.nombre}: ${c.saldo_actual}`);
       }
 
-      updatedSaldos[c.nombre] = saldoEfectivo;
+      updatedSaldos[c.nombre] = saldoAutoritativo;
 
       const tipoLower = (c.tipo || '').toLowerCase();
       const nombreLower = (c.nombre || '').toLowerCase();
 
       if (tipoLower.includes('remunerado') || nombreLower.includes('bolsillo')) {
-        saldoRemunerados += saldoEfectivo;
+        saldoRemunerados += saldoAutoritativo;
       }
 
       if (
@@ -894,7 +840,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         tipoLower.includes('líquido') ||
         tipoLower.includes('liquido')
       ) {
-        balanceDisponible += saldoEfectivo;
+        balanceDisponible += saldoAutoritativo;
       }
     }
 
@@ -916,7 +862,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       sincronizado: true,
     }));
 
-    const queue = getOfflineQueue();
+    const queue = await getQueuedMutations();
     const queueIds = new Set(
       queue
         .filter(q => q.op === 'insert')
@@ -1109,49 +1055,52 @@ export async function getSaldos(forceRefresh = false): Promise<SaldosResponse> {
 // ── Sincronización de Cola Offline (Sin duplicar saldos) ──────────────────────
 
 export async function syncOfflineQueue(): Promise<{ synced: number; remaining: number }> {
-  const queue = getOfflineQueue();
-  if (queue.length === 0) return { synced: 0, remaining: 0 };
+  return withQueueLock(async () => {
+    const queue = await getQueuedMutations();
+    if (queue.length === 0) return { synced: 0, remaining: 0 };
 
-  const remaining: QueuedMutation[] = [];
-  let synced = 0;
+    const processed: QueuedMutation[] = [];
+    let synced = 0;
 
-  for (const mut of queue) {
-    try {
-      if (mut.op === 'insert') {
-        // Inserción remota directa SIN ejecutar applyOptimisticTransaction
-        await insertRemote(mut.tx);
-        markTransactionSynced(mut.tx.id, true);
-        synced++;
-      } else if (mut.op === 'delete') {
-        const { error } = await supabase.from('transacciones').delete().eq('id', String(mut.id));
-        if (error) throw error;
-        synced++;
-      } else if (mut.op === 'update') {
-        const payload = formatUpdatePayload(mut.patch);
-        const { error } = await supabase.from('transacciones').update(payload).eq('id', String(mut.id));
-        if (error) throw error;
-        synced++;
-      }
-    } catch (err: any) {
-      if (err?.code === '23505') {
-        // Idempotencia: el registro ya existía
+    for (const mut of queue) {
+      try {
         if (mut.op === 'insert') {
+          // Inserción remota directa SIN ejecutar applyOptimisticTransaction
+          await insertRemote(mut.tx);
           markTransactionSynced(mut.tx.id, true);
+          processed.push(mut);
+          synced++;
+        } else if (mut.op === 'delete') {
+          const { error } = await supabase.from('transacciones').delete().eq('id', String(mut.id));
+          if (error) throw error;
+          processed.push(mut);
+          synced++;
+        } else if (mut.op === 'update') {
+          const payload = formatUpdatePayload(mut.patch);
+          const { error } = await supabase.from('transacciones').update(payload).eq('id', String(mut.id));
+          if (error) throw error;
+          processed.push(mut);
+          synced++;
         }
-        synced++;
-      } else {
-        remaining.push(mut);
+      } catch (err: any) {
+        if (err?.code === '23505' && mut.op === 'insert') {
+          // Idempotencia: el registro ya existía validado
+          markTransactionSynced(mut.tx.id, true);
+          processed.push(mut);
+          synced++;
+        } else {
+          console.warn('Error sincronizando mutación encolada:', mut, err);
+        }
       }
     }
-  }
 
-  saveOfflineQueue(remaining);
+    if (processed.length > 0) {
+      await removeProcessedMutations(processed);
+    }
 
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('finanzas_queue_updated', { detail: remaining.length }));
-  }
-
-  return { synced, remaining: remaining.length };
+    const remainingCount = queue.length - processed.length;
+    return { synced, remaining: remainingCount };
+  });
 }
 
 export const syncQueue = syncOfflineQueue;

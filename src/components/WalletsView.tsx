@@ -17,7 +17,7 @@ import {
 import {
   getSaldos,
   DEFAULT_SALDOS,
-  getOfflineQueue,
+  getQueuedMutations,
   syncOfflineQueue,
   saveTransaction,
   fetchAppData,
@@ -77,6 +77,7 @@ export default function WalletsView() {
   const [lastUpdated, setLastUpdated] = useState<number>(0);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [queueCount, setQueueCount] = useState<number>(0);
 
   // Estado del mini-formulario de ajuste / conciliación
   const [adjustingWallet, setAdjustingWallet] = useState<string | null>(null);
@@ -105,7 +106,6 @@ export default function WalletsView() {
   const [recDia, setRecDia] = useState(1);
   const [isSavingRec, setIsSavingRec] = useState(false);
 
-  const queueCount = getOfflineQueue().length;
   const cicloActivo = getCycleLabel();
 
   const fetchSaldos = async (force = false) => {
@@ -156,11 +156,26 @@ export default function WalletsView() {
     return () => window.removeEventListener('finanzas_saldos_updated', handleSaldosUpdated);
   }, []);
 
+  useEffect(() => {
+    getQueuedMutations().then(q => setQueueCount(q.length)).catch(() => {});
+    const handleQueueUpdated = (e: Event) => {
+      const custom = e as CustomEvent<number>;
+      if (typeof custom.detail === 'number') {
+        setQueueCount(custom.detail);
+      } else {
+        getQueuedMutations().then(q => setQueueCount(q.length)).catch(() => {});
+      }
+    };
+    window.addEventListener('finanzas_queue_updated', handleQueueUpdated);
+    return () => window.removeEventListener('finanzas_queue_updated', handleQueueUpdated);
+  }, []);
+
   const handleSync = async () => {
     setSyncing(true);
     setSyncResult(null);
     haptic();
     const result = await syncOfflineQueue();
+    setQueueCount(result.remaining);
     setSyncing(false);
     setSyncResult(result.synced > 0
       ? `✓ ${result.synced} sincronizadas`
@@ -174,6 +189,7 @@ export default function WalletsView() {
     if (index <= 0) return;
     haptic(30);
 
+    const prevOrder = [...carterasDb];
     const current = carterasDb[index];
     const neighbor = carterasDb[index - 1];
 
@@ -200,14 +216,14 @@ export default function WalletsView() {
       });
 
       if (rpcErr) {
-        // Fallback si la RPC no existe en la base de datos
-        await Promise.all([
-          supabase.from('carteras').update({ orden: targetOrderCurrent }).eq('id', current.id),
-          supabase.from('carteras').update({ orden: targetOrderNeighbor }).eq('id', neighbor.id),
-        ]);
+        throw rpcErr;
       }
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
+      setCarterasDb(prevOrder);
+      setAdjustSuccessMsg('Error al reordenar carteras. Orden restablecido.');
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
       fetchSaldos(true);
     }
   };
@@ -216,6 +232,7 @@ export default function WalletsView() {
     if (index >= carterasDb.length - 1) return;
     haptic(30);
 
+    const prevOrder = [...carterasDb];
     const current = carterasDb[index];
     const neighbor = carterasDb[index + 1];
 
@@ -242,14 +259,14 @@ export default function WalletsView() {
       });
 
       if (rpcErr) {
-        // Fallback si la RPC no existe en la base de datos
-        await Promise.all([
-          supabase.from('carteras').update({ orden: targetOrderCurrent }).eq('id', current.id),
-          supabase.from('carteras').update({ orden: targetOrderNeighbor }).eq('id', neighbor.id),
-        ]);
+        throw rpcErr;
       }
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
+      setCarterasDb(prevOrder);
+      setAdjustSuccessMsg('Error al reordenar carteras. Orden restablecido.');
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
       fetchSaldos(true);
     }
   };

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import { ListOrdered, Wallet, PieChart, TrendingUp } from 'lucide-react';
 import Header from './components/Header';
+import AuthGate from './components/AuthGate';
 import QuickRegisterModal from './components/QuickRegisterModal';
 import TransactionsView from './components/TransactionsView';
 import WalletsView from './components/WalletsView';
@@ -8,7 +9,7 @@ import BudgetAccordion from './components/BudgetAccordion';
 import {
   saveTransaction,
   getTransacciones,
-  getOfflineQueue,
+  getQueuedMutations,
   syncOfflineQueue,
   fetchAppData,
 } from './services/api';
@@ -36,7 +37,7 @@ const NAV_TABS: { key: TabNavegacion; label: string; Icon: typeof ListOrdered }[
   { key: 'analiticas', label: 'Analíticas', Icon: TrendingUp },
 ];
 
-export default function App() {
+function MainDashboard() {
   // ── Global transactions state ──────────────────────────────
   const [transacciones, setTransacciones] = useState<Transaccion[]>(() => getTransacciones());
 
@@ -69,31 +70,43 @@ export default function App() {
   // ── Network & queue ────────────────────────────────────────
   const [online, setOnline] = useState(navigator.onLine);
   const [sincronizando, setSincronizando] = useState(false);
-  const [queueCount, setQueueCount] = useState(() => getOfflineQueue().length);
+  const [queueCount, setQueueCount] = useState(0);
 
   useEffect(() => {
+    // Inicializar conteo de mutaciones desde IndexedDB
+    getQueuedMutations()
+      .then(q => setQueueCount(q.length))
+      .catch(() => {});
+
     const handleOnline = async () => {
       setOnline(true);
-      if (getOfflineQueue().length > 0) {
+      const currentQueue = await getQueuedMutations();
+      if (currentQueue.length > 0) {
         setSincronizando(true);
         await syncOfflineQueue();
-        setQueueCount(getOfflineQueue().length);
+        const remaining = await getQueuedMutations();
+        setQueueCount(remaining.length);
         setSincronizando(false);
       }
     };
+
     const handleOffline = () => setOnline(false);
+
     const handleQueueChange = (e: Event) => {
       const custom = e as CustomEvent<number>;
       if (typeof custom.detail === 'number') {
         setQueueCount(custom.detail);
       } else {
-        setQueueCount(getOfflineQueue().length);
+        getQueuedMutations()
+          .then(q => setQueueCount(q.length))
+          .catch(() => {});
       }
     };
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     window.addEventListener('finanzas_queue_updated', handleQueueChange);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -237,15 +250,19 @@ export default function App() {
     }
   }, [showToast]);
 
-  // ── Delete transaction (reactivo e instantáneo) ────────────
+  // ── Delete transaction (CORRECCIÓN E: Feedback honesto síncrono vs encolado) ──
   const handleDeleteTransaction = useCallback(async (id: number | string): Promise<boolean> => {
     haptic(50);
     setTransacciones(prev => prev.filter(t => String(t.id) !== String(id)));
     try {
-      const ok = await api.deleteTransaction(id);
-      showToast('Movimiento eliminado y revertido', 'ok');
-      await fetchAppData(true);
-      return ok;
+      const deletedRemotely = await api.deleteTransaction(id);
+      if (deletedRemotely) {
+        showToast('Movimiento eliminado y revertido', 'ok');
+        await fetchAppData(true);
+      } else {
+        showToast('Eliminación encolada (pendiente de sincronizar)', 'warn');
+      }
+      return deletedRemotely;
     } catch (err) {
       console.error('Error al eliminar transacción:', err);
       showToast('Error al eliminar movimiento', 'err');
@@ -286,10 +303,12 @@ export default function App() {
       showToast(`${payload.tipo} guardado — $${payload.monto.toLocaleString('es-CO')}`, 'ok');
       refreshData(true);
     } catch {
-      setQueueCount(getOfflineQueue().length);
+      const q = await getQueuedMutations();
+      setQueueCount(q.length);
       showToast('Guardado offline · se enviará al reconectar', 'warn');
     } finally {
-      setQueueCount(getOfflineQueue().length);
+      const q = await getQueuedMutations();
+      setQueueCount(q.length);
       setSaving(false);
     }
   }, [refreshData, showToast]);
@@ -316,7 +335,6 @@ export default function App() {
     const channel = supabase.channel('finanzas-live')
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'transacciones' }, (payload) => {
         const deletedId = (payload.old as { id?: number | string })?.id;
-        // Guardia robusta contra id 0 (deletedId !== undefined && deletedId !== null)
         if (deletedId !== undefined && deletedId !== null) {
           setTransacciones(prev => prev.filter(t => String(t.id) !== String(deletedId)));
         }
@@ -506,5 +524,13 @@ export default function App() {
         </nav>
       </div>
     </>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthGate>
+      <MainDashboard />
+    </AuthGate>
   );
 }

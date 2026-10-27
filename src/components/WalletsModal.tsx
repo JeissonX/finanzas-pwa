@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { X, RefreshCw, TrendingUp, TrendingDown, Minus, SlidersHorizontal, Check } from 'lucide-react';
-import { getSaldos, DEFAULT_SALDOS, getOfflineQueue, syncQueue, postAjuste, fetchAppData } from '../services/api';
+import { getSaldos, DEFAULT_SALDOS, getQueuedMutations, syncQueue, postAjuste, fetchAppData } from '../services/api';
 import { supabase } from '../services/supabase';
 import { formatCOP, haptic } from '../utils/format';
 import { CARTERAS_DEFAULT } from '../data/catalog';
@@ -43,6 +43,7 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
   const [lastUpdated, setLastUpdated] = useState<number>(0);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [queueCount, setQueueCount] = useState<number>(0);
 
   // Estado del mini-formulario de ajuste / conciliación
   const [adjustingWallet, setAdjustingWallet] = useState<string | null>(null);
@@ -57,8 +58,6 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
       if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
     };
   }, []);
-
-  const queueCount = getOfflineQueue().length;
 
   const fetchSaldos = async (force = false) => {
     setLoading(true);
@@ -107,10 +106,25 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
     return () => window.removeEventListener('finanzas_saldos_updated', handleSaldosUpdated);
   }, []);
 
+  useEffect(() => {
+    getQueuedMutations().then(q => setQueueCount(q.length)).catch(() => {});
+    const handleQueueUpdated = (e: Event) => {
+      const custom = e as CustomEvent<number>;
+      if (typeof custom.detail === 'number') {
+        setQueueCount(custom.detail);
+      } else {
+        getQueuedMutations().then(q => setQueueCount(q.length)).catch(() => {});
+      }
+    };
+    window.addEventListener('finanzas_queue_updated', handleQueueUpdated);
+    return () => window.removeEventListener('finanzas_queue_updated', handleQueueUpdated);
+  }, []);
+
   const handleSync = async () => {
     setSyncing(true);
     setSyncResult(null);
     const result = await syncQueue();
+    setQueueCount(result.remaining);
     setSyncing(false);
     setSyncResult(result.synced > 0
       ? `✓ ${result.synced} sincronizadas`
