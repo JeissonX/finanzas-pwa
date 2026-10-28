@@ -220,28 +220,43 @@ export default function WalletsView() {
     const current = activeList[index];
     const neighbor = activeList[index - 1];
 
-    const targetOrderCurrent = index;
-    const targetOrderNeighbor = index + 1;
+    const targetOrderCurrent = typeof neighbor.orden === 'number' && neighbor.orden !== current.orden
+      ? neighbor.orden
+      : index;
+    const targetOrderNeighbor = typeof current.orden === 'number' && neighbor.orden !== current.orden
+      ? current.orden
+      : index + 1;
+
+    const id_a = String(current.id);
+    let orden_a = Math.round(Number(targetOrderCurrent));
+    const id_b = String(neighbor.id);
+    let orden_b = Math.round(Number(targetOrderNeighbor));
+
+    if (isNaN(orden_a) || isNaN(orden_b) || orden_a === orden_b) {
+      orden_a = index;
+      orden_b = index + 1;
+    }
 
     setCarterasDb(prev =>
       prev.map(c => {
-        if (c.id === current.id) return { ...c, orden: targetOrderCurrent };
-        if (c.id === neighbor.id) return { ...c, orden: targetOrderNeighbor };
+        if (String(c.id) === id_a) return { ...c, orden: orden_a };
+        if (String(c.id) === id_b) return { ...c, orden: orden_b };
         return c;
       }).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99))
     );
 
     try {
       const { error: rpcErr } = await supabase.rpc('swap_carteras_orden', {
-        id_a: current.id,
-        orden_a: targetOrderCurrent,
-        id_b: neighbor.id,
-        orden_b: targetOrderNeighbor,
+        id_a,
+        orden_a,
+        id_b,
+        orden_b,
       });
 
       if (rpcErr) throw rpcErr;
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
+      console.error('Detalle RPC swap_carteras_orden:', err);
       setCarterasDb(prevOrder);
       setAdjustSuccessMsg('Error al reordenar carteras. Orden restablecido.');
       if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
@@ -259,28 +274,43 @@ export default function WalletsView() {
     const current = activeList[index];
     const neighbor = activeList[index + 1];
 
-    const targetOrderCurrent = index + 2;
-    const targetOrderNeighbor = index + 1;
+    const targetOrderCurrent = typeof neighbor.orden === 'number' && neighbor.orden !== current.orden
+      ? neighbor.orden
+      : index + 2;
+    const targetOrderNeighbor = typeof current.orden === 'number' && neighbor.orden !== current.orden
+      ? current.orden
+      : index + 1;
+
+    const id_a = String(current.id);
+    let orden_a = Math.round(Number(targetOrderCurrent));
+    const id_b = String(neighbor.id);
+    let orden_b = Math.round(Number(targetOrderNeighbor));
+
+    if (isNaN(orden_a) || isNaN(orden_b) || orden_a === orden_b) {
+      orden_a = index + 2;
+      orden_b = index + 1;
+    }
 
     setCarterasDb(prev =>
       prev.map(c => {
-        if (c.id === current.id) return { ...c, orden: targetOrderCurrent };
-        if (c.id === neighbor.id) return { ...c, orden: targetOrderNeighbor };
+        if (String(c.id) === id_a) return { ...c, orden: orden_a };
+        if (String(c.id) === id_b) return { ...c, orden: orden_b };
         return c;
       }).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99))
     );
 
     try {
       const { error: rpcErr } = await supabase.rpc('swap_carteras_orden', {
-        id_a: current.id,
-        orden_a: targetOrderCurrent,
-        id_b: neighbor.id,
-        orden_b: targetOrderNeighbor,
+        id_a,
+        orden_a,
+        id_b,
+        orden_b,
       });
 
       if (rpcErr) throw rpcErr;
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
+      console.error('Detalle RPC swap_carteras_orden:', err);
       setCarterasDb(prevOrder);
       setAdjustSuccessMsg('Error al reordenar carteras. Orden restablecido.');
       if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
