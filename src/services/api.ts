@@ -17,7 +17,9 @@ import {
   clearMutationQueue,
   clearMutationQueueUnlocked,
   withQueueLock,
+  LeaseLostError,
   type QueuedMutation,
+  type QueuedMutationInput,
 } from '../utils/offlineQueueDb';
 
 export {
@@ -30,8 +32,9 @@ export {
   clearMutationQueue,
   clearMutationQueueUnlocked,
   withQueueLock,
+  LeaseLostError,
 };
-export type { QueuedMutation };
+export type { QueuedMutation, QueuedMutationInput };
 export const getOfflineQueue = getQueuedMutations;
 
 const TRANSACTIONS_KEY = 'finanzas_transacciones_ciclo_v2';
@@ -88,7 +91,7 @@ export function sanitizeAmount(m: any): number {
 }
 
 /** Compatibilidad hacia atrás con llamadas directas a enqueue(tx) */
-export async function enqueue(txOrMut: Transaccion | QueuedMutation): Promise<void> {
+export async function enqueue(txOrMut: Transaccion | QueuedMutation | QueuedMutationInput): Promise<void> {
   if ('op' in txOrMut) {
     await enqueueMutation(txOrMut);
   } else {
@@ -233,7 +236,11 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
 
 // ── Inserción Remota Pura (Separada del Flujo Optimista) ───────────────────────
 
-export async function insertRemote(tx: Transaccion): Promise<void> {
+export async function insertRemote(
+  tx: Transaccion,
+  signal?: AbortSignal,
+  clientMutationId?: string
+): Promise<void> {
   let cuentaOrigen: string | null = null;
   let cuentaDestino: string | null = null;
 
@@ -274,7 +281,7 @@ export async function insertRemote(tx: Transaccion): Promise<void> {
 
   const cleanMonto = sanitizeAmount(tx.monto);
 
-  const payload = {
+  const payload: Record<string, any> = {
     id: String(tx.id),
     fecha: txDate,
     tipo: tx.tipo,
@@ -288,15 +295,32 @@ export async function insertRemote(tx: Transaccion): Promise<void> {
     ciclo: canonicalCycle,
   };
 
-  const { error } = await supabase.from('transacciones').insert([payload]);
+  if (clientMutationId) {
+    payload.client_mutation_id = clientMutationId;
+  }
+
+  let query = supabase
+    .from('transacciones')
+    .upsert([payload], { onConflict: 'client_mutation_id', ignoreDuplicates: true });
+
+  if (signal) {
+    query = query.abortSignal(signal);
+  }
+
+  const { error } = await query;
   if (error) {
     // Si ya existe en PostgreSQL (error 23505), verificar coincidencia en monto y tipo antes de darlo por idempotente
     if (error.code === '23505') {
-      const { data: remoteRow, error: fetchErr } = await supabase
+      let fetchQuery = supabase
         .from('transacciones')
         .select('monto, tipo')
-        .eq('id', String(tx.id))
-        .maybeSingle();
+        .eq('id', String(tx.id));
+
+      if (signal) {
+        fetchQuery = fetchQuery.abortSignal(signal);
+      }
+
+      const { data: remoteRow, error: fetchErr } = await fetchQuery.maybeSingle();
 
       if (fetchErr || !remoteRow) {
         throw error;
@@ -328,13 +352,18 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
     cuentaDestino,
   });
 
-  // 2. Intentar inserción remota
+  const mutationId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `mut_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+  // 2. Intentar inserción remota enviando client_mutation_id
   try {
-    await insertRemote(tx);
+    await insertRemote(tx, undefined, mutationId);
     markTransactionSynced(tx.id, true);
   } catch (err) {
-    // 3. Encolar mutación de inserción en caso de fallo
-    await enqueueMutation({ op: 'insert', tx: { ...tx, sincronizado: false } });
+    // 3. Encolar mutación de inserción en caso de fallo preservando mutationId
+    await enqueueMutation({ mutationId, op: 'insert', tx: { ...tx, sincronizado: false } });
     markTransactionSynced(tx.id, false);
     throw err;
   }
@@ -1062,53 +1091,107 @@ export async function getSaldos(forceRefresh = false): Promise<SaldosResponse> {
 
 // ── Sincronización de Cola Offline (Sin duplicar saldos) ──────────────────────
 
-export async function syncOfflineQueue(): Promise<{ synced: number; remaining: number }> {
-  return withQueueLock(async () => {
-    const queue = await getQueuedMutationsUnlocked();
-    if (queue.length === 0) return { synced: 0, remaining: 0 };
+function isLeaseLostOrAbortError(err: any, signal?: AbortSignal): boolean {
+  if (!err) return false;
+  if (err instanceof LeaseLostError || err.name === 'LeaseLostError') return true;
+  if (err.name === 'AbortError' || err.message?.includes('aborted') || err.message?.includes('AbortError')) {
+    return true;
+  }
+  if (signal?.aborted) return true;
+  return false;
+}
 
-    const processed: QueuedMutation[] = [];
-    let synced = 0;
-
-    for (const mut of queue) {
-      try {
-        if (mut.op === 'insert') {
-          // Inserción remota directa SIN ejecutar applyOptimisticTransaction
-          await insertRemote(mut.tx);
-          markTransactionSynced(mut.tx.id, true);
-          processed.push(mut);
-          synced++;
-        } else if (mut.op === 'delete') {
-          const { error } = await supabase.from('transacciones').delete().eq('id', String(mut.id));
-          if (error) throw error;
-          processed.push(mut);
-          synced++;
-        } else if (mut.op === 'update') {
-          const payload = formatUpdatePayload(mut.patch);
-          const { error } = await supabase.from('transacciones').update(payload).eq('id', String(mut.id));
-          if (error) throw error;
-          processed.push(mut);
-          synced++;
+export async function syncOfflineQueue(signal?: AbortSignal): Promise<{ synced: number; remaining: number }> {
+  try {
+    return await withQueueLock(async (lockSignal: AbortSignal) => {
+      const getActiveSignal = (): AbortSignal => {
+        if (!signal) return lockSignal;
+        if (typeof AbortSignal.any === 'function') {
+          return AbortSignal.any([signal, lockSignal]);
         }
-      } catch (err: any) {
-        if (err?.code === '23505' && mut.op === 'insert') {
-          // Idempotencia: el registro ya existía validado
-          markTransactionSynced(mut.tx.id, true);
-          processed.push(mut);
-          synced++;
+        const controller = new AbortController();
+        const onAbort = () => {
+          controller.abort(signal.aborted ? signal.reason : lockSignal.reason);
+        };
+        if (signal.aborted || lockSignal.aborted) {
+          onAbort();
         } else {
-          console.warn('Error sincronizando mutación encolada:', mut, err);
+          signal.addEventListener('abort', onAbort, { once: true });
+          lockSignal.addEventListener('abort', onAbort, { once: true });
+        }
+        return controller.signal;
+      };
+
+      const effectiveSignal = getActiveSignal();
+      const queue = await getQueuedMutationsUnlocked();
+      if (queue.length === 0) return { synced: 0, remaining: 0 };
+
+      const processedIds: string[] = [];
+      let synced = 0;
+
+      for (const mut of queue) {
+        if (effectiveSignal?.aborted) {
+          throw effectiveSignal.reason || new LeaseLostError('Sincronización abortada por pérdida de lease o señal');
+        }
+
+        try {
+          if (mut.op === 'insert') {
+            // Inserción remota directa SIN ejecutar applyOptimisticTransaction
+            await insertRemote(mut.tx, effectiveSignal, mut.mutationId);
+            markTransactionSynced(mut.tx.id, true);
+            processedIds.push(mut.mutationId);
+            synced++;
+          } else if (mut.op === 'delete') {
+            let deleteQuery = supabase.from('transacciones').delete().eq('id', String(mut.id));
+            if (effectiveSignal) {
+              deleteQuery = deleteQuery.abortSignal(effectiveSignal);
+            }
+            const { error } = await deleteQuery;
+            if (error) throw error;
+            processedIds.push(mut.mutationId);
+            synced++;
+          } else if (mut.op === 'update') {
+            const payload = formatUpdatePayload(mut.patch);
+            let updateQuery = supabase.from('transacciones').update(payload).eq('id', String(mut.id));
+            if (effectiveSignal) {
+              updateQuery = updateQuery.abortSignal(effectiveSignal);
+            }
+            const { error } = await updateQuery;
+            if (error) throw error;
+            processedIds.push(mut.mutationId);
+            synced++;
+          }
+        } catch (err: any) {
+          if (isLeaseLostOrAbortError(err, effectiveSignal)) {
+            throw err;
+          }
+          if (err?.code === '23505' && mut.op === 'insert') {
+            // Idempotencia: el registro ya existía validado
+            markTransactionSynced(mut.tx.id, true);
+            processedIds.push(mut.mutationId);
+            synced++;
+          } else {
+            console.warn('Error sincronizando mutación encolada:', mut, err);
+          }
         }
       }
-    }
 
-    if (processed.length > 0) {
-      await removeProcessedMutationsUnlocked(processed);
-    }
+      if (processedIds.length > 0) {
+        await removeProcessedMutationsUnlocked(processedIds);
+      }
 
-    const remainingCount = queue.length - processed.length;
-    return { synced, remaining: remainingCount };
-  });
+      const remainingCount = queue.length - processedIds.length;
+      return { synced, remaining: remainingCount };
+    });
+  } catch (err: any) {
+    if (isLeaseLostOrAbortError(err, signal)) {
+      // Salir en silencio: sin toast de error, sin reintento inmediato, sin marcar la mutación como fallida.
+      // La otra pestaña ya está sincronizando.
+      const current = await getQueuedMutationsUnlocked().catch(() => []);
+      return { synced: 0, remaining: current.length };
+    }
+    throw err;
+  }
 }
 
 export const syncQueue = syncOfflineQueue;

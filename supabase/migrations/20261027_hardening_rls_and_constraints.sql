@@ -3,18 +3,17 @@
 -- Hardening RLS por Propietario Autenticado y Pesos Enteros COP para Bases Existentes
 --
 -- INSTRUCCIONES DE EJECUCIÓN:
--- 1. En Supabase SQL Editor (SQL puro sin meta-comandos tipo \ir):
---    Copie y pegue todo este script directamente en el SQL Editor de Supabase.
---    Defina el UUID real de su usuario propietario en auth.users descomentando o
---    ajustando la sentencia: SET LOCAL app.owner_user_id = '<UUID>';
---    El bloque transaccional BEGIN; ... COMMIT; garantiza que ante cualquier fallo
---    de pre-validación contable o inconsistencia de UUID se haga rollback atómico.
---
--- 2. En cliente psql CLI:
---    psql "postgresql://..." -c "BEGIN; SET LOCAL app.owner_user_id = '<UUID>'; \i supabase/migrations/20261027_hardening_rls_and_constraints.sql; COMMIT;"
+-- En Supabase SQL Editor (SQL puro sin meta-comandos):
+-- Copie y pegue todo este script directamente en el SQL Editor de Supabase.
+-- Defina el UUID real de su usuario propietario en auth.users reemplazando el placeholder
+-- '00000000-0000-0000-0000-000000000000' en la sentencia SET LOCAL app.owner_user_id.
+-- El bloque transaccional BEGIN; ... COMMIT; garantiza que ante cualquier fallo
+-- de pre-validación contable o inconsistencia de UUID se haga rollback atómico.
 -- ==============================================================================
 
 BEGIN;
+-- REEMPLAZAR CON TU UUID DE SUPABASE AUTH (Authentication -> Users) ANTES DE EJECUTAR EN SQL EDITOR:
+SET LOCAL app.owner_user_id = '00000000-0000-0000-0000-000000000000';
 
 -- 1. EXTENSIONES
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";

@@ -1,12 +1,24 @@
 import type { Transaccion } from '../types/finance';
 
 export type QueuedMutation =
-  | { op: 'insert'; tx: Transaccion }
-  | { op: 'delete'; id: string }
-  | { op: 'update'; id: string; patch: Partial<Transaccion> };
+  | { mutationId: string; op: 'insert'; tx: Transaccion }
+  | { mutationId: string; op: 'delete'; id: string }
+  | { mutationId: string; op: 'update'; id: string; patch: Partial<Transaccion> };
+
+export type QueuedMutationInput =
+  | { mutationId?: string; op: 'insert'; tx: Transaccion }
+  | { mutationId?: string; op: 'delete'; id: string }
+  | { mutationId?: string; op: 'update'; id: string; patch: Partial<Transaccion> };
+
+export class LeaseLostError extends Error {
+  constructor(message = 'Pérdida de lease en lock de sincronización') {
+    super(message);
+    this.name = 'LeaseLostError';
+  }
+}
 
 const DB_NAME = 'finanzas_offline_db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = 'mutations';
 const LOCKS_STORE_NAME = 'locks';
 const LOCK_NAME = 'finanzas_offline_queue_lock';
@@ -15,6 +27,7 @@ const LEGACY_LOCALSTORAGE_KEY = 'finanzas_offline_queue';
 interface IdbLockRecord {
   name: string;
   holderId: string;
+  ownerToken: string;
   expiresAt: number;
 }
 
@@ -22,6 +35,13 @@ interface MutationRecord {
   id?: number;
   mutation: QueuedMutation;
   timestamp: number;
+}
+
+function generateUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `id_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -41,6 +61,24 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(LOCKS_STORE_NAME)) {
         db.createObjectStore(LOCKS_STORE_NAME, { keyPath: 'name' });
       }
+
+      // Backfill de mutationId para registros existentes que no lo tengan
+      const tx = request.transaction;
+      if (tx && db.objectStoreNames.contains(STORE_NAME)) {
+        const store = tx.objectStore(STORE_NAME);
+        const cursorReq = store.openCursor();
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) {
+            const val = cursor.value;
+            if (val && val.mutation && !val.mutation.mutationId) {
+              val.mutation.mutationId = generateUuid();
+              cursor.update(val);
+            }
+            cursor.continue();
+          }
+        };
+      }
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -53,6 +91,7 @@ function tryAcquireIdbLock(
   db: IDBDatabase,
   lockName: string,
   holderId: string,
+  ownerToken: string,
   leaseMs: number
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -64,10 +103,11 @@ function tryAcquireIdbLock(
     getReq.onsuccess = () => {
       const record = getReq.result as IdbLockRecord | undefined;
       const now = Date.now();
-      if (!record || record.expiresAt <= now || record.holderId === holderId) {
+      if (!record || record.expiresAt <= now || record.ownerToken === ownerToken) {
         store.put({
           name: lockName,
           holderId,
+          ownerToken,
           expiresAt: now + leaseMs,
         });
         acquired = true;
@@ -88,11 +128,11 @@ function tryAcquireIdbLock(
   });
 }
 
-/** Renueva el lease lock si el titular actual coincide */
+/** Renueva el lease lock mediante compare-and-set si el ownerToken coincide */
 function renewIdbLock(
   db: IDBDatabase,
   lockName: string,
-  holderId: string,
+  ownerToken: string,
   leaseMs: number
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -103,11 +143,14 @@ function renewIdbLock(
 
     getReq.onsuccess = () => {
       const record = getReq.result as IdbLockRecord | undefined;
-      if (record && record.holderId === holderId) {
+      const now = Date.now();
+      // Compare-and-set: solo actúa si el token coincide y el lease sigue vigente
+      if (record && record.ownerToken === ownerToken && record.expiresAt > now) {
         store.put({
           name: lockName,
-          holderId,
-          expiresAt: Date.now() + leaseMs,
+          holderId: record.holderId,
+          ownerToken,
+          expiresAt: now + leaseMs,
         });
         renewed = true;
       }
@@ -127,37 +170,38 @@ function renewIdbLock(
   });
 }
 
-/** Libera el lease lock si el titular actual coincide */
+/** Libera el lease lock mediante compare-and-set solo si el ownerToken coincide */
 function releaseIdbLock(
   db: IDBDatabase,
   lockName: string,
-  holderId: string
-): Promise<void> {
+  ownerToken: string
+): Promise<boolean> {
   return new Promise((resolve) => {
+    let released = false;
     const tx = db.transaction(LOCKS_STORE_NAME, 'readwrite');
     const store = tx.objectStore(LOCKS_STORE_NAME);
     const getReq = store.get(lockName);
 
     getReq.onsuccess = () => {
       const record = getReq.result as IdbLockRecord | undefined;
-      if (record && record.holderId === holderId) {
+      // Compare-and-set: solo borra si el token coincide con el propio
+      if (record && record.ownerToken === ownerToken) {
         store.delete(lockName);
+        released = true;
       }
     };
 
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
-    tx.onabort = () => resolve();
+    tx.oncomplete = () => resolve(released);
+    tx.onerror = () => resolve(false);
+    tx.onabort = () => resolve(false);
   });
 }
 
-/** Fallback multipestaña atómico mediante transacciones readwrite serializadas en IndexedDB con heartbeat y fail-closed */
-async function withIdbFallbackLock<T>(fn: () => Promise<T>): Promise<T> {
+/** Fallback multipestaña atómico mediante transacciones readwrite en IndexedDB con token de dueño, heartbeat y fail-closed */
+async function withIdbFallbackLock<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const db = await openDatabase();
-  const holderId =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `idb_holder_${Math.random().toString(36).substring(2, 11)}_${Date.now()}`;
+  const holderId = generateUuid();
+  const ownerToken = generateUuid();
 
   const LEASE_MS = 15000;
   const HEARTBEAT_MS = 4000;
@@ -166,7 +210,7 @@ async function withIdbFallbackLock<T>(fn: () => Promise<T>): Promise<T> {
 
   let acquired = false;
   while (Date.now() - startWait < MAX_WAIT_MS) {
-    acquired = await tryAcquireIdbLock(db, LOCK_NAME, holderId, LEASE_MS);
+    acquired = await tryAcquireIdbLock(db, LOCK_NAME, holderId, ownerToken, LEASE_MS);
     if (acquired) break;
     const delay = 120 + Math.floor(Math.random() * 40);
     await new Promise((res) => setTimeout(res, delay));
@@ -178,40 +222,48 @@ async function withIdbFallbackLock<T>(fn: () => Promise<T>): Promise<T> {
     throw new Error('Timeout esperando lock de cola offline en IndexedDB');
   }
 
-  let leaseLost = false;
+  const controller = new AbortController();
+  let isStale = false;
+
   const heartbeatTimer = setInterval(async () => {
     try {
-      const renewed = await renewIdbLock(db, LOCK_NAME, holderId, LEASE_MS);
+      const renewed = await renewIdbLock(db, LOCK_NAME, ownerToken, LEASE_MS);
       if (!renewed) {
-        leaseLost = true;
-        console.warn('Alerta: Pérdida de lease detectada en heartbeat de IndexedDB lock');
+        isStale = true;
+        controller.abort(new LeaseLostError('Pérdida de lease detectada en heartbeat de IndexedDB lock'));
+        clearInterval(heartbeatTimer);
       }
     } catch {
-      leaseLost = true;
+      isStale = true;
+      controller.abort(new LeaseLostError('Fallo en renovación de lease en IndexedDB lock'));
+      clearInterval(heartbeatTimer);
     }
   }, HEARTBEAT_MS);
 
   try {
-    const result = await fn();
-    if (leaseLost) {
-      console.warn('Advertencia: La operación offline finalizó pero el lease se perdió durante la ejecución');
+    const result = await fn(controller.signal);
+    if (isStale) {
+      throw new LeaseLostError('La operación finalizó pero el lease se perdió durante la ejecución');
     }
     return result;
   } finally {
     clearInterval(heartbeatTimer);
-    try {
-      await releaseIdbLock(db, LOCK_NAME, holderId);
-    } catch (err) {
-      console.warn('Error liberando lock de IndexedDB:', err);
+    if (!isStale) {
+      try {
+        await releaseIdbLock(db, LOCK_NAME, ownerToken);
+      } catch (err) {
+        console.warn('Error liberando lock de IndexedDB:', err);
+      }
     }
     db.close();
   }
 }
 
 /** Ejecuta una operación bajo exclusión mutua de navigator.locks o lock atómico en IndexedDB */
-export async function withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
+export async function withQueueLock<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
   if (typeof navigator !== 'undefined' && 'locks' in navigator && typeof navigator.locks?.request === 'function') {
-    return navigator.locks.request(LOCK_NAME, fn);
+    const controller = new AbortController();
+    return navigator.locks.request(LOCK_NAME, () => fn(controller.signal));
   }
   return withIdbFallbackLock(fn);
 }
@@ -222,7 +274,7 @@ function notifyQueueUpdated(count: number): void {
   }
 }
 
-/** Lee todos los registros de IndexedDB (con migración transparente de localStorage si existe) */
+/** Lee todos los registros de IndexedDB asegurando que cada mutación posea un mutationId */
 async function readAllRecords(db: IDBDatabase): Promise<MutationRecord[]> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly');
@@ -231,6 +283,11 @@ async function readAllRecords(db: IDBDatabase): Promise<MutationRecord[]> {
 
     req.onsuccess = () => {
       const records = (req.result || []) as MutationRecord[];
+      for (const rec of records) {
+        if (rec?.mutation && !rec.mutation.mutationId) {
+          rec.mutation.mutationId = generateUuid();
+        }
+      }
       resolve(records);
     };
     req.onerror = () => reject(req.error);
@@ -270,8 +327,11 @@ async function ensureLegacyMigrated(db: IDBDatabase): Promise<void> {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
       const legacyMutations: QueuedMutation[] = parsed.map((item: any) => {
-        if (item && item.op) return item as QueuedMutation;
-        return { op: 'insert', tx: item as Transaccion };
+        const base = item && item.op ? item : { op: 'insert', tx: item as Transaccion };
+        return {
+          mutationId: base.mutationId || generateUuid(),
+          ...base,
+        };
       });
 
       const current = await readAllRecords(db);
@@ -306,52 +366,58 @@ export async function getQueuedMutations(): Promise<QueuedMutation[]> {
 }
 
 /** Encola una mutación aplicando coalescencia atómica sin adquirir lock (para uso dentro de withQueueLock) */
-export async function enqueueMutationUnlocked(mutation: QueuedMutation): Promise<void> {
+export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Promise<void> {
   const db = await openDatabase();
   await ensureLegacyMigrated(db);
   const records = await readAllRecords(db);
 
   const list = records.map(r => r.mutation);
+  const assignedId = mutation.mutationId || generateUuid();
+  const mut: QueuedMutation = { ...mutation, mutationId: assignedId } as QueuedMutation;
 
-  if (mutation.op === 'insert') {
-    const idx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.tx.id));
+  if (mut.op === 'insert') {
+    const idx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mut.tx.id));
     if (idx >= 0) {
-      list[idx] = mutation;
+      // Mantener mutationId original si no se especificó uno explícito
+      const preservedId = mutation.mutationId || list[idx].mutationId;
+      list[idx] = { ...mut, mutationId: preservedId };
     } else {
-      list.push(mutation);
+      list.push(mut);
     }
-  } else if (mutation.op === 'delete') {
+  } else if (mut.op === 'delete') {
     // Eliminar inserts o updates pendientes de este ID antes de añadir el delete
     const filtered = list.filter(m => {
-      if (m.op === 'insert' && String(m.tx.id) === String(mutation.id)) return false;
-      if (m.op === 'update' && String(m.id) === String(mutation.id)) return false;
+      if (m.op === 'insert' && String(m.tx.id) === String(mut.id)) return false;
+      if (m.op === 'update' && String(m.id) === String(mut.id)) return false;
       return true;
     });
-    filtered.push(mutation);
+    filtered.push(mut);
     const updatedRecords: MutationRecord[] = filtered.map(m => ({ mutation: m, timestamp: Date.now() }));
     await writeAllRecords(db, updatedRecords);
     db.close();
     notifyQueueUpdated(updatedRecords.length);
     return;
-  } else if (mutation.op === 'update') {
-    const insertIdx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mutation.id));
+  } else if (mut.op === 'update') {
+    const insertIdx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mut.id));
     if (insertIdx >= 0 && list[insertIdx].op === 'insert') {
-      const existingTx = (list[insertIdx] as { op: 'insert'; tx: Transaccion }).tx;
+      const existingTx = (list[insertIdx] as { op: 'insert'; tx: Transaccion; mutationId: string }).tx;
       list[insertIdx] = {
+        mutationId: list[insertIdx].mutationId,
         op: 'insert',
-        tx: { ...existingTx, ...mutation.patch },
+        tx: { ...existingTx, ...mut.patch },
       };
     } else {
-      const updateIdx = list.findIndex(m => m.op === 'update' && String(m.id) === String(mutation.id));
+      const updateIdx = list.findIndex(m => m.op === 'update' && String(m.id) === String(mut.id));
       if (updateIdx >= 0) {
-        const prevPatch = (list[updateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion> }).patch;
+        const prevPatch = (list[updateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion>; mutationId: string }).patch;
         list[updateIdx] = {
+          mutationId: list[updateIdx].mutationId,
           op: 'update',
-          id: mutation.id,
-          patch: { ...prevPatch, ...mutation.patch },
+          id: mut.id,
+          patch: { ...prevPatch, ...mut.patch },
         };
       } else {
-        list.push(mutation);
+        list.push(mut);
       }
     }
   }
@@ -363,33 +429,26 @@ export async function enqueueMutationUnlocked(mutation: QueuedMutation): Promise
 }
 
 /** Encola una mutación aplicando coalescencia atómica bajo lock */
-export async function enqueueMutation(mutation: QueuedMutation): Promise<void> {
+export async function enqueueMutation(mutation: QueuedMutationInput): Promise<void> {
   return withQueueLock(() => enqueueMutationUnlocked(mutation));
 }
 
-function areMutationsEqual(a: QueuedMutation, b: QueuedMutation): boolean {
-  if (a.op !== b.op) return false;
-  if (a.op === 'insert' && b.op === 'insert') {
-    return String(a.tx.id) === String(b.tx.id);
-  }
-  if (a.op === 'delete' && b.op === 'delete') {
-    return String(a.id) === String(b.id);
-  }
-  if (a.op === 'update' && b.op === 'update') {
-    return String(a.id) === String(b.id);
-  }
-  return false;
-}
+/** Remueve las mutaciones procesadas con éxito por mutationId sin adquirir lock (para uso dentro de withQueueLock) */
+export async function removeProcessedMutationsUnlocked(
+  processedIds: (string | QueuedMutation)[]
+): Promise<void> {
+  if (!processedIds || processedIds.length === 0) return;
+  const idSet = new Set(
+    processedIds
+      .map(item => (typeof item === 'string' ? item : item?.mutationId))
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  );
+  if (idSet.size === 0) return;
 
-/** Remueve las mutaciones procesadas con éxito sin adquirir lock (para uso dentro de withQueueLock) */
-export async function removeProcessedMutationsUnlocked(processed: QueuedMutation[]): Promise<void> {
-  if (processed.length === 0) return;
   const db = await openDatabase();
   const records = await readAllRecords(db);
 
-  const remaining = records.filter(
-    r => !processed.some(p => areMutationsEqual(r.mutation, p))
-  );
+  const remaining = records.filter(r => !idSet.has(r.mutation.mutationId));
 
   await writeAllRecords(db, remaining);
   db.close();
@@ -397,8 +456,10 @@ export async function removeProcessedMutationsUnlocked(processed: QueuedMutation
 }
 
 /** Remueve las mutaciones procesadas con éxito bajo lock */
-export async function removeProcessedMutations(processed: QueuedMutation[]): Promise<void> {
-  return withQueueLock(() => removeProcessedMutationsUnlocked(processed));
+export async function removeProcessedMutations(
+  processedIds: (string | QueuedMutation)[]
+): Promise<void> {
+  return withQueueLock(() => removeProcessedMutationsUnlocked(processedIds));
 }
 
 /** Limpia completamente la cola offline sin adquirir lock (para uso dentro de withQueueLock) */

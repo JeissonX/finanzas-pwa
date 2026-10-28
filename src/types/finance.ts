@@ -71,9 +71,9 @@ export type TabNavegacion = 'movimientos' | 'carteras' | 'presupuestos' | 'anali
 export type TabPrincipal = TabNavegacion | 'registro' | 'presupuesto';
 
 export type QueuedMutation =
-  | { op: 'insert'; tx: Transaccion }
-  | { op: 'delete'; id: string }
-  | { op: 'update'; id: string; patch: Partial<Transaccion> };
+  | { mutationId: string; op: 'insert'; tx: Transaccion }
+  | { mutationId: string; op: 'delete'; id: string }
+  | { mutationId: string; op: 'update'; id: string; patch: Partial<Transaccion> };
 
 export interface EstadoApp {
   tema: 'dark' | 'light';
