@@ -1,14 +1,29 @@
 import type { Transaccion } from '../types/finance';
+import { supabase } from '../services/supabase';
 
-export type QueuedMutation =
-  | { mutationId: string; op: 'insert'; tx: Transaccion }
-  | { mutationId: string; op: 'delete'; id: string }
-  | { mutationId: string; op: 'update'; id: string; patch: Partial<Transaccion> };
+export type MutationStatus = 'pending' | 'conflict' | 'orphan';
 
-export type QueuedMutationInput =
-  | { mutationId?: string; op: 'insert'; tx: Transaccion }
-  | { mutationId?: string; op: 'delete'; id: string }
-  | { mutationId?: string; op: 'update'; id: string; patch: Partial<Transaccion> };
+export type QueuedMutation = {
+  mutationId: string;
+  ownerUserId: string;
+  status?: MutationStatus;
+  conflictReason?: string;
+} & (
+  | { op: 'insert'; tx: Transaccion }
+  | { op: 'delete'; id: string }
+  | { op: 'update'; id: string; patch: Partial<Transaccion> }
+);
+
+export type QueuedMutationInput = {
+  mutationId?: string;
+  ownerUserId?: string;
+  status?: MutationStatus;
+  conflictReason?: string;
+} & (
+  | { op: 'insert'; tx: Transaccion }
+  | { op: 'delete'; id: string }
+  | { op: 'update'; id: string; patch: Partial<Transaccion> }
+);
 
 export class LeaseLostError extends Error {
   constructor(message = 'Pérdida de lease en lock de sincronización') {
@@ -18,7 +33,7 @@ export class LeaseLostError extends Error {
 }
 
 const DB_NAME = 'finanzas_offline_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_NAME = 'mutations';
 const LOCKS_STORE_NAME = 'locks';
 const LOCK_NAME = 'finanzas_offline_queue_lock';
@@ -44,6 +59,20 @@ function generateUuid(): string {
   return `id_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 }
 
+/** Resuelve el ID del usuario autenticado en la sesión actual */
+export async function resolveCurrentUserId(): Promise<string | null> {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (sessionData?.session?.user?.id) {
+      return sessionData.session.user.id;
+    }
+    const { data: userData } = await supabase.auth.getUser();
+    return userData?.user?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
@@ -62,7 +91,7 @@ function openDatabase(): Promise<IDBDatabase> {
         db.createObjectStore(LOCKS_STORE_NAME, { keyPath: 'name' });
       }
 
-      // Backfill de mutationId para registros existentes que no lo tengan
+      // Upgrade: asignar mutationId si falta y marcar como orphan los registros sin ownerUserId
       const tx = request.transaction;
       if (tx && db.objectStoreNames.contains(STORE_NAME)) {
         const store = tx.objectStore(STORE_NAME);
@@ -71,8 +100,19 @@ function openDatabase(): Promise<IDBDatabase> {
           const cursor = cursorReq.result;
           if (cursor) {
             const val = cursor.value;
-            if (val && val.mutation && !val.mutation.mutationId) {
-              val.mutation.mutationId = generateUuid();
+            let modified = false;
+            if (val && val.mutation) {
+              if (!val.mutation.mutationId) {
+                val.mutation.mutationId = generateUuid();
+                modified = true;
+              }
+              if (!val.mutation.ownerUserId) {
+                val.mutation.ownerUserId = '';
+                val.mutation.status = 'orphan';
+                modified = true;
+              }
+            }
+            if (modified) {
               cursor.update(val);
             }
             cursor.continue();
@@ -274,7 +314,7 @@ function notifyQueueUpdated(count: number): void {
   }
 }
 
-/** Lee todos los registros de IndexedDB asegurando que cada mutación posea un mutationId */
+/** Lee todos los registros de IndexedDB asegurando mutationId y marcado de huérfanos */
 async function readAllRecords(db: IDBDatabase): Promise<MutationRecord[]> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly');
@@ -284,8 +324,14 @@ async function readAllRecords(db: IDBDatabase): Promise<MutationRecord[]> {
     req.onsuccess = () => {
       const records = (req.result || []) as MutationRecord[];
       for (const rec of records) {
-        if (rec?.mutation && !rec.mutation.mutationId) {
-          rec.mutation.mutationId = generateUuid();
+        if (rec?.mutation) {
+          if (!rec.mutation.mutationId) {
+            rec.mutation.mutationId = generateUuid();
+          }
+          if (!rec.mutation.ownerUserId) {
+            rec.mutation.ownerUserId = '';
+            rec.mutation.status = 'orphan';
+          }
         }
       }
       resolve(records);
@@ -330,6 +376,8 @@ async function ensureLegacyMigrated(db: IDBDatabase): Promise<void> {
         const base = item && item.op ? item : { op: 'insert', tx: item as Transaccion };
         return {
           mutationId: base.mutationId || generateUuid(),
+          ownerUserId: base.ownerUserId || '',
+          status: base.ownerUserId ? (base.status || 'pending') : 'orphan',
           ...base,
         };
       });
@@ -346,37 +394,112 @@ async function ensureLegacyMigrated(db: IDBDatabase): Promise<void> {
   }
 }
 
-/** Obtiene la lista completa de mutaciones encoladas sin adquirir lock (para uso dentro de withQueueLock) */
-export async function getQueuedMutationsUnlocked(): Promise<QueuedMutation[]> {
+/** Obtiene la lista de mutaciones encoladas activas (no huérfanas) sin adquirir lock */
+export async function getQueuedMutationsUnlocked(ownerUserId?: string): Promise<QueuedMutation[]> {
   try {
     const db = await openDatabase();
     await ensureLegacyMigrated(db);
     const records = await readAllRecords(db);
     db.close();
-    return records.map(r => r.mutation);
+
+    let list = records.map(r => r.mutation);
+    if (ownerUserId) {
+      list = list.filter(m => m.ownerUserId === ownerUserId && m.status !== 'orphan');
+    } else {
+      list = list.filter(m => m.status !== 'orphan' && Boolean(m.ownerUserId));
+    }
+    return list;
   } catch (err) {
     console.warn('Error leyendo mutaciones de IndexedDB:', err);
     return [];
   }
 }
 
-/** Obtiene la lista completa de mutaciones encoladas bajo lock */
-export async function getQueuedMutations(): Promise<QueuedMutation[]> {
-  return withQueueLock(() => getQueuedMutationsUnlocked());
+/** Obtiene la lista de mutaciones encoladas activas bajo lock */
+export async function getQueuedMutations(ownerUserId?: string): Promise<QueuedMutation[]> {
+  return withQueueLock(() => getQueuedMutationsUnlocked(ownerUserId));
 }
 
-/** Encola una mutación aplicando coalescencia atómica sin adquirir lock (para uso dentro de withQueueLock) */
+/** Obtiene registros huérfanos sin ownerUserId o con status 'orphan' sin adquirir lock */
+export async function getOrphanMutationsUnlocked(): Promise<QueuedMutation[]> {
+  try {
+    const db = await openDatabase();
+    await ensureLegacyMigrated(db);
+    const records = await readAllRecords(db);
+    db.close();
+    return records
+      .map(r => r.mutation)
+      .filter(m => m.status === 'orphan' || !m.ownerUserId);
+  } catch (err) {
+    console.warn('Error leyendo mutaciones huérfanas de IndexedDB:', err);
+    return [];
+  }
+}
+
+/** Obtiene registros huérfanos bajo lock */
+export async function getOrphanMutations(): Promise<QueuedMutation[]> {
+  return withQueueLock(() => getOrphanMutationsUnlocked());
+}
+
+/** Marca una mutación como en conflicto en IndexedDB sin adquirir lock */
+export async function markMutationConflictUnlocked(
+  mutationId: string,
+  reason: string
+): Promise<void> {
+  const db = await openDatabase();
+  const records = await readAllRecords(db);
+  let changed = false;
+  for (const rec of records) {
+    if (rec.mutation.mutationId === mutationId) {
+      rec.mutation.status = 'conflict';
+      rec.mutation.conflictReason = reason;
+      changed = true;
+      break;
+    }
+  }
+  if (changed) {
+    await writeAllRecords(db, records);
+  }
+  db.close();
+}
+
+/** Marca una mutación como en conflicto bajo lock */
+export async function markMutationConflict(
+  mutationId: string,
+  reason: string
+): Promise<void> {
+  return withQueueLock(() => markMutationConflictUnlocked(mutationId, reason));
+}
+
+/** Encola una mutación aplicando particionado por usuario y coalescencia atómica sin adquirir lock */
 export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Promise<void> {
+  let ownerUserId = mutation.ownerUserId;
+  if (!ownerUserId) {
+    ownerUserId = (await resolveCurrentUserId()) || undefined;
+  }
+
+  if (!ownerUserId || typeof ownerUserId !== 'string' || ownerUserId.trim() === '') {
+    throw new Error('Rechazado: no se puede encolar una mutación sin sesión autenticada (ownerUserId requerido)');
+  }
+
+  const cleanOwnerId = ownerUserId.trim();
   const db = await openDatabase();
   await ensureLegacyMigrated(db);
   const records = await readAllRecords(db);
 
   const list = records.map(r => r.mutation);
   const assignedId = mutation.mutationId || generateUuid();
-  const mut: QueuedMutation = { ...mutation, mutationId: assignedId } as QueuedMutation;
+  const mut: QueuedMutation = {
+    ...mutation,
+    mutationId: assignedId,
+    ownerUserId: cleanOwnerId,
+    status: mutation.status || 'pending',
+  } as QueuedMutation;
 
   if (mut.op === 'insert') {
-    const idx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mut.tx.id));
+    const idx = list.findIndex(
+      m => m.ownerUserId === cleanOwnerId && m.op === 'insert' && String(m.tx.id) === String(mut.tx.id)
+    );
     if (idx >= 0) {
       // Reintento de inserción del mismo registro: mantener mutationId original si no se especificó otro
       const preservedId = mutation.mutationId || list[idx].mutationId;
@@ -386,19 +509,25 @@ export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Pr
     }
   } else if (mut.op === 'update') {
     // REGLA: NUNCA fusionar dentro de un insert pendiente. Se encola como mutación independiente.
-    // Solo coalescer con otro update previo del mismo registro si no hay un delete posterior para ese ID.
-    const lastDeleteIdx = list.map(m => m.op === 'delete' && String(m.id) === String(mut.id)).lastIndexOf(true);
-    const existingUpdateIdx = list.findIndex((m, i) => i > lastDeleteIdx && m.op === 'update' && String(m.id) === String(mut.id));
+    // Solo coalescer con otro update previo del mismo registro del MISMO usuario si no hay un delete posterior para ese ID.
+    const lastDeleteIdx = list
+      .map(m => m.ownerUserId === cleanOwnerId && m.op === 'delete' && String(m.id) === String(mut.id))
+      .lastIndexOf(true);
+    const existingUpdateIdx = list.findIndex(
+      (m, i) => i > lastDeleteIdx && m.ownerUserId === cleanOwnerId && m.op === 'update' && String(m.id) === String(mut.id)
+    );
 
     if (existingUpdateIdx >= 0) {
       // Al fusionar updates pendientes, asignar un mutationId NUEVO para evitar
       // que una sincronización en curso elimine por el ID previo cambios recién acumulados.
-      const prev = list[existingUpdateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion>; mutationId: string };
+      const prev = list[existingUpdateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion>; mutationId: string; ownerUserId: string };
       list[existingUpdateIdx] = {
         mutationId: generateUuid(),
+        ownerUserId: cleanOwnerId,
         op: 'update',
         id: mut.id,
         patch: { ...prev.patch, ...mut.patch },
+        status: 'pending',
       };
     } else {
       // Encolar como mutación update independiente posterior al insert o mutaciones previas
@@ -407,7 +536,9 @@ export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Pr
   } else if (mut.op === 'delete') {
     // REGLA: NUNCA cancelar silenciosamente el insert ni updates pendientes.
     // Encolar el delete como mutación propia posterior al insert/updates (orden: insert -> updates -> delete).
-    const alreadyHasDelete = list.some(m => m.op === 'delete' && String(m.id) === String(mut.id));
+    const alreadyHasDelete = list.some(
+      m => m.ownerUserId === cleanOwnerId && m.op === 'delete' && String(m.id) === String(mut.id)
+    );
     if (!alreadyHasDelete) {
       list.push(mut);
     }
@@ -419,7 +550,7 @@ export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Pr
   notifyQueueUpdated(updatedRecords.length);
 }
 
-/** Encola una mutación aplicando coalescencia atómica bajo lock */
+/** Encola una mutación aplicando particionado por usuario y coalescencia atómica bajo lock */
 export async function enqueueMutation(mutation: QueuedMutationInput): Promise<void> {
   return withQueueLock(() => enqueueMutationUnlocked(mutation));
 }

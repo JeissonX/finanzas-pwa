@@ -10,6 +10,11 @@ import {
 import {
   getQueuedMutations,
   getQueuedMutationsUnlocked,
+  getOrphanMutations,
+  getOrphanMutationsUnlocked,
+  markMutationConflict,
+  markMutationConflictUnlocked,
+  resolveCurrentUserId,
   enqueueMutation,
   enqueueMutationUnlocked,
   removeProcessedMutations,
@@ -20,11 +25,17 @@ import {
   LeaseLostError,
   type QueuedMutation,
   type QueuedMutationInput,
+  type MutationStatus,
 } from '../utils/offlineQueueDb';
 
 export {
   getQueuedMutations,
   getQueuedMutationsUnlocked,
+  getOrphanMutations,
+  getOrphanMutationsUnlocked,
+  markMutationConflict,
+  markMutationConflictUnlocked,
+  resolveCurrentUserId,
   enqueueMutation,
   enqueueMutationUnlocked,
   removeProcessedMutations,
@@ -34,7 +45,7 @@ export {
   withQueueLock,
   LeaseLostError,
 };
-export type { QueuedMutation, QueuedMutationInput };
+export type { QueuedMutation, QueuedMutationInput, MutationStatus };
 export const getOfflineQueue = getQueuedMutations;
 
 const TRANSACTIONS_KEY = 'finanzas_transacciones_ciclo_v2';
@@ -358,15 +369,13 @@ export async function insertRemote(
 
     const row = existingRows[0];
 
-    // Verificar usuario autenticado
-    const { data: authData } = await supabase.auth.getUser();
-    const currentUserId = authData?.user?.id;
-    if (currentUserId && row.user_id && row.user_id !== currentUserId) {
-      return {
-        confirmed: false,
-        conflict: true,
-        reason: `Conflicto de usuario: ${row.user_id} vs ${currentUserId}`,
-      };
+    // Verificar usuario autenticado (Fallar cerrado)
+    const currentUserId = await resolveCurrentUserId();
+    const rowUserId = row?.user_id;
+    if (!currentUserId || !rowUserId || String(rowUserId) !== String(currentUserId)) {
+      throw new Error(
+        `Verificación de conflicto falló cerrado: usuario inválido o no coincide (remoto: ${rowUserId || 'falsy'}, sesión: ${currentUserId || 'falsy'})`
+      );
     }
 
     // Verificar mismo ID de transacción
@@ -378,30 +387,80 @@ export async function insertRemote(
       };
     }
 
-    // Comparar monto, tipo y campos contables relevantes (fecha, cuenta, categoría)
-    const remoteMonto = sanitizeAmount(row.monto);
-    const remoteTipo = row.tipo;
-    const remoteFechaTime = new Date(row.fecha).getTime();
-    const localFechaTime = new Date(txDate).getTime();
-    const remoteCuenta = String(row.cuenta || '').trim().toLowerCase();
-    const localCuenta = String(cuentaPrincipal).trim().toLowerCase();
-    const remoteMacro = String(row.macro_categoria || '').trim().toLowerCase();
-    const localMacro = String(macroValue).trim().toLowerCase();
+    // Normalizaciones estrictas para comparación contable
+    const normalizeStr = (val: any): string => (val === null || val === undefined ? '' : String(val).trim());
+    const normalizeStrCase = (val: any): string => normalizeStr(val).toLowerCase();
+    const normalizeNullable = (val: any): string | null => {
+      const s = normalizeStr(val);
+      return s === '' ? null : s.toLowerCase();
+    };
 
-    const montoMatch = remoteMonto === cleanMonto;
-    const tipoMatch = remoteTipo === tx.tipo;
-    const fechaMatch = Math.abs(remoteFechaTime - localFechaTime) < 5000;
+    // Comparar TODOS los campos que determinan el asiento contable
+    const remoteMonto = sanitizeAmount(row.monto);
+    const localMonto = cleanMonto;
+    const montoMatch = remoteMonto === localMonto;
+
+    const remoteTipo = normalizeStr(row.tipo).toUpperCase();
+    const localTipo = normalizeStr(tx.tipo).toUpperCase();
+    const tipoMatch = remoteTipo === localTipo;
+
+    const remoteTime = new Date(row.fecha).getTime();
+    const localTime = new Date(txDate).getTime();
+    const fechaMatch = !isNaN(remoteTime) && !isNaN(localTime) && Math.abs(remoteTime - localTime) <= 1000;
+
+    const remoteCuenta = normalizeStrCase(row.cuenta);
+    const localCuenta = normalizeStrCase(cuentaPrincipal);
     const cuentaMatch = remoteCuenta === localCuenta;
+
+    const remoteOrigen = normalizeNullable(row.cuenta_origen);
+    const localOrigen = normalizeNullable(cuentaOrigen);
+    const origenMatch = remoteOrigen === localOrigen;
+
+    const remoteDestino = normalizeNullable(row.cuenta_destino);
+    const localDestino = normalizeNullable(cuentaDestino);
+    const destinoMatch = remoteDestino === localDestino;
+
+    const remoteMacro = normalizeStrCase(row.macro_categoria);
+    const localMacro = normalizeStrCase(macroValue);
     const macroMatch = remoteMacro === localMacro;
 
-    if (montoMatch && tipoMatch && fechaMatch && cuentaMatch && macroMatch) {
+    const remoteSub = normalizeStrCase(row.subcategoria);
+    const localSub = normalizeStrCase(subValue);
+    const subMatch = remoteSub === localSub;
+
+    const remoteCiclo = normalizeStr(row.ciclo);
+    const localCiclo = normalizeStr(canonicalCycle);
+    const cicloMatch = remoteCiclo === localCiclo;
+
+    const remoteDetalle = normalizeStr(row.detalle);
+    const localDetalle = normalizeStr(tx.comentario || tx.detalle || '');
+    const detalleMatch = remoteDetalle === localDetalle;
+
+    if (
+      montoMatch &&
+      tipoMatch &&
+      fechaMatch &&
+      cuentaMatch &&
+      origenMatch &&
+      destinoMatch &&
+      macroMatch &&
+      subMatch &&
+      cicloMatch &&
+      detalleMatch
+    ) {
       return { confirmed: true };
     }
 
     return {
       confirmed: false,
       conflict: true,
-      reason: `Conflicto contable en transacción ${tx.id}: remoto (${remoteTipo}, $${remoteMonto}, ${remoteCuenta}) vs local (${tx.tipo}, $${cleanMonto}, ${localCuenta})`,
+      reason:
+        `Conflicto contable en transacción ${tx.id}: campos difieren entre remoto y local. ` +
+        `Monto: ${remoteMonto} vs ${localMonto}, Tipo: ${row.tipo} vs ${tx.tipo}, ` +
+        `Cuenta: ${row.cuenta} vs ${cuentaPrincipal}, Origen: ${row.cuenta_origen} vs ${cuentaOrigen}, ` +
+        `Destino: ${row.cuenta_destino} vs ${cuentaDestino}, Macro: ${row.macro_categoria} vs ${macroValue}, ` +
+        `Sub: ${row.subcategoria} vs ${subValue}, Ciclo: ${row.ciclo} vs ${canonicalCycle}, ` +
+        `Detalle: "${row.detalle}" vs "${tx.comentario || tx.detalle || ''}"`,
     };
   }
 
@@ -416,6 +475,11 @@ export async function insertRemote(
 // ── Guardado de Transacción con Contingencia Offline ──────────────────────────
 
 export async function saveTransaction(tx: Transaccion): Promise<void> {
+  const currentUserId = await resolveCurrentUserId();
+  if (!currentUserId) {
+    throw new Error('No se puede registrar transacción sin sesión autenticada');
+  }
+
   let cuentaOrigen = tx.cuentaOrigen || (tx.tipo === 'GASTO' ? tx.cuenta : undefined);
   let cuentaDestino = tx.cuentaDestino || (tx.tipo === 'INGRESO' ? tx.cuenta : undefined);
 
@@ -438,9 +502,14 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
       throw new Error(res.reason || 'Inserción remota no confirmada');
     }
     markTransactionSynced(tx.id, true);
-  } catch (err) {
-    // 3. Encolar mutación de inserción en caso de fallo preservando mutationId
-    await enqueueMutation({ mutationId, op: 'insert', tx: { ...tx, sincronizado: false } });
+  } catch (err: any) {
+    // 3. Encolar mutación de inserción en caso de fallo preservando mutationId y ownerUserId
+    await enqueueMutation({
+      mutationId,
+      ownerUserId: currentUserId,
+      op: 'insert',
+      tx: { ...tx, sincronizado: false },
+    });
     markTransactionSynced(tx.id, false);
     throw err;
   }
@@ -518,17 +587,37 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
   const remainingTxs = list.filter(t => String(t.id) !== strId);
   saveTransacciones(remainingTxs);
 
-  // Intentar eliminar remotamente
+  // Intentar eliminar remotamente con contingencia particionada por usuario
+  const currentUserId = await resolveCurrentUserId();
+  if (!currentUserId) {
+    throw new Error('No se puede eliminar transacción sin sesión autenticada');
+  }
+
+  const deleteMutationId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `mut_del_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
   try {
     const { error } = await supabase.from('transacciones').delete().eq('id', strId);
     if (error) {
       console.warn('Error al eliminar transacción en Supabase, encolando mutación:', error);
-      await enqueueMutation({ op: 'delete', id: strId });
+      await enqueueMutation({
+        mutationId: deleteMutationId,
+        ownerUserId: currentUserId,
+        op: 'delete',
+        id: strId,
+      });
       return false;
     }
   } catch (err) {
     console.warn('Fallo de red al eliminar en Supabase, encolando mutación:', err);
-    await enqueueMutation({ op: 'delete', id: strId });
+    await enqueueMutation({
+      mutationId: deleteMutationId,
+      ownerUserId: currentUserId,
+      op: 'delete',
+      id: strId,
+    });
     return false;
   }
 
@@ -595,6 +684,16 @@ export async function updateTransaction(
 
   const payload = formatUpdatePayload(updatedData);
 
+  const currentUserId = await resolveCurrentUserId();
+  if (!currentUserId) {
+    throw new Error('No se puede actualizar transacción sin sesión autenticada');
+  }
+
+  const updateMutationId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `mut_upd_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
   try {
     const { error } = await supabase
       .from('transacciones')
@@ -603,7 +702,13 @@ export async function updateTransaction(
 
     if (error) {
       console.warn('Error al actualizar transacción en Supabase, encolando mutación:', error);
-      await enqueueMutation({ op: 'update', id: strId, patch: updatedData });
+      await enqueueMutation({
+        mutationId: updateMutationId,
+        ownerUserId: currentUserId,
+        op: 'update',
+        id: strId,
+        patch: updatedData,
+      });
       return false;
     }
 
@@ -611,7 +716,13 @@ export async function updateTransaction(
     return true;
   } catch (err) {
     console.warn('Fallo de red al actualizar en Supabase, encolando mutación:', err);
-    await enqueueMutation({ op: 'update', id: strId, patch: updatedData });
+    await enqueueMutation({
+      mutationId: updateMutationId,
+      ownerUserId: currentUserId,
+      op: 'update',
+      id: strId,
+      patch: updatedData,
+    });
     return false;
   }
 }
@@ -976,10 +1087,11 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       sincronizado: true,
     }));
 
-    const queue = await getQueuedMutations();
+    const currentUserId = await resolveCurrentUserId();
+    const queue = await getQueuedMutations(currentUserId || undefined);
     const queueIds = new Set(
       queue
-        .filter(q => q.op === 'insert')
+        .filter(q => q.op === 'insert' && q.status !== 'orphan')
         .map(q => (q as { op: 'insert'; tx: Transaccion }).tx.id)
         .map(String)
     );
@@ -1178,7 +1290,39 @@ function isLeaseLostOrAbortError(err: any, signal?: AbortSignal): boolean {
   return false;
 }
 
-export async function syncOfflineQueue(signal?: AbortSignal): Promise<{ synced: number; remaining: number }> {
+function isNetworkOrAbortError(err: any, signal?: AbortSignal): boolean {
+  if (!err) return false;
+  if (isLeaseLostOrAbortError(err, signal)) return true;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+
+  const msg = String(err.message || '').toLowerCase();
+  const name = String(err.name || '').toLowerCase();
+  const code = String(err.code || '');
+
+  if (name === 'aborterror' || name === 'timeouterror') return true;
+  if (msg.includes('aborted') || msg.includes('timeout') || msg.includes('timed out')) return true;
+  if (
+    msg.includes('network') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('fetch error') ||
+    msg.includes('connection')
+  ) {
+    return true;
+  }
+  if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND') return true;
+  if (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504) return true;
+
+  return false;
+}
+
+export interface SyncOptions {
+  isManualOrStartup?: boolean;
+}
+
+export async function syncOfflineQueue(
+  signal?: AbortSignal,
+  options?: SyncOptions
+): Promise<{ synced: number; remaining: number }> {
   try {
     return await withQueueLock(async (lockSignal: AbortSignal) => {
       const getActiveSignal = (): AbortSignal => {
@@ -1200,56 +1344,138 @@ export async function syncOfflineQueue(signal?: AbortSignal): Promise<{ synced: 
       };
 
       const effectiveSignal = getActiveSignal();
-      const queue = await getQueuedMutationsUnlocked();
-      if (queue.length === 0) return { synced: 0, remaining: 0 };
+
+      // 1. Obtener usuario de la sesión actual; si no hay sesión o no se puede resolver, no sincronizar nada
+      const currentUserId = await resolveCurrentUserId();
+      if (!currentUserId) {
+        return { synced: 0, remaining: 0 };
+      }
+
+      // 2. Procesar SOLO mutaciones del usuario actual que no sean orphan
+      const allRecords = await getQueuedMutationsUnlocked();
+      const userQueue = allRecords.filter(m => m.ownerUserId === currentUserId && m.status !== 'orphan');
+      if (userQueue.length === 0) return { synced: 0, remaining: 0 };
 
       const processedIds: string[] = [];
+      const blockedEntityIds = new Set<string>();
+      const confirmedInsertEntityIds = new Set<string>();
       let synced = 0;
 
-      for (const mut of queue) {
+      for (const mut of userQueue) {
         if (effectiveSignal?.aborted) {
           throw effectiveSignal.reason || new LeaseLostError('Sincronización abortada por pérdida de lease o señal');
         }
 
+        const entityId = mut.op === 'insert' ? String(mut.tx.id) : String(mut.id);
+
+        // Si la entidad ya está bloqueada por error, conflicto o no confirmada previa en este lote:
+        // NO procesar mutaciones posteriores de la misma entidad (quedan en la cola: insert, updates y delete)
+        if (blockedEntityIds.has(entityId)) {
+          continue;
+        }
+
+        // Si la mutación ya está en estado conflict y no es sincronización manual o startup, omitir para no reintentar en bucle
+        if (mut.status === 'conflict' && !options?.isManualOrStartup) {
+          blockedEntityIds.add(entityId);
+          continue;
+        }
+
         try {
           if (mut.op === 'insert') {
-            // Inserción remota directa SIN ejecutar applyOptimisticTransaction
             const res = await insertRemote(mut.tx, effectiveSignal, mut.mutationId);
             if (res && res.confirmed) {
               markTransactionSynced(mut.tx.id, true);
               processedIds.push(mut.mutationId);
+              confirmedInsertEntityIds.add(entityId);
               synced++;
             } else {
-              console.warn('Inserción en cola no confirmada (conflicto o pendiente):', mut.mutationId, res?.reason);
-              // NUNCA agregar a processedIds si no fue confirmada explícitamente
+              blockedEntityIds.add(entityId);
+              if (res?.conflict) {
+                await markMutationConflictUnlocked(
+                  mut.mutationId,
+                  res.reason || `Conflicto en inserción de entidad ${entityId}`
+                );
+              }
+              console.warn('Inserción en cola no confirmada:', mut.mutationId, res?.reason);
             }
-          } else if (mut.op === 'delete') {
-            let deleteQuery = supabase.from('transacciones').delete().eq('id', String(mut.id));
-            if (effectiveSignal) {
-              deleteQuery = deleteQuery.abortSignal(effectiveSignal);
-            }
-            const { error } = await deleteQuery;
-            if (error) throw error;
-            // Delete remoto de una fila (incluso si no existe) es éxito idempotente
-            processedIds.push(mut.mutationId);
-            synced++;
           } else if (mut.op === 'update') {
             const payload = formatUpdatePayload(mut.patch);
-            let updateQuery = supabase.from('transacciones').update(payload).eq('id', String(mut.id));
+            let updateQuery = supabase
+              .from('transacciones')
+              .update(payload)
+              .eq('id', entityId)
+              .select('id');
+
             if (effectiveSignal) {
               updateQuery = updateQuery.abortSignal(effectiveSignal);
             }
-            const { error } = await updateQuery;
-            if (error) throw error;
-            processedIds.push(mut.mutationId);
-            synced++;
+
+            const { data: updatedRows, error: updateError } = await updateQuery;
+            if (updateError) {
+              if (isNetworkOrAbortError(updateError, effectiveSignal)) {
+                throw updateError;
+              }
+              blockedEntityIds.add(entityId);
+              console.warn('Error en update de entidad:', entityId, updateError);
+            } else if (!updatedRows || updatedRows.length === 0) {
+              // Confirmación de filas afectadas: 0 filas -> conflicto, conservar en cola
+              const reason = `Update devolvió 0 filas para entidad ${entityId} (registro inexistente o RLS bloqueado)`;
+              await markMutationConflictUnlocked(mut.mutationId, reason);
+              blockedEntityIds.add(entityId);
+            } else {
+              processedIds.push(mut.mutationId);
+              synced++;
+            }
+          } else if (mut.op === 'delete') {
+            let deleteQuery = supabase
+              .from('transacciones')
+              .delete()
+              .eq('id', entityId)
+              .select('id');
+
+            if (effectiveSignal) {
+              deleteQuery = deleteQuery.abortSignal(effectiveSignal);
+            }
+
+            const { data: deletedRows, error: deleteError } = await deleteQuery;
+            if (deleteError) {
+              if (isNetworkOrAbortError(deleteError, effectiveSignal)) {
+                throw deleteError;
+              }
+              blockedEntityIds.add(entityId);
+              console.warn('Error en delete de entidad:', entityId, deleteError);
+            } else {
+              const rowsCount = Array.isArray(deletedRows) ? deletedRows.length : 0;
+              if (rowsCount > 0) {
+                processedIds.push(mut.mutationId);
+                synced++;
+              } else {
+                // 0 filas devueltas: solo éxito idempotente si el insert de esa entidad ya fue confirmado o no existe en la cola
+                const hasInsertInQueue = userQueue.some(
+                  m => m.op === 'insert' && String(m.tx.id) === entityId
+                );
+                const insertWasConfirmed = confirmedInsertEntityIds.has(entityId);
+                const isIdempotentSuccess = !hasInsertInQueue || insertWasConfirmed;
+
+                if (isIdempotentSuccess) {
+                  processedIds.push(mut.mutationId);
+                  synced++;
+                } else {
+                  const reason = `Delete devolvió 0 filas y el insert de la entidad ${entityId} no está confirmado en el servidor`;
+                  await markMutationConflictUnlocked(mut.mutationId, reason);
+                  blockedEntityIds.add(entityId);
+                }
+              }
+            }
           }
         } catch (err: any) {
-          if (isLeaseLostOrAbortError(err, effectiveSignal)) {
+          if (isNetworkOrAbortError(err, effectiveSignal)) {
+            // Detener el lote completo ante errores de red, timeout, abort o pérdida de lease
             throw err;
           }
-          console.warn('Error sincronizando mutación encolada:', mut, err);
-          // Cualquier error conserva la mutación en la cola
+          // Error propio de la entidad: se bloquea la entidad pero se continúa con las demás
+          blockedEntityIds.add(entityId);
+          console.warn('Error propio de la entidad durante sincronización:', entityId, err);
         }
       }
 
@@ -1257,13 +1483,13 @@ export async function syncOfflineQueue(signal?: AbortSignal): Promise<{ synced: 
         await removeProcessedMutationsUnlocked(processedIds);
       }
 
-      const remainingCount = queue.length - processedIds.length;
-      return { synced, remaining: remainingCount };
+      const remainingQueue = await getQueuedMutationsUnlocked();
+      const userRemaining = remainingQueue.filter(m => m.ownerUserId === currentUserId && m.status !== 'orphan');
+
+      return { synced, remaining: userRemaining.length };
     });
   } catch (err: any) {
     if (isLeaseLostOrAbortError(err, signal)) {
-      // Salir en silencio: sin toast de error, sin reintento inmediato, sin marcar la mutación como fallida.
-      // La otra pestaña ya está sincronizando.
       const current = await getQueuedMutationsUnlocked().catch(() => []);
       return { synced: 0, remaining: current.length };
     }

@@ -67,39 +67,94 @@ function MainDashboard() {
     setTema(t => t === 'dark' ? 'light' : 'dark');
   }, []);
 
-  // ── Network & queue ────────────────────────────────────────
+  // ── Network, session & queue ───────────────────────────────
   const [online, setOnline] = useState(navigator.onLine);
   const [sincronizando, setSincronizando] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const currentUserIdRef = useRef<string | null>(null);
+  currentUserIdRef.current = currentUserId;
 
   useEffect(() => {
-    // Inicializar conteo de mutaciones desde IndexedDB
-    getQueuedMutations()
-      .then(q => setQueueCount(q.length))
-      .catch(() => {});
+    let mounted = true;
 
+    const evaluateUserAndSync = async (userId: string | null) => {
+      if (!userId) {
+        setQueueCount(0);
+        return;
+      }
+      try {
+        const q = await getQueuedMutations(userId);
+        if (mounted) setQueueCount(q.length);
+
+        // Disparar sincronización al inicio (startup) solo con sesión resuelta
+        if (navigator.onLine && q.length > 0) {
+          if (mounted) setSincronizando(true);
+          await syncOfflineQueue(undefined, { isManualOrStartup: true });
+          const remaining = await getQueuedMutations(userId);
+          if (mounted) {
+            setQueueCount(remaining.length);
+            setSincronizando(false);
+          }
+        }
+      } catch (err) {
+        console.warn('Error sincronizando cola al evaluar usuario:', err);
+        if (mounted) setSincronizando(false);
+      }
+    };
+
+    // 1. Obtener sesión inicial
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return;
+      const uid = session?.user?.id || null;
+      setCurrentUserId(uid);
+      if (uid) {
+        evaluateUserAndSync(uid);
+      }
+    });
+
+    // 2. Volver a evaluar al cambiar de usuario
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      const uid = session?.user?.id || null;
+      setCurrentUserId(prev => {
+        if (prev !== uid) {
+          evaluateUserAndSync(uid);
+        }
+        return uid;
+      });
+    });
+
+    // 3. Manejar reconexión online (solo con sesión resuelta)
     const handleOnline = async () => {
       setOnline(true);
-      const currentQueue = await getQueuedMutations();
-      if (currentQueue.length > 0) {
-        setSincronizando(true);
-        await syncOfflineQueue();
-        const remaining = await getQueuedMutations();
-        setQueueCount(remaining.length);
+      const uid = currentUserIdRef.current;
+      if (!uid) return;
+      try {
+        const currentQueue = await getQueuedMutations(uid);
+        if (currentQueue.length > 0) {
+          setSincronizando(true);
+          await syncOfflineQueue();
+          const remaining = await getQueuedMutations(uid);
+          setQueueCount(remaining.length);
+          setSincronizando(false);
+        }
+      } catch (err) {
+        console.warn('Error sincronizando cola al volver a estar online:', err);
         setSincronizando(false);
       }
     };
 
     const handleOffline = () => setOnline(false);
 
-    const handleQueueChange = (e: Event) => {
+    const handleQueueChange = async (e: Event) => {
       const custom = e as CustomEvent<number>;
-      if (typeof custom.detail === 'number') {
+      const uid = currentUserIdRef.current;
+      if (uid) {
+        const q = await getQueuedMutations(uid);
+        setQueueCount(q.length);
+      } else if (typeof custom.detail === 'number') {
         setQueueCount(custom.detail);
-      } else {
-        getQueuedMutations()
-          .then(q => setQueueCount(q.length))
-          .catch(() => {});
       }
     };
 
@@ -108,6 +163,8 @@ function MainDashboard() {
     window.addEventListener('finanzas_queue_updated', handleQueueChange);
 
     return () => {
+      mounted = false;
+      subscription.unsubscribe();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('finanzas_queue_updated', handleQueueChange);
@@ -199,6 +256,16 @@ function MainDashboard() {
           );
         } catch (cErr) {
           console.warn('Error purgando caches:', cErr);
+        }
+      }
+
+      const uid = currentUserIdRef.current;
+      if (uid) {
+        const q = await getQueuedMutations(uid);
+        if (q.length > 0) {
+          await syncOfflineQueue(undefined, { isManualOrStartup: true });
+          const remaining = await getQueuedMutations(uid);
+          setQueueCount(remaining.length);
         }
       }
 
@@ -303,11 +370,11 @@ function MainDashboard() {
       showToast(`${payload.tipo} guardado — $${payload.monto.toLocaleString('es-CO')}`, 'ok');
       refreshData(true);
     } catch {
-      const q = await getQueuedMutations();
+      const q = await getQueuedMutations(currentUserIdRef.current || undefined);
       setQueueCount(q.length);
       showToast('Guardado offline · se enviará al reconectar', 'warn');
     } finally {
-      const q = await getQueuedMutations();
+      const q = await getQueuedMutations(currentUserIdRef.current || undefined);
       setQueueCount(q.length);
       setSaving(false);
     }
