@@ -253,13 +253,13 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
 
 // ── Inserción Remota Pura (Separada del Flujo Optimista) ───────────────────────
 
-export interface InsertRemoteResult {
+interface InsertRemoteResult {
   confirmed: boolean;
   conflict?: boolean;
   reason?: string;
 }
 
-export async function insertRemote(
+async function insertRemote(
   tx: Transaccion,
   signal?: AbortSignal,
   clientMutationId?: string,
@@ -501,38 +501,24 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
     throw new Error('No se puede registrar transacción sin sesión autenticada');
   }
 
-  let cuentaOrigen = tx.cuentaOrigen || (tx.tipo === 'GASTO' ? tx.cuenta : undefined);
-  let cuentaDestino = tx.cuentaDestino || (tx.tipo === 'INGRESO' ? tx.cuenta : undefined);
+  const cuentaOrigen = tx.cuentaOrigen || (tx.tipo === 'GASTO' ? tx.cuenta : undefined);
+  const cuentaDestino = tx.cuentaDestino || (tx.tipo === 'INGRESO' ? tx.cuenta : undefined);
 
-  // 1. Aplicar optimista local de inmediato
-  applyOptimisticTransaction({
+  const fullTx: Transaccion = {
     ...tx,
     cuentaOrigen,
     cuentaDestino,
-  });
+  };
 
-  const mutationId =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `mut_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  // 1. Aplicar optimista local de inmediato
+  applyOptimisticTransaction(fullTx);
 
-  // 2. Intentar inserción remota enviando client_mutation_id y user_id explícito
-  try {
-    const res = await insertRemote(tx, undefined, mutationId, currentUserId);
-    if (!res.confirmed) {
-      throw new Error(res.reason || 'Inserción remota no confirmada');
-    }
+  // 2. Serializar inserción online pasando por runOnlineMutation bajo el lock de la cola
+  const res = await runOnlineMutation('insert', fullTx);
+  if (res.status === 'confirmed') {
     markTransactionSynced(tx.id, true);
-  } catch (err: any) {
-    // 3. Encolar mutación de inserción en caso de fallo preservando mutationId y ownerUserId
-    await enqueueMutation({
-      mutationId,
-      ownerUserId: currentUserId,
-      op: 'insert',
-      tx: { ...tx, sincronizado: false },
-    });
+  } else {
     markTransactionSynced(tx.id, false);
-    throw err;
   }
 }
 
@@ -544,13 +530,14 @@ export type OnlineMutationResult =
   | { status: 'confirmed'; mutationId?: string }
   | { status: 'pending'; mutationId: string; reason?: string };
 
-/** Helper que serializa escrituras online sobre entidades existentes bajo el lock de la cola */
+/** Helper que serializa escrituras online sobre entidades (insert, update, delete) bajo el lock de la cola */
 export async function runOnlineMutation(
-  op: 'update' | 'delete',
-  entityId: string | number,
+  op: 'insert' | 'update' | 'delete',
+  entityOrId: Transaccion | string | number,
   patch?: Partial<Transaccion>
 ): Promise<OnlineMutationResult> {
-  const strId = String(entityId);
+  const isInsert = op === 'insert';
+  const strId = isInsert ? String((entityOrId as Transaccion).id) : String(entityOrId);
   const currentUserId = await resolveCurrentUserId();
   if (!currentUserId) {
     throw new Error('Rechazado: no se puede ejecutar mutación online sin sesión autenticada');
@@ -565,10 +552,81 @@ export async function runOnlineMutation(
 
   try {
     return await withQueueLock(async (lockSignal: AbortSignal) => {
-      // 1. Dentro del lock, comprobar si hay mutaciones pendientes o en conflicto para esta entidad
-      const hasPending = await hasPendingForEntityUnlocked(currentUserId, strId);
-      if (hasPending) {
-        if (op === 'update') {
+      // 1. Dentro del lock, leer mutaciones activas de este dueño
+      const userQueue = await getQueuedMutationsUnlocked(currentUserId);
+      const entityMutations = userQueue.filter(
+        m => (m.op === 'insert' ? String(m.tx.id) : String(m.id)) === strId
+      );
+
+      if (op === 'insert') {
+        const tx = entityOrId as Transaccion;
+
+        // a. Si hay un insert pendiente con el mismo id y distinto mutationId:
+        // no encolar segundo insert; devolver error de conflicto claro
+        const pendingInsert = entityMutations.find(m => m.op === 'insert');
+        if (pendingInsert && pendingInsert.mutationId !== assignedMutationId) {
+          throw new Error(
+            `Conflicto: la transacción ${strId} ya está pendiente de creación en cola (mutationId: ${pendingInsert.mutationId})`
+          );
+        }
+
+        // b. Si hay un delete o update pendiente para ese id:
+        // encolar el insert DETRÁS (con ownerUserId y mutationId propios) y devolver "pendiente". No enviar online.
+        const hasPendingDeleteOrUpdate = entityMutations.some(m => m.op === 'delete' || m.op === 'update');
+        if (hasPendingDeleteOrUpdate) {
+          await enqueueMutationUnlocked({
+            mutationId: assignedMutationId,
+            ownerUserId: currentUserId,
+            op: 'insert',
+            tx: { ...tx, sincronizado: false },
+          });
+          return {
+            status: 'pending',
+            mutationId: assignedMutationId,
+            reason: 'Inserción encolada tras operaciones previas (delete/update) pendientes para esta entidad',
+          };
+        }
+
+        // c. Si no hay pendientes: llamar a insertRemote y retirar solo con confirmación explícita
+        try {
+          const res = await insertRemote(tx, lockSignal, assignedMutationId, currentUserId);
+          if (res && res.confirmed) {
+            return { status: 'confirmed', mutationId: assignedMutationId };
+          }
+
+          // No confirmado o con conflicto devuelto por verificación
+          await enqueueMutationUnlocked({
+            mutationId: assignedMutationId,
+            ownerUserId: currentUserId,
+            op: 'insert',
+            tx: { ...tx, sincronizado: false },
+            status: res?.conflict ? 'conflict' : 'pending',
+            conflictReason: res?.reason,
+          });
+          return {
+            status: 'pending',
+            mutationId: assignedMutationId,
+            reason: res?.reason || 'Inserción remota no confirmada explícitamente',
+          };
+        } catch (remoteErr: any) {
+          // Si el lease se pierde durante la petición online (signal abortado), tratar el resultado como incierto:
+          // encolar la operación con su mutationId. El replay es seguro por idempotencia (client_mutation_id).
+          console.warn(`Error o aborto en inserción online (${strId}), encolando:`, remoteErr);
+          await enqueueMutationUnlocked({
+            mutationId: assignedMutationId,
+            ownerUserId: currentUserId,
+            op: 'insert',
+            tx: { ...tx, sincronizado: false },
+          });
+          return {
+            status: 'pending',
+            mutationId: assignedMutationId,
+            reason: remoteErr?.message || 'Error de red o aborto durante inserción online',
+          };
+        }
+      } else if (op === 'update') {
+        const hasPending = entityMutations.length > 0;
+        if (hasPending) {
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
@@ -576,24 +634,14 @@ export async function runOnlineMutation(
             id: strId,
             patch: patch || {},
           });
-        } else {
-          await enqueueMutationUnlocked({
+          return {
+            status: 'pending',
             mutationId: assignedMutationId,
-            ownerUserId: currentUserId,
-            op: 'delete',
-            id: strId,
-          });
+            reason: 'Operación encolada porque existen mutaciones previas pendientes para esta entidad',
+          };
         }
-        return {
-          status: 'pending',
-          mutationId: assignedMutationId,
-          reason: 'Operación encolada porque existen mutaciones previas pendientes para esta entidad',
-        };
-      }
 
-      // 2. Sin pendientes: enviar online con filtro por user_id y .select()
-      try {
-        if (op === 'update') {
+        try {
           const payload = formatUpdatePayload(patch || {});
           let updateQuery = supabase
             .from('transacciones')
@@ -644,8 +692,39 @@ export async function runOnlineMutation(
           }
 
           return { status: 'confirmed', mutationId: assignedMutationId };
-        } else {
-          // op === 'delete'
+        } catch (remoteErr: any) {
+          console.warn(`Error en envío online de update (${strId}), encolando:`, remoteErr);
+          await enqueueMutationUnlocked({
+            mutationId: assignedMutationId,
+            ownerUserId: currentUserId,
+            op: 'update',
+            id: strId,
+            patch: patch || {},
+          });
+          return {
+            status: 'pending',
+            mutationId: assignedMutationId,
+            reason: remoteErr?.message || 'Error de red o backend al ejecutar mutación online',
+          };
+        }
+      } else {
+        // op === 'delete'
+        const hasPending = entityMutations.length > 0;
+        if (hasPending) {
+          await enqueueMutationUnlocked({
+            mutationId: assignedMutationId,
+            ownerUserId: currentUserId,
+            op: 'delete',
+            id: strId,
+          });
+          return {
+            status: 'pending',
+            mutationId: assignedMutationId,
+            reason: 'Operación encolada porque existen mutaciones previas pendientes para esta entidad',
+          };
+        }
+
+        try {
           let deleteQuery = supabase
             .from('transacciones')
             .delete()
@@ -677,42 +756,41 @@ export async function runOnlineMutation(
           }
 
           return { status: 'confirmed', mutationId: assignedMutationId };
-        }
-      } catch (remoteErr: any) {
-        console.warn(`Error en envío online de ${op} (${strId}), encolando:`, remoteErr);
-        if (op === 'update') {
-          await enqueueMutationUnlocked({
-            mutationId: assignedMutationId,
-            ownerUserId: currentUserId,
-            op: 'update',
-            id: strId,
-            patch: patch || {},
-          });
-        } else {
+        } catch (remoteErr: any) {
+          console.warn(`Error en envío online de delete (${strId}), encolando:`, remoteErr);
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
             op: 'delete',
             id: strId,
           });
+          return {
+            status: 'pending',
+            mutationId: assignedMutationId,
+            reason: remoteErr?.message || 'Error de red o backend al ejecutar mutación online',
+          };
         }
-        return {
-          status: 'pending',
-          mutationId: assignedMutationId,
-          reason: remoteErr?.message || 'Error de red o backend al ejecutar mutación online',
-        };
       }
     }, SHORT_LOCK_TIMEOUT_MS);
   } catch (lockErr: any) {
     // Si no se obtuvo el lock a tiempo: NUNCA enviar online sin lock.
     console.warn(`Timeout de lock en runOnlineMutation (${op} ${strId}), encolando:`, lockErr);
-    await enqueueMutation({
-      mutationId: assignedMutationId,
-      ownerUserId: currentUserId,
-      op,
-      id: strId,
-      patch: op === 'update' ? patch : undefined,
-    } as QueuedMutationInput);
+    if (op === 'insert') {
+      await enqueueMutation({
+        mutationId: assignedMutationId,
+        ownerUserId: currentUserId,
+        op: 'insert',
+        tx: { ...(entityOrId as Transaccion), sincronizado: false },
+      });
+    } else {
+      await enqueueMutation({
+        mutationId: assignedMutationId,
+        ownerUserId: currentUserId,
+        op,
+        id: strId,
+        patch: op === 'update' ? patch : undefined,
+      } as QueuedMutationInput);
+    }
 
     return {
       status: 'pending',
@@ -961,39 +1039,36 @@ export async function processRecurringExpenses(): Promise<number> {
       if (diaActual >= diaPagoEfectivo && ultimoCiclo !== cycleId && ultimoCiclo !== cycleLabel) {
         const deterministicId = `REC_${r.id}_${cycleId}`;
 
-        const txPayload = {
+        const txPayload: Transaccion = {
           id: deterministicId,
           fecha: new Date().toISOString(),
-          tipo: 'GASTO' as const,
+          tipo: 'GASTO',
           monto: sanitizeAmount(r.monto),
-          macro_categoria: r.macro_categoria || '',
+          macroCategoria: r.macro_categoria || '',
+          categoria: r.macro_categoria || '',
+          macro: r.macro_categoria || '',
           subcategoria: r.subcategoria || '',
+          sub: r.subcategoria || '',
           cuenta: r.cuenta || '',
-          cuenta_origen: r.cuenta || null,
-          cuenta_destino: null,
-          ciclo: cycleId,
+          cuentaOrigen: r.cuenta || '',
+          cuentaDestino: '',
           detalle: `Débito automático programado: ${r.nombre}`,
+          comentario: `Débito automático programado: ${r.nombre}`,
+          sincronizado: false,
         };
 
-        const { error: txErr } = await supabase.from('transacciones').insert([txPayload]);
+        const res = await runOnlineMutation('insert', txPayload);
 
-        if (txErr) {
-          if (txErr.code === '23505') {
-            // Ya existía en base de datos (idempotencia)
-          } else {
-            // Error en base de datos: prohibido actualizar ultimo_ciclo_ejecutado
-            console.warn(`Error al ejecutar gasto recurrente ${r.nombre}:`, txErr);
-            continue;
-          }
-        } else {
+        if (res.status === 'confirmed') {
           executedCount++;
+          // Sellar con ID canónico en Supabase
+          await supabase
+            .from('gastos_recurrentes')
+            .update({ ultimo_ciclo_ejecutado: cycleId })
+            .eq('id', r.id);
+        } else {
+          console.warn(`Gasto recurrente ${r.nombre} encolado o retenido (${res.reason}); no se sella ciclo aún.`);
         }
-
-        // Sellar con ID canónico en Supabase
-        await supabase
-          .from('gastos_recurrentes')
-          .update({ ultimo_ciclo_ejecutado: cycleId })
-          .eq('id', r.id);
       }
     }
 

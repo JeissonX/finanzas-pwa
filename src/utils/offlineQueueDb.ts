@@ -561,14 +561,21 @@ export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Pr
   } as QueuedMutation;
 
   if (mut.op === 'insert') {
-    const idx = list.findIndex(
-      m => m.ownerUserId === cleanOwnerId && m.op === 'insert' && String(m.tx.id) === String(mut.tx.id)
+    const lastDeleteIdx = list
+      .map(m => m.ownerUserId === cleanOwnerId && m.op === 'delete' && String(m.id) === String(mut.tx.id))
+      .lastIndexOf(true);
+
+    // Solo buscar un insert previo que esté después del último delete de la misma entidad
+    const existingInsertIdx = list.findIndex(
+      (m, i) => i > lastDeleteIdx && m.ownerUserId === cleanOwnerId && m.op === 'insert' && String(m.tx.id) === String(mut.tx.id)
     );
-    if (idx >= 0) {
-      // Reintento de inserción del mismo registro: mantener mutationId original si no se especificó otro
-      const preservedId = mutation.mutationId || list[idx].mutationId;
-      list[idx] = { ...mut, mutationId: preservedId };
+
+    if (existingInsertIdx >= 0) {
+      // Reintento de inserción del mismo registro pendiente: mantener mutationId original si no se especificó otro
+      const preservedId = mutation.mutationId || list[existingInsertIdx].mutationId;
+      list[existingInsertIdx] = { ...mut, mutationId: preservedId };
     } else {
+      // Si no existe insert posterior al delete, encolar estrictamente detrás preservando la secuencia delete -> insert
       list.push(mut);
     }
   } else if (mut.op === 'update') {
@@ -599,11 +606,12 @@ export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Pr
     }
   } else if (mut.op === 'delete') {
     // REGLA: NUNCA cancelar silenciosamente el insert ni updates pendientes.
-    // Encolar el delete como mutación propia posterior al insert/updates (orden: insert -> updates -> delete).
-    const alreadyHasDelete = list.some(
-      m => m.ownerUserId === cleanOwnerId && m.op === 'delete' && String(m.id) === String(mut.id)
+    // Encolar el delete como mutación propia posterior al insert/updates.
+    // Solo ignorar si la última mutación para esta entidad ya es un delete pendiente.
+    const lastEntityMut = [...list].reverse().find(
+      m => m.ownerUserId === cleanOwnerId && (m.op === 'insert' ? String(m.tx.id) : String(m.id)) === String(mut.id)
     );
-    if (!alreadyHasDelete) {
+    if (!lastEntityMut || lastEntityMut.op !== 'delete') {
       list.push(mut);
     }
   }
