@@ -29,7 +29,7 @@ function formatCOPNumber(val: number): string {
 }
 
 function parseNumber(raw: string): number {
-  const cleaned = raw.replace(/[^0-9\-]/g, '');
+  const cleaned = raw.replace(/[^0-9-]/g, '');
   if (!cleaned || cleaned === '-') return 0;
   const num = parseInt(cleaned, 10);
   return isNaN(num) ? 0 : num;
@@ -310,7 +310,7 @@ export default function WalletModal({ isOpen, onClose, walletToEdit, onSaved }: 
                 type="text"
                 inputMode="numeric"
                 value={saldoInicialRaw}
-                onChange={e => setSaldoInicialRaw(e.target.value.replace(/[^0-9\-]/g, ''))}
+                onChange={e => setSaldoInicialRaw(e.target.value.replace(/[^0-9-]/g, ''))}
                 placeholder="0"
                 className="w-full pl-8 pr-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
               />

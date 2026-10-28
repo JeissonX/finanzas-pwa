@@ -103,7 +103,7 @@ export interface AmortizationRun {
 }
 
 /** Simula el cronograma mes a mes hasta saldo 0 con sistema de amortización francés */
-export function amortizeSchedule(
+function amortizeSchedule(
   principal: number,
   monthlyPayment: number,
   monthlyRate: number
@@ -170,7 +170,7 @@ export function amortizeSchedule(
 }
 
 /** Calcula la nueva cuota fija exacta (anualidad) sobre el nuevo saldo y meses restantes */
-export function calculateNewPayment(
+function calculateNewPayment(
   principal: number,
   monthlyRate: number,
   remainingMonths: number

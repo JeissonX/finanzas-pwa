@@ -1,5 +1,5 @@
 import { WifiOff, RefreshCw, Sun, Moon, CheckCircle2, RotateCw, LogOut } from 'lucide-react';
-import type { TabPrincipal } from '../types/finance';
+import type { TabNavegacion } from '../types/finance';
 import { getCycleLabel } from '../utils/format';
 import { supabase } from '../services/supabase';
 
@@ -9,7 +9,7 @@ interface HeaderProps {
   online: boolean;
   sincronizando: boolean;
   queueCount: number;
-  tabActiva?: TabPrincipal;
+  tabActiva?: TabNavegacion;
   onForceRefresh?: () => void | Promise<void>;
   isRefreshing?: boolean;
 }

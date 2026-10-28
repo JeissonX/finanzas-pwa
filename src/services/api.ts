@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { Transaccion, AppDataResponse, PresupuestoItem, Cartera, CarteraInfo, GastoRecurrente, RunwayData, MatrizGastos } from '../types/finance';
+import type { Transaccion, AppDataResponse, PresupuestoItem, Cartera, CarteraInfo, GastoRecurrente } from '../types/finance';
 import {
   isDateInCurrentCycle,
   getCycleLabel,
@@ -10,19 +10,11 @@ import {
 import {
   getQueuedMutations,
   getQueuedMutationsUnlocked,
-  getOrphanMutations,
-  getOrphanMutationsUnlocked,
-  markMutationConflict,
   markMutationConflictUnlocked,
-  hasPendingForEntity,
-  hasPendingForEntityUnlocked,
   resolveCurrentUserId,
   enqueueMutation,
   enqueueMutationUnlocked,
-  removeProcessedMutations,
   removeProcessedMutationsUnlocked,
-  clearMutationQueue,
-  clearMutationQueueUnlocked,
   withQueueLock,
   LeaseLostError,
   SessionChangedError,
@@ -31,28 +23,8 @@ import {
   type MutationStatus,
 } from '../utils/offlineQueueDb';
 
-export {
-  getQueuedMutations,
-  getQueuedMutationsUnlocked,
-  getOrphanMutations,
-  getOrphanMutationsUnlocked,
-  markMutationConflict,
-  markMutationConflictUnlocked,
-  hasPendingForEntity,
-  hasPendingForEntityUnlocked,
-  resolveCurrentUserId,
-  enqueueMutation,
-  enqueueMutationUnlocked,
-  removeProcessedMutations,
-  removeProcessedMutationsUnlocked,
-  clearMutationQueue,
-  clearMutationQueueUnlocked,
-  withQueueLock,
-  LeaseLostError,
-  SessionChangedError,
-};
+export { getQueuedMutations };
 export type { QueuedMutation, QueuedMutationInput, MutationStatus };
-export const getOfflineQueue = getQueuedMutations;
 
 const TRANSACTIONS_KEY = 'finanzas_transacciones_ciclo_v2';
 const APPDATA_CACHE_KEY = 'finanzas_cached_appdata_v4';
@@ -100,20 +72,11 @@ export const DEFAULT_APPDATA: AppData = {
 };
 
 /** Sanitiza montos garantizando enteros seguros en COP */
-export function sanitizeAmount(m: any): number {
+function sanitizeAmount(m: any): number {
   const num = Number(m);
   if (!Number.isFinite(num)) return 0;
   const rounded = Math.trunc(Math.round(num));
   return Number.isSafeInteger(rounded) ? rounded : 0;
-}
-
-/** Compatibilidad hacia atrás con llamadas directas a enqueue(tx) */
-export async function enqueue(txOrMut: Transaccion | QueuedMutation | QueuedMutationInput): Promise<void> {
-  if ('op' in txOrMut) {
-    await enqueueMutation(txOrMut);
-  } else {
-    await enqueueMutation({ op: 'insert', tx: txOrMut });
-  }
 }
 
 // ── Gestión Local de Transacciones ────────────────────────────────────────────
@@ -127,7 +90,7 @@ export function getTransacciones(): Transaccion[] {
   }
 }
 
-export function saveTransacciones(txs: Transaccion[]): void {
+function saveTransacciones(txs: Transaccion[]): void {
   try {
     localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(txs));
   } catch {
@@ -138,7 +101,7 @@ export function saveTransacciones(txs: Transaccion[]): void {
   }
 }
 
-export function markTransactionSynced(id: number | string, synced = true): void {
+function markTransactionSynced(id: number | string, synced = true): void {
   const list = getTransacciones();
   let changed = false;
   const updated = list.map(t => {
@@ -155,7 +118,7 @@ export function markTransactionSynced(id: number | string, synced = true): void 
 
 // ── Actualización Optimista Local ─────────────────────────────────────────────
 
-export function applyOptimisticTransaction(tx: Transaccion): AppData {
+function applyOptimisticTransaction(tx: Transaccion): AppData {
   const txList = getTransacciones();
   const existingIdx = txList.findIndex(t => String(t.id) === String(tx.id));
   let updatedList: Transaccion[];
@@ -522,7 +485,6 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
   }
 }
 
-export const postTransaccion = saveTransaction;
 
 // ── Helper para Escrituras Online Serializadas con la Cola ──────────────────
 
@@ -531,7 +493,7 @@ export type OnlineMutationResult =
   | { status: 'pending'; mutationId: string; reason?: string };
 
 /** Helper que serializa escrituras online sobre entidades (insert, update, delete) bajo el lock de la cola */
-export async function runOnlineMutation(
+async function runOnlineMutation(
   op: 'insert' | 'update' | 'delete',
   entityOrId: Transaccion | string | number,
   patch?: Partial<Transaccion>
@@ -875,7 +837,6 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
   return res.status === 'confirmed';
 }
 
-export const deleteTransaccion = deleteTransaction;
 
 // ── Actualización de Transacción con Contingencia Offline ─────────────────────
 
@@ -942,55 +903,6 @@ export async function updateTransaction(
   return false;
 }
 
-export const updateTransaccion = updateTransaction;
-
-// ── Ajuste / Conciliación de Saldo ────────────────────────────────────────────
-
-export interface AjustePayload {
-  tipo: 'AJUSTE';
-  monto: number;
-  cuentaOrigen: string;
-  cuentaDestino: string;
-  macro: string;
-  sub: string;
-  detalle: string;
-  cuenta?: string;
-  categoria?: string;
-  macroCategoria?: string;
-  subcategoria?: string;
-  comentario?: string;
-  fecha?: string;
-  id?: string | number;
-}
-
-export async function postAjuste(ajuste: AjustePayload): Promise<void> {
-  const payloadId = ajuste.id ? String(ajuste.id) : crypto.randomUUID();
-  const payloadDate = ajuste.fecha || new Date().toISOString();
-  const macroValue = ajuste.macroCategoria || ajuste.categoria || ajuste.macro || 'Ajuste / Conciliación';
-  const subValue = ajuste.subcategoria || ajuste.sub || 'Ajuste de Saldo';
-  const comentarioValue = ajuste.comentario || ajuste.detalle || '';
-  const cuentaPrincipal = ajuste.cuenta || ajuste.cuentaOrigen || ajuste.cuentaDestino || '';
-
-  const payload: Transaccion = {
-    id: payloadId,
-    fecha: payloadDate,
-    tipo: 'AJUSTE',
-    monto: sanitizeAmount(ajuste.monto),
-    cuenta: cuentaPrincipal,
-    cuentaOrigen: ajuste.cuentaOrigen || '',
-    cuentaDestino: ajuste.cuentaDestino || '',
-    categoria: macroValue,
-    macroCategoria: macroValue,
-    macro: macroValue,
-    subcategoria: subValue,
-    sub: subValue,
-    comentario: comentarioValue,
-    detalle: comentarioValue,
-    sincronizado: false,
-  };
-
-  await saveTransaction(payload);
-}
 
 // ── Motor de Gastos Recurrentes ───────────────────────────────────────────────
 
@@ -1175,10 +1087,6 @@ export async function deleteGastoRecurrente(id: string): Promise<boolean> {
   }
 }
 
-export async function updateCarteraOrden(id: string, orden: number): Promise<void> {
-  const { error } = await supabase.from('carteras').update({ orden }).eq('id', id);
-  if (error) throw error;
-}
 
 export async function createCartera(cartera: Omit<Cartera, 'id' | 'saldo_actual'>): Promise<boolean> {
   try {
@@ -1882,45 +1790,4 @@ export async function syncOfflineQueue(
     }
     throw err;
   }
-}
-
-export const syncQueue = syncOfflineQueue;
-
-export function computeRunway(saldos: Record<string, number>): RunwayData {
-  const costosFijosBase = 2_264_731;
-  const saldoReserva = saldos['Lulo Bolsillo - Ahorro'] ?? 0;
-  const runwayMeses = costosFijosBase > 0 ? (saldoReserva / costosFijosBase) : 0;
-  return {
-    costosFijosBase,
-    saldoReserva,
-    runwayMeses,
-    metaMeses: 3,
-  };
-}
-
-export function computeMatrizGastos(gastadoPorSubcat: Record<string, number>): MatrizGastos {
-  const subcategoriasInflexibles = [
-    'Arriendo', 'Energía Eléctrica', 'Agua y Alcantarillado', 'Gas Natural',
-    'Internet Hogar', 'Plan Celular', 'Mercado del Hogar', 'Cuota Regular Mazda 2', 'Gimnasio'
-  ];
-  const setInflexibles = new Set(subcategoriasInflexibles.map(s => s.toLowerCase()));
-  let totalInflexibles = 0;
-  let totalDiscrecionales = 0;
-
-  Object.entries(gastadoPorSubcat || {}).forEach(([sub, monto]) => {
-    if (setInflexibles.has(sub.trim().toLowerCase())) {
-      totalInflexibles += sanitizeAmount(monto);
-    } else {
-      totalDiscrecionales += sanitizeAmount(monto);
-    }
-  });
-
-  const total = totalInflexibles + totalDiscrecionales;
-  return {
-    totalInflexibles,
-    totalDiscrecionales,
-    pctInflexibles: total > 0 ? (totalInflexibles / total) * 100 : 0,
-    pctDiscrecionales: total > 0 ? (totalDiscrecionales / total) * 100 : 0,
-    subcategoriasInflexibles,
-  };
 }

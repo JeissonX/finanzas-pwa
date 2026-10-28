@@ -49,47 +49,7 @@ export interface MacroCategoria {
   subcategorias: Subcategoria[];
 }
 
-export interface Presupuesto {
-  cicloId: string;
-  fechaInicio: string;
-  fechaFin: string;
-  categorias: MacroCategoria[];
-}
-
-export interface Ciclo {
-  id: string;
-  label: string;      // "25 Sep – 24 Oct"
-  fechaInicio: string;
-  fechaFin: string;
-  totalGastos: number;
-  totalIngresos: number;
-  transacciones: Transaccion[];
-}
-
-export interface KPIs {
-  saldoNeto: number;
-  gastadoCiclo: number;
-  ingresadoCiclo: number;
-  ahorroTasa: number;
-  pendientesOffline: number;
-}
-
 export type TabNavegacion = 'movimientos' | 'carteras' | 'presupuestos' | 'analiticas';
-export type TabPrincipal = TabNavegacion | 'registro' | 'presupuesto';
-
-export type QueuedMutation =
-  | { mutationId: string; op: 'insert'; tx: Transaccion }
-  | { mutationId: string; op: 'delete'; id: string }
-  | { mutationId: string; op: 'update'; id: string; patch: Partial<Transaccion> };
-
-export interface EstadoApp {
-  tema: 'dark' | 'light';
-  tabActiva: TabNavegacion;
-  modalCarteras: boolean;
-  online: boolean;
-  sincronizando: boolean;
-  colaOffline: (Transaccion | QueuedMutation)[];
-}
 
 export interface PresupuestoItem {
   id?: string;
@@ -154,35 +114,3 @@ export interface AppDataResponse {
   carteras?: CarteraInfo[];
   gastosRecurrentes?: GastoRecurrente[];
 }
-
-export interface RunwayData {
-  costosFijosBase: number;
-  saldoReserva: number;
-  runwayMeses: number;
-  metaMeses: number;
-}
-
-export interface SimuladorCreditoResult {
-  deudaViva: number;
-  cuotaRegular: number;
-  tasaEA: number;
-  tasaMensual: number;
-  interesMes: number;
-  abonoCapitalCuota: number;
-  escenario: 'plazo' | 'cuota';
-  abonoSimulado: number;
-  cuotasAhorradas?: number;
-  interesAhorradoAnual?: number;
-  reduccionCuotaMensual?: number;
-  nuevaCuotaEstimada?: number;
-  spreadLiquidezPct: number;
-}
-
-export interface MatrizGastos {
-  totalInflexibles: number;
-  totalDiscrecionales: number;
-  pctInflexibles: number;
-  pctDiscrecionales: number;
-  subcategoriasInflexibles: string[];
-}
-

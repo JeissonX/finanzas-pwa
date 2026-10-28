@@ -12,8 +12,9 @@ import {
   getQueuedMutations,
   syncOfflineQueue,
   fetchAppData,
+  updateTransaction,
+  deleteTransaction,
 } from './services/api';
-import * as api from './services/api';
 import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
 import type { TabNavegacion, TipoTransaccion, Transaccion } from './types/finance';
@@ -73,7 +74,9 @@ function MainDashboard() {
   const [queueCount, setQueueCount] = useState(0);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const currentUserIdRef = useRef<string | null>(null);
-  currentUserIdRef.current = currentUserId;
+  useEffect(() => {
+    currentUserIdRef.current = currentUserId;
+  }, [currentUserId]);
 
   const syncAbortControllerRef = useRef<AbortController | null>(null);
 
@@ -307,7 +310,7 @@ function MainDashboard() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [refreshData, showToast]);
+  }, [refreshData, showToast, triggerSync]);
 
   // ── Update transaction (Optimistic + Realtime) ─────────────
   const handleUpdateTransaction = useCallback(async (id: number | string, updated: Partial<Transaccion>): Promise<void> => {
@@ -333,7 +336,7 @@ function MainDashboard() {
     }));
 
     try {
-      const ok = await api.updateTransaction(id, updated);
+      const ok = await updateTransaction(id, updated);
       if (ok) {
         showToast('Movimiento actualizado', 'ok');
       } else {
@@ -352,7 +355,7 @@ function MainDashboard() {
     haptic(50);
     setTransacciones(prev => prev.filter(t => String(t.id) !== String(id)));
     try {
-      const deletedRemotely = await api.deleteTransaction(id);
+      const deletedRemotely = await deleteTransaction(id);
       if (deletedRemotely) {
         showToast('Movimiento eliminado y revertido', 'ok');
         await fetchAppData(true);

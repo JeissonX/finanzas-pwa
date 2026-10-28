@@ -51,7 +51,7 @@ const SHORT_MONTHS = [
   'Dic',
 ];
 
-export function getBogotaDateParts() {
+function getBogotaDateParts() {
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Bogota',
     year: 'numeric',
@@ -67,7 +67,7 @@ export function getBogotaDateParts() {
   };
 }
 
-export function formatBogotaDateOnly(dateStrOrObj: string | Date): string {
+function formatBogotaDateOnly(dateStrOrObj: string | Date): string {
   const d = typeof dateStrOrObj === 'string' ? new Date(dateStrOrObj) : dateStrOrObj;
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(d);
 }
@@ -115,7 +115,7 @@ export default function CreditCardCycleModal({
   const allTxs = useMemo(() => {
     if (transacciones && transacciones.length > 0) return transacciones;
     return getTransacciones();
-  }, [transacciones, isOpen]);
+  }, [transacciones]);
 
   // Cálculo del Período de Corte y Facturación (hora Colombia)
   const cycleData = useMemo(() => {

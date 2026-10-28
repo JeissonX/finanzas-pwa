@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import {
   RefreshCw,
   TrendingUp,
@@ -384,7 +384,7 @@ export default function WalletsView() {
   };
 
   const handleApplyAdjustment = async (walletName: string, currentAmount: number) => {
-    const cleaned = nuevoSaldoInput.replace(/[^0-9\-]/g, '');
+    const cleaned = nuevoSaldoInput.replace(/[^0-9-]/g, '');
     const nuevoSaldo = Number(cleaned);
     if (isNaN(nuevoSaldo)) return;
 
@@ -502,32 +502,43 @@ export default function WalletsView() {
     }
   };
 
-  const activeCarteras = carterasDb.filter(c => c.activa !== false);
-  const archivedCarteras = carterasDb.filter(c => c.activa === false);
+  const { archivedCarteras, walletItems, netTotal, activos, pasivos } = useMemo(() => {
+    const active = carterasDb.filter(c => c.activa !== false);
+    const archived = carterasDb.filter(c => c.activa === false);
 
-  const walletItems = activeCarteras.map((c, index) => {
-    const amount = saldos[c.nombre] ?? saldos[c.id] ?? 0;
-    const permiteGasto = c.permite_gasto !== false;
+    const items = active.map((c, index) => {
+      const amount = saldos[c.nombre] ?? saldos[c.id] ?? 0;
+      const permiteGasto = c.permite_gasto !== false;
+
+      return {
+        id: c.id,
+        name: c.nombre,
+        amount,
+        type: ACCOUNT_TYPES[c.nombre] ?? c.tipo ?? 'Cuenta',
+        icon: ACCOUNT_ICONS[c.nombre] ?? c.icono ?? '💳',
+        permiteGasto,
+        orden: c.orden ?? (index + 1),
+        dia_corte: c.dia_corte,
+        dia_pago: c.dia_pago,
+        limite_credito: c.limite_credito,
+        tipo: c.tipo,
+        rawCartera: c,
+      };
+    });
+
+    const net = items.reduce((s, w) => s + w.amount, 0);
+    const act = items.filter(w => w.amount > 0).reduce((s, w) => s + w.amount, 0);
+    const pas = items.filter(w => w.amount < 0).reduce((s, w) => s + Math.abs(w.amount), 0);
 
     return {
-      id: c.id,
-      name: c.nombre,
-      amount,
-      type: ACCOUNT_TYPES[c.nombre] ?? c.tipo ?? 'Cuenta',
-      icon: ACCOUNT_ICONS[c.nombre] ?? c.icono ?? '💳',
-      permiteGasto,
-      orden: c.orden ?? (index + 1),
-      dia_corte: c.dia_corte,
-      dia_pago: c.dia_pago,
-      limite_credito: c.limite_credito,
-      tipo: c.tipo,
-      rawCartera: c,
+      activeCarteras: active,
+      archivedCarteras: archived,
+      walletItems: items,
+      netTotal: net,
+      activos: act,
+      pasivos: pas,
     };
-  });
-
-  const netTotal = walletItems.reduce((s, w) => s + w.amount, 0);
-  const activos = walletItems.filter(w => w.amount > 0).reduce((s, w) => s + w.amount, 0);
-  const pasivos = walletItems.filter(w => w.amount < 0).reduce((s, w) => s + Math.abs(w.amount), 0);
+  }, [carterasDb, saldos]);
 
   const selectedMacroCat = CATALOG_GASTOS.find(c => c.nombre === recMacro) || CATALOG_GASTOS[0];
 
@@ -921,7 +932,7 @@ export default function WalletsView() {
           const isDebt = wallet.amount < 0;
           const Icon = isDebt ? TrendingDown : wallet.amount === 0 ? Minus : TrendingUp;
           const isSelected = adjustingWallet === wallet.name;
-          const cleanedInput = nuevoSaldoInput.replace(/[^0-9\-]/g, '');
+          const cleanedInput = nuevoSaldoInput.replace(/[^0-9-]/g, '');
           const parsedNewSaldo = cleanedInput !== '' && cleanedInput !== '-' ? Number(cleanedInput) : wallet.amount;
           const diff = isNaN(parsedNewSaldo) ? 0 : parsedNewSaldo - wallet.amount;
 
