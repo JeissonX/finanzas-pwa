@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronDown, ChevronRight, Pencil, Plus, X, Check, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Pencil, Plus, X, Check, Loader2, AlertCircle } from 'lucide-react';
 import { formatCOP, formatDisplay, parseAmount, progressColor, progressTextColor, haptic } from '../utils/format';
 import type { PresupuestoItem } from '../types/finance';
 import { fetchAppData, type AppData } from '../services/api';
@@ -28,6 +28,8 @@ function ProgressBar({ pct, label }: ProgressBarProps) {
 }
 
 interface DynamicSubcategoria {
+  id?: string;
+  macro: string;
   nombre: string;
   presupuesto: number;
   gastado: number;
@@ -43,7 +45,7 @@ interface DynamicMacroCategoria {
 
 interface AccordionRowProps {
   cat: DynamicMacroCategoria;
-  onEditSub: (subNombre: string, currentBudget: number) => void;
+  onEditSub: (sub: DynamicSubcategoria) => void;
 }
 
 function AccordionRow({ cat, onEditSub }: AccordionRowProps) {
@@ -120,7 +122,7 @@ function AccordionRow({ cat, onEditSub }: AccordionRowProps) {
                         onClick={(e) => {
                           e.stopPropagation();
                           haptic();
-                          onEditSub(sub.nombre, sub.presupuesto);
+                          onEditSub(sub);
                         }}
                         className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
                         title={`Editar presupuesto de ${sub.nombre}`}
@@ -188,7 +190,7 @@ export default function BudgetAccordion() {
   const [appData, setAppData] = useState<AppData | null>(null);
 
   // Estados de modales
-  const [editingSub, setEditingSub] = useState<{ nombre: string; presupuesto: number } | null>(null);
+  const [editingSub, setEditingSub] = useState<{ id?: string; macro: string; nombre: string; presupuesto: number } | null>(null);
   const [editAmountDisplay, setEditAmountDisplay] = useState('0');
   const [isUpdating, setIsUpdating] = useState(false);
 
@@ -199,13 +201,13 @@ export default function BudgetAccordion() {
   const [newMedioPago, setNewMedioPago] = useState('TC Lulo Bank');
   const [isCreating, setIsCreating] = useState(false);
 
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ msg: string; isError?: boolean } | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showFeedback = (msg: string) => {
-    setFeedback(msg);
+  const showFeedback = (msg: string, isError = false) => {
+    setFeedback({ msg, isError });
     if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
-    feedbackTimerRef.current = setTimeout(() => setFeedback(null), 3000);
+    feedbackTimerRef.current = setTimeout(() => setFeedback(null), 3500);
   };
 
   useEffect(() => {
@@ -247,6 +249,8 @@ export default function BudgetAccordion() {
     const subcategorias: DynamicSubcategoria[] = items.map(p => {
       const gastado = typeof p.gastado === 'number' && p.gastado > 0 ? p.gastado : (spentSubMap[p.sub] ?? 0);
       return {
+        id: p.id,
+        macro: macroName,
         nombre: p.sub,
         presupuesto: Number(p.presupuesto) || 0,
         gastado,
@@ -272,9 +276,14 @@ export default function BudgetAccordion() {
   const globalPct = totalPresupuesto > 0 ? (totalGastado / totalPresupuesto) * 100 : 0;
 
   // Abrir modal de edición
-  const handleOpenEdit = (subNombre: string, currentBudget: number) => {
-    setEditingSub({ nombre: subNombre, presupuesto: currentBudget });
-    setEditAmountDisplay(formatDisplay(String(currentBudget)));
+  const handleOpenEdit = (sub: DynamicSubcategoria) => {
+    setEditingSub({
+      id: sub.id,
+      macro: sub.macro,
+      nombre: sub.nombre,
+      presupuesto: sub.presupuesto,
+    });
+    setEditAmountDisplay(formatDisplay(String(sub.presupuesto)));
   };
 
   // Guardar edición de presupuesto en Supabase
@@ -284,18 +293,33 @@ export default function BudgetAccordion() {
     setIsUpdating(true);
     haptic(50);
     try {
-      const { error } = await supabase
+      let query = supabase
         .from('catalogo_categorias')
-        .update({ presupuesto_base: nuevoMonto })
-        .eq('subcategoria', editingSub.nombre);
+        .update({ presupuesto_base: nuevoMonto });
+
+      // Filtrar unívocamente: por id de fila si existe, o por la clave compuesta macro + sub
+      if (editingSub.id) {
+        query = query.eq('id', editingSub.id);
+      } else {
+        query = query
+          .eq('macro_categoria', editingSub.macro)
+          .eq('subcategoria', editingSub.nombre);
+      }
+
+      const { data, error } = await query.select('id');
 
       if (error) throw error;
+
+      if (!data || data.length === 0) {
+        throw new Error(`No se encontró el registro para "${editingSub.nombre}" o la operación fue rechazada`);
+      }
 
       await fetchAppData(true);
       showFeedback(`Presupuesto de "${editingSub.nombre}" actualizado.`);
       setEditingSub(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error actualizando presupuesto:', err);
+      showFeedback(err?.message || 'Error al actualizar presupuesto', true);
     } finally {
       setIsUpdating(false);
     }
@@ -336,9 +360,17 @@ export default function BudgetAccordion() {
     <div className="flex flex-col gap-3 px-4 pb-4 pt-3 animate-fade-in max-w-lg mx-auto w-full">
       {/* Notificación de feedback */}
       {feedback && (
-        <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200 text-xs font-semibold flex items-center gap-2 shadow-sm animate-slide-up">
-          <Check size={16} className="text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
-          <span>{feedback}</span>
+        <div className={`p-3 rounded-xl border text-xs font-semibold flex items-center gap-2 shadow-sm animate-slide-up ${
+          feedback.isError
+            ? 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/60 dark:border-rose-800 dark:text-rose-200'
+            : 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200'
+        }`}>
+          {feedback.isError ? (
+            <AlertCircle size={16} className="text-rose-600 dark:text-rose-400 flex-shrink-0" />
+          ) : (
+            <Check size={16} className="text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+          )}
+          <span>{feedback.msg}</span>
         </div>
       )}
 

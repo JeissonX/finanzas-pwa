@@ -1357,6 +1357,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       const disponible = presupuesto - gastado;
       const pct = presupuesto > 0 ? (gastado / presupuesto) * 100 : 0;
       return {
+        id: catRow.id ? String(catRow.id) : undefined,
         macro,
         sub,
         presupuesto,

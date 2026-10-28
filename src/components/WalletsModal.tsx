@@ -134,20 +134,31 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
     );
   };
 
-  const handleTogglePermiteGasto = async (walletName: string, currentPermiteGasto: boolean) => {
+  const handleTogglePermiteGasto = async (walletName: string, currentPermiteGasto: boolean, walletId?: string) => {
     haptic(40);
     const nuevoValor = !currentPermiteGasto;
 
     // Actualización optimista
-    setCarterasDb(prev => prev.map(c => c.nombre === walletName ? { ...c, permite_gasto: nuevoValor } : c));
+    setCarterasDb(prev => prev.map(c => ((walletId && c.id === walletId) || c.nombre === walletName) ? { ...c, permite_gasto: nuevoValor } : c));
 
     try {
-      const { error } = await supabase
+      let query = supabase
         .from('carteras')
-        .update({ permite_gasto: nuevoValor })
-        .eq('nombre', walletName);
+        .update({ permite_gasto: nuevoValor });
+
+      if (walletId) {
+        query = query.eq('id', walletId);
+      } else {
+        query = query.eq('nombre', walletName);
+      }
+
+      const { data, error } = await query.select('id');
 
       if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error(`No se encontró la cartera "${walletName}" para actualizar`);
+      }
+
       await fetchAppData(true);
       setAdjustSuccessMsg(`Gasto ${nuevoValor ? 'habilitado' : 'bloqueado'} en "${walletName}".`);
       if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
@@ -155,7 +166,7 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
     } catch (err) {
       console.error('Error actualizando permite_gasto:', err);
       // Revertir
-      setCarterasDb(prev => prev.map(c => c.nombre === walletName ? { ...c, permite_gasto: currentPermiteGasto } : c));
+      setCarterasDb(prev => prev.map(c => ((walletId && c.id === walletId) || c.nombre === walletName) ? { ...c, permite_gasto: currentPermiteGasto } : c));
     }
   };
 
@@ -366,7 +377,7 @@ export default function WalletsModal({ open, onClose }: WalletsModalProps) {
                   </span>
                   <button
                     type="button"
-                    onClick={() => handleTogglePermiteGasto(wallet.name, wallet.permiteGasto)}
+                    onClick={() => handleTogglePermiteGasto(wallet.name, wallet.permiteGasto, wallet.id)}
                     className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition flex items-center gap-1.5 cursor-pointer active:scale-95 ${
                       wallet.permiteGasto
                         ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'

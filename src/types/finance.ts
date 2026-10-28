@@ -85,6 +85,7 @@ export interface EstadoApp {
 }
 
 export interface PresupuestoItem {
+  id?: string;
   macro: string;
   sub: string;
   presupuesto: number;

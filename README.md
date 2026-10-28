@@ -90,3 +90,16 @@ COMMIT;
 
 ### 2. Migración de Idempotencia (`20261028_idempotency_client_mutation_id.sql`):
 Copie y ejecute directamente el script `supabase/migrations/20261028_idempotency_client_mutation_id.sql` en el SQL Editor de Supabase. Es completamente idempotente y re-ejecutable (`IF NOT EXISTS`).
+
+---
+
+## ⚠️ Riesgos Aceptados
+
+1. **Uso en varios dispositivos**:
+   Un reintento tardío de una actualización ya confirmada puede sobrescribir una edición posterior hecha desde otro dispositivo. Mitigarlo requeriría control de versión en el servidor. Se asume un único dispositivo activo.
+
+2. **Presupuestos y configuración**:
+   Presupuestos y configuración se escriben solo online y no pasan por la cola offline.
+
+3. **Regla de despliegue**:
+   Aplicar migraciones `20261027_hardening_rls_and_constraints.sql`, `20261028_idempotency_client_mutation_id.sql` y `20261029_rls_owner_check.sql` (si existe) en Supabase antes de publicar el frontend.
