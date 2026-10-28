@@ -240,18 +240,27 @@ function MainDashboard() {
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
     }
+    const duration = type === 'err' ? 6500 : 3500;
     toastTimerRef.current = setTimeout(() => {
       setToast(prev => (prev?.id === id ? null : prev));
-    }, 3500);
+    }, duration);
   }, []);
 
   useEffect(() => {
+    const handleSyncError = (e: Event) => {
+      const custom = e as CustomEvent<string>;
+      if (custom.detail) {
+        showToast(custom.detail, 'err');
+      }
+    };
+    window.addEventListener('supabase-sync-error', handleSyncError);
     return () => {
+      window.removeEventListener('supabase-sync-error', handleSyncError);
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
       }
     };
-  }, []);
+  }, [showToast]);
 
   // ── Refresh app data con Contador de Generación ────────────
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -388,9 +397,16 @@ function MainDashboard() {
     comentario?: string;
     detalle?: string;
   }) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session || !session.user?.id) {
+      showToast('42501: Sesión requerida para registrar movimientos', 'err');
+      return;
+    }
+
     setSaving(true);
     const tx: Transaccion = {
       id: crypto.randomUUID(),
+      user_id: session.user.id,
       fecha: new Date().toISOString(),
       sincronizado: false,
       ...payload,
@@ -402,10 +418,11 @@ function MainDashboard() {
       await saveTransaction(tx);
       showToast(`${payload.tipo} guardado — $${payload.monto.toLocaleString('es-CO')}`, 'ok');
       refreshData(true);
-    } catch {
+    } catch (err: any) {
       const q = await getQueuedMutations(currentUserIdRef.current || undefined);
       setQueueCount(q.length);
-      showToast('Guardado offline · se enviará al reconectar', 'warn');
+      const errMsg = err?.message || 'Guardado offline · se enviará al reconectar';
+      showToast(errMsg, 'warn');
     } finally {
       const q = await getQueuedMutations(currentUserIdRef.current || undefined);
       setQueueCount(q.length);
@@ -526,7 +543,7 @@ function MainDashboard() {
       {/* Toast */}
       {toast && (
         <div
-          className={`fixed top-5 left-1/2 -translate-x-1/2 z-[60] px-4 py-2.5 rounded-2xl border text-xs font-semibold animate-slide-up transition ${TOAST_BG[toast.type]}`}
+          className={`fixed top-5 left-1/2 -translate-x-1/2 z-[60] px-4 py-2.5 rounded-2xl border text-xs font-semibold animate-slide-up transition max-w-[92vw] text-center break-words ${TOAST_BG[toast.type]}`}
           role="status"
           aria-live="polite"
         >

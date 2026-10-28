@@ -26,6 +26,7 @@ Aplicación web progresiva (PWA) offline-first para control financiero personal 
      - Exclusión mutua principal mediante la Web Locks API (`navigator.locks`).
      - **Fallback de Exclusión Mutua por Lease**: Cuando el navegador no soporte `navigator.locks`, utiliza un mecanismo de lease lock en `localStorage` (clave `'finanzas_queue_fallback_lock'`, lease de 5000ms con identificador único de pestaña, reintentos con backoff exponencial y jitter, y liberación garantizada en bloque `finally`).
    - **Desacoplamiento Optimista**: Inserción remota (`insertRemote`) separada del cálculo optimista local (`applyOptimisticTransaction`), garantizando cero duplicación de saldos tras sincronizaciones offline.
+    - **Visibilidad Inmediata de Errores y Blindaje de Sesión**: Emisión de eventos globales `supabase-sync-error` con el código y mensaje crudo de PostgreSQL/PostgREST ante cualquier rechazo remoto, validación estricta de `session.user.id` antes de interactuar con la tabla `transacciones` y normalización de cuentas nulas y montos enteros COP.
 
 3. **Autenticación Limpia**:
    - Componente `AuthGate` sin contraseñas precargadas ni datos sensibles en código fuente. Recordación segura del último correo electrónico en `localStorage`.
@@ -56,7 +57,7 @@ Aplicación web progresiva (PWA) offline-first para control financiero personal 
 
 7. **Rendimiento, Code Splitting y PWA**:
    - Carga diferida (`React.lazy` y `Suspense`) del módulo de analíticas y gráficos Recharts.
-   - Service Worker (`finanzas-pwa-v25`) con estrategia cache-first para recursos estáticos y purga selectiva de versiones previas.
+   - Service Worker (`finanzas-pwa-v28`) con estrategia cache-first para recursos estáticos y purga selectiva de versiones previas.
 
 ---
 

@@ -3,6 +3,7 @@ export type TipoTransaccion = 'GASTO' | 'INGRESO' | 'TRANSFERENCIA' | 'AJUSTE';
 
 export interface Transaccion {
   id: number | string;
+  user_id?: string;
   tipo: TipoTransaccion;
   monto: number;
   categoria: string;

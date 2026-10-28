@@ -147,9 +147,10 @@ export default function EditTransactionModal({
 
     setSaving(true);
     try {
+      const cleanMonto = Math.max(1, Math.trunc(Math.round(parsedMonto)));
       const updated: Partial<Transaccion> = {
         tipo: transaccion.tipo,
-        monto: parsedMonto,
+        monto: cleanMonto,
         macroCategoria,
         categoria: macroCategoria,
         macro: macroCategoria,
