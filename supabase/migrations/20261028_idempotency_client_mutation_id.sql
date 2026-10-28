@@ -1,6 +1,10 @@
 -- ==============================================================================
 -- MIGRACIÓN: 20261028_idempotency_client_mutation_id.sql
 -- Idempotencia para Inserciones desde Cola Offline y Cliente Web
+--
+-- REGLA DE DESPLIEGUE OBLIGATORIA:
+-- Aplicar las migraciones 20261027 y 20261028 en Supabase ANTES de publicar el frontend.
+-- Esta migración es completamente re-ejecutable e idempotente (IF NOT EXISTS).
 -- ==============================================================================
 
 BEGIN;

@@ -236,11 +236,23 @@ export function applyOptimisticTransaction(tx: Transaccion): AppData {
 
 // ── Inserción Remota Pura (Separada del Flujo Optimista) ───────────────────────
 
+export interface InsertRemoteResult {
+  confirmed: boolean;
+  conflict?: boolean;
+  reason?: string;
+}
+
 export async function insertRemote(
   tx: Transaccion,
   signal?: AbortSignal,
   clientMutationId?: string
-): Promise<void> {
+): Promise<InsertRemoteResult> {
+  const mutationId = clientMutationId || (
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `mut_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+  );
+
   let cuentaOrigen: string | null = null;
   let cuentaDestino: string | null = null;
 
@@ -278,16 +290,18 @@ export async function insertRemote(
 
   const txDate = tx.fecha || new Date().toISOString();
   const canonicalCycle = getPayrollCycleId(txDate);
-
   const cleanMonto = sanitizeAmount(tx.monto);
+  const macroValue = tx.macroCategoria || tx.categoria || tx.macro || '';
+  const subValue = tx.subcategoria || tx.sub || '';
 
   const payload: Record<string, any> = {
     id: String(tx.id),
+    client_mutation_id: mutationId,
     fecha: txDate,
     tipo: tx.tipo,
     monto: cleanMonto,
-    macro_categoria: tx.macroCategoria || tx.categoria || tx.macro || '',
-    subcategoria: tx.subcategoria || tx.sub || '',
+    macro_categoria: macroValue,
+    subcategoria: subValue,
     cuenta: cuentaPrincipal,
     cuenta_origen: cuentaOrigen,
     cuenta_destino: cuentaDestino,
@@ -295,48 +309,108 @@ export async function insertRemote(
     ciclo: canonicalCycle,
   };
 
-  if (clientMutationId) {
-    payload.client_mutation_id = clientMutationId;
-  }
-
   let query = supabase
     .from('transacciones')
-    .upsert([payload], { onConflict: 'client_mutation_id', ignoreDuplicates: true });
+    .upsert([payload], { onConflict: 'client_mutation_id', ignoreDuplicates: true })
+    .select();
 
   if (signal) {
     query = query.abortSignal(signal);
   }
 
-  const { error } = await query;
-  if (error) {
-    // Si ya existe en PostgreSQL (error 23505), verificar coincidencia en monto y tipo antes de darlo por idempotente
-    if (error.code === '23505') {
-      let fetchQuery = supabase
-        .from('transacciones')
-        .select('monto, tipo')
-        .eq('id', String(tx.id));
+  const { data, error } = await query;
 
-      if (signal) {
-        fetchQuery = fetchQuery.abortSignal(signal);
-      }
+  // Caso 1: Fila insertada exitosamente (retornada por el select)
+  if (!error && Array.isArray(data) && data.length > 0) {
+    return { confirmed: true };
+  }
 
-      const { data: remoteRow, error: fetchErr } = await fetchQuery.maybeSingle();
+  // Caso 2: Fila ignorada por ON CONFLICT DO NOTHING (data vacía) o colisión 23505
+  const isIgnored = !error && Array.isArray(data) && data.length === 0;
+  const is23505 = error && (error.code === '23505' || String(error.message).includes('duplicate key'));
 
-      if (fetchErr || !remoteRow) {
-        throw error;
-      }
+  if (isIgnored || is23505) {
+    // Consultar la fila por client_mutation_id = mutationId
+    let verifyQuery = supabase
+      .from('transacciones')
+      .select('*')
+      .eq('client_mutation_id', mutationId);
 
-      const remoteMonto = sanitizeAmount(remoteRow.monto);
-      if (remoteMonto === cleanMonto && remoteRow.tipo === tx.tipo) {
-        return;
-      }
-
-      throw new Error(
-        `Discrepancia en colisión 23505 para transacción ${tx.id}: remoto (${remoteRow.tipo}, ${remoteMonto}) vs local (${tx.tipo}, ${cleanMonto})`
-      );
+    if (signal) {
+      verifyQuery = verifyQuery.abortSignal(signal);
     }
+
+    const { data: existingRows, error: verifyErr } = await verifyQuery;
+
+    // Si la verificación falla (red, RLS, timeout): lanzar error para conservar la mutación en la cola
+    if (verifyErr) {
+      throw verifyErr;
+    }
+
+    // Si la consulta no encuentra la fila: el error 23505 vino de otra restricción (ej. PK duplicada)
+    if (!existingRows || existingRows.length === 0) {
+      return {
+        confirmed: false,
+        conflict: true,
+        reason: `Fila no encontrada por client_mutation_id (${mutationId}). Posible colisión de PK u otra restricción ajena.`,
+      };
+    }
+
+    const row = existingRows[0];
+
+    // Verificar usuario autenticado
+    const { data: authData } = await supabase.auth.getUser();
+    const currentUserId = authData?.user?.id;
+    if (currentUserId && row.user_id && row.user_id !== currentUserId) {
+      return {
+        confirmed: false,
+        conflict: true,
+        reason: `Conflicto de usuario: ${row.user_id} vs ${currentUserId}`,
+      };
+    }
+
+    // Verificar mismo ID de transacción
+    if (String(row.id) !== String(tx.id)) {
+      return {
+        confirmed: false,
+        conflict: true,
+        reason: `Conflicto en ID de transacción: remoto (${row.id}) vs local (${tx.id})`,
+      };
+    }
+
+    // Comparar monto, tipo y campos contables relevantes (fecha, cuenta, categoría)
+    const remoteMonto = sanitizeAmount(row.monto);
+    const remoteTipo = row.tipo;
+    const remoteFechaTime = new Date(row.fecha).getTime();
+    const localFechaTime = new Date(txDate).getTime();
+    const remoteCuenta = String(row.cuenta || '').trim().toLowerCase();
+    const localCuenta = String(cuentaPrincipal).trim().toLowerCase();
+    const remoteMacro = String(row.macro_categoria || '').trim().toLowerCase();
+    const localMacro = String(macroValue).trim().toLowerCase();
+
+    const montoMatch = remoteMonto === cleanMonto;
+    const tipoMatch = remoteTipo === tx.tipo;
+    const fechaMatch = Math.abs(remoteFechaTime - localFechaTime) < 5000;
+    const cuentaMatch = remoteCuenta === localCuenta;
+    const macroMatch = remoteMacro === localMacro;
+
+    if (montoMatch && tipoMatch && fechaMatch && cuentaMatch && macroMatch) {
+      return { confirmed: true };
+    }
+
+    return {
+      confirmed: false,
+      conflict: true,
+      reason: `Conflicto contable en transacción ${tx.id}: remoto (${remoteTipo}, $${remoteMonto}, ${remoteCuenta}) vs local (${tx.tipo}, $${cleanMonto}, ${localCuenta})`,
+    };
+  }
+
+  // Cualquier otro error de red, RLS o backend: lanzar para reintento
+  if (error) {
     throw error;
   }
+
+  return { confirmed: false, reason: 'Estado de inserción indeterminado' };
 }
 
 // ── Guardado de Transacción con Contingencia Offline ──────────────────────────
@@ -359,7 +433,10 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
 
   // 2. Intentar inserción remota enviando client_mutation_id
   try {
-    await insertRemote(tx, undefined, mutationId);
+    const res = await insertRemote(tx, undefined, mutationId);
+    if (!res.confirmed) {
+      throw new Error(res.reason || 'Inserción remota no confirmada');
+    }
     markTransactionSynced(tx.id, true);
   } catch (err) {
     // 3. Encolar mutación de inserción en caso de fallo preservando mutationId
@@ -1137,10 +1214,15 @@ export async function syncOfflineQueue(signal?: AbortSignal): Promise<{ synced: 
         try {
           if (mut.op === 'insert') {
             // Inserción remota directa SIN ejecutar applyOptimisticTransaction
-            await insertRemote(mut.tx, effectiveSignal, mut.mutationId);
-            markTransactionSynced(mut.tx.id, true);
-            processedIds.push(mut.mutationId);
-            synced++;
+            const res = await insertRemote(mut.tx, effectiveSignal, mut.mutationId);
+            if (res && res.confirmed) {
+              markTransactionSynced(mut.tx.id, true);
+              processedIds.push(mut.mutationId);
+              synced++;
+            } else {
+              console.warn('Inserción en cola no confirmada (conflicto o pendiente):', mut.mutationId, res?.reason);
+              // NUNCA agregar a processedIds si no fue confirmada explícitamente
+            }
           } else if (mut.op === 'delete') {
             let deleteQuery = supabase.from('transacciones').delete().eq('id', String(mut.id));
             if (effectiveSignal) {
@@ -1148,6 +1230,7 @@ export async function syncOfflineQueue(signal?: AbortSignal): Promise<{ synced: 
             }
             const { error } = await deleteQuery;
             if (error) throw error;
+            // Delete remoto de una fila (incluso si no existe) es éxito idempotente
             processedIds.push(mut.mutationId);
             synced++;
           } else if (mut.op === 'update') {
@@ -1165,14 +1248,8 @@ export async function syncOfflineQueue(signal?: AbortSignal): Promise<{ synced: 
           if (isLeaseLostOrAbortError(err, effectiveSignal)) {
             throw err;
           }
-          if (err?.code === '23505' && mut.op === 'insert') {
-            // Idempotencia: el registro ya existía validado
-            markTransactionSynced(mut.tx.id, true);
-            processedIds.push(mut.mutationId);
-            synced++;
-          } else {
-            console.warn('Error sincronizando mutación encolada:', mut, err);
-          }
+          console.warn('Error sincronizando mutación encolada:', mut, err);
+          // Cualquier error conserva la mutación en la cola
         }
       }
 

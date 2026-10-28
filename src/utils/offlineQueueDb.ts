@@ -378,47 +378,38 @@ export async function enqueueMutationUnlocked(mutation: QueuedMutationInput): Pr
   if (mut.op === 'insert') {
     const idx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mut.tx.id));
     if (idx >= 0) {
-      // Mantener mutationId original si no se especificó uno explícito
+      // Reintento de inserción del mismo registro: mantener mutationId original si no se especificó otro
       const preservedId = mutation.mutationId || list[idx].mutationId;
       list[idx] = { ...mut, mutationId: preservedId };
     } else {
       list.push(mut);
     }
-  } else if (mut.op === 'delete') {
-    // Eliminar inserts o updates pendientes de este ID antes de añadir el delete
-    const filtered = list.filter(m => {
-      if (m.op === 'insert' && String(m.tx.id) === String(mut.id)) return false;
-      if (m.op === 'update' && String(m.id) === String(mut.id)) return false;
-      return true;
-    });
-    filtered.push(mut);
-    const updatedRecords: MutationRecord[] = filtered.map(m => ({ mutation: m, timestamp: Date.now() }));
-    await writeAllRecords(db, updatedRecords);
-    db.close();
-    notifyQueueUpdated(updatedRecords.length);
-    return;
   } else if (mut.op === 'update') {
-    const insertIdx = list.findIndex(m => m.op === 'insert' && String(m.tx.id) === String(mut.id));
-    if (insertIdx >= 0 && list[insertIdx].op === 'insert') {
-      const existingTx = (list[insertIdx] as { op: 'insert'; tx: Transaccion; mutationId: string }).tx;
-      list[insertIdx] = {
-        mutationId: list[insertIdx].mutationId,
-        op: 'insert',
-        tx: { ...existingTx, ...mut.patch },
+    // REGLA: NUNCA fusionar dentro de un insert pendiente. Se encola como mutación independiente.
+    // Solo coalescer con otro update previo del mismo registro si no hay un delete posterior para ese ID.
+    const lastDeleteIdx = list.map(m => m.op === 'delete' && String(m.id) === String(mut.id)).lastIndexOf(true);
+    const existingUpdateIdx = list.findIndex((m, i) => i > lastDeleteIdx && m.op === 'update' && String(m.id) === String(mut.id));
+
+    if (existingUpdateIdx >= 0) {
+      // Al fusionar updates pendientes, asignar un mutationId NUEVO para evitar
+      // que una sincronización en curso elimine por el ID previo cambios recién acumulados.
+      const prev = list[existingUpdateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion>; mutationId: string };
+      list[existingUpdateIdx] = {
+        mutationId: generateUuid(),
+        op: 'update',
+        id: mut.id,
+        patch: { ...prev.patch, ...mut.patch },
       };
     } else {
-      const updateIdx = list.findIndex(m => m.op === 'update' && String(m.id) === String(mut.id));
-      if (updateIdx >= 0) {
-        const prevPatch = (list[updateIdx] as { op: 'update'; id: string; patch: Partial<Transaccion>; mutationId: string }).patch;
-        list[updateIdx] = {
-          mutationId: list[updateIdx].mutationId,
-          op: 'update',
-          id: mut.id,
-          patch: { ...prevPatch, ...mut.patch },
-        };
-      } else {
-        list.push(mut);
-      }
+      // Encolar como mutación update independiente posterior al insert o mutaciones previas
+      list.push(mut);
+    }
+  } else if (mut.op === 'delete') {
+    // REGLA: NUNCA cancelar silenciosamente el insert ni updates pendientes.
+    // Encolar el delete como mutación propia posterior al insert/updates (orden: insert -> updates -> delete).
+    const alreadyHasDelete = list.some(m => m.op === 'delete' && String(m.id) === String(mut.id));
+    if (!alreadyHasDelete) {
+      list.push(mut);
     }
   }
 

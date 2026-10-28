@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS public.carteras (
 CREATE TABLE IF NOT EXISTS public.transacciones (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+    client_mutation_id UUID,
     fecha TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     tipo TEXT NOT NULL CHECK (tipo IN ('GASTO', 'INGRESO', 'TRANSFERENCIA', 'AJUSTE')),
     monto NUMERIC NOT NULL,
@@ -101,6 +102,8 @@ CREATE INDEX IF NOT EXISTS idx_carteras_user_orden ON public.carteras (user_id, 
 CREATE INDEX IF NOT EXISTS idx_transacciones_user_fecha ON public.transacciones (user_id, fecha DESC);
 CREATE INDEX IF NOT EXISTS idx_transacciones_user_ciclo ON public.transacciones (user_id, ciclo);
 CREATE INDEX IF NOT EXISTS idx_transacciones_user_cuentas ON public.transacciones (user_id, cuenta_origen, cuenta_destino);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_transacciones_client_mutation_id_partial ON public.transacciones (client_mutation_id) WHERE client_mutation_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_transacciones_client_mutation_id ON public.transacciones (client_mutation_id);
 CREATE INDEX IF NOT EXISTS idx_catalogo_user_macro ON public.catalogo_categorias (user_id, macro_categoria);
 CREATE INDEX IF NOT EXISTS idx_recurrentes_user_activo ON public.gastos_recurrentes (user_id, activo);
 CREATE INDEX IF NOT EXISTS idx_historico_patrimonio_user_fecha ON public.historico_patrimonio (user_id, fecha DESC);

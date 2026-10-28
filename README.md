@@ -71,15 +71,16 @@ Aplicación web progresiva (PWA) offline-first para control financiero personal 
 
 ## 🔐 Ejecución de Migraciones de Base de Datos
 
-Para aplicar la migración de endurecimiento contable en bases de datos existentes:
+> [!IMPORTANT]
+> **REGLA DE DESPLIEGUE OBLIGATORIA**: Aplicar las migraciones `20261027_hardening_rls_and_constraints.sql` y `20261028_idempotency_client_mutation_id.sql` en el SQL Editor de Supabase **ANTES** de publicar el frontend.
 
-### 1. En Supabase SQL Editor (SQL puro sin comandos `psql` tipo `\ir`):
-Copie el contenido completo de `supabase/migrations/20261027_hardening_rls_and_constraints.sql` en el SQL Editor y configure su UUID propietario en la primera sentencia antes de ejecutar:
+### 1. Migración de Endurecimiento RLS (`20261027_hardening_rls_and_constraints.sql`):
+Copie el contenido completo de `supabase/migrations/20261027_hardening_rls_and_constraints.sql` en el SQL Editor de Supabase y configure su UUID propietario en la sentencia inicial antes de ejecutar:
 
 ```sql
 BEGIN;
 
--- Defina el UUID de su usuario propietario en auth.users:
+-- Reemplazar con el UUID real de su usuario propietario en auth.users (Authentication -> Users):
 SET LOCAL app.owner_user_id = '00000000-0000-0000-0000-000000000000';
 
 -- ... (cuerpo completo de la migración) ...
@@ -87,7 +88,5 @@ SET LOCAL app.owner_user_id = '00000000-0000-0000-0000-000000000000';
 COMMIT;
 ```
 
-### 2. En psql CLI:
-```bash
-psql "postgresql://postgres:[PASSWORD]@[HOST]:5432/postgres" -c "BEGIN; SET LOCAL app.owner_user_id = '<UUID>'; \i supabase/migrations/20261027_hardening_rls_and_constraints.sql; COMMIT;"
-```
+### 2. Migración de Idempotencia (`20261028_idempotency_client_mutation_id.sql`):
+Copie y ejecute directamente el script `supabase/migrations/20261028_idempotency_client_mutation_id.sql` en el SQL Editor de Supabase. Es completamente idempotente y re-ejecutable (`IF NOT EXISTS`).
