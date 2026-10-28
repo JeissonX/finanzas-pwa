@@ -71,15 +71,23 @@ Aplicación web progresiva (PWA) offline-first para control financiero personal 
 
 ## 🔐 Ejecución de Migraciones de Base de Datos
 
-Para aplicar la migración de endurecimiento contable en bases de datos existentes, ejecute en el SQL Editor de Supabase:
+Para aplicar la migración de endurecimiento contable en bases de datos existentes:
+
+### 1. En Supabase SQL Editor (SQL puro sin comandos `psql` tipo `\ir`):
+Copie el contenido completo de `supabase/migrations/20261027_hardening_rls_and_constraints.sql` en el SQL Editor y configure su UUID propietario en la primera sentencia antes de ejecutar:
 
 ```sql
 BEGIN;
+
 -- Defina el UUID de su usuario propietario en auth.users:
 SET LOCAL app.owner_user_id = '00000000-0000-0000-0000-000000000000';
 
--- Ejecute el contenido de supabase/migrations/20261027_hardening_rls_and_constraints.sql
-\ir supabase/migrations/20261027_hardening_rls_and_constraints.sql
+-- ... (cuerpo completo de la migración) ...
 
 COMMIT;
+```
+
+### 2. En psql CLI:
+```bash
+psql "postgresql://postgres:[PASSWORD]@[HOST]:5432/postgres" -c "BEGIN; SET LOCAL app.owner_user_id = '<UUID>'; \i supabase/migrations/20261027_hardening_rls_and_constraints.sql; COMMIT;"
 ```

@@ -2,15 +2,19 @@
 -- MIGRACIÓN: 20261027_hardening_rls_and_constraints.sql
 -- Hardening RLS por Propietario Autenticado y Pesos Enteros COP para Bases Existentes
 --
--- INSTRUCCIONES DE EJECUCIÓN (DBA / Supabase SQL Editor):
--- Esta migración requiere que el DBA declare explícitamente el UUID del propietario
--- registrado en auth.users antes de ejecutar, garantizando auditoría contable estricta:
+-- INSTRUCCIONES DE EJECUCIÓN:
+-- 1. En Supabase SQL Editor (SQL puro sin meta-comandos tipo \ir):
+--    Copie y pegue todo este script directamente en el SQL Editor de Supabase.
+--    Defina el UUID real de su usuario propietario en auth.users descomentando o
+--    ajustando la sentencia: SET LOCAL app.owner_user_id = '<UUID>';
+--    El bloque transaccional BEGIN; ... COMMIT; garantiza que ante cualquier fallo
+--    de pre-validación contable o inconsistencia de UUID se haga rollback atómico.
 --
---   BEGIN;
---   SET LOCAL app.owner_user_id = '<UUID_DEL_PROPIETARIO_EN_AUTH_USERS>';
---   \ir 20261027_hardening_rls_and_constraints.sql
---   COMMIT;
+-- 2. En cliente psql CLI:
+--    psql "postgresql://..." -c "BEGIN; SET LOCAL app.owner_user_id = '<UUID>'; \i supabase/migrations/20261027_hardening_rls_and_constraints.sql; COMMIT;"
 -- ==============================================================================
+
+BEGIN;
 
 -- 1. EXTENSIONES
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -613,3 +617,5 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.historico_patrimonio TO aut
 ALTER TABLE public.carteras REPLICA IDENTITY FULL;
 ALTER TABLE public.transacciones REPLICA IDENTITY FULL;
 ALTER TABLE public.gastos_recurrentes REPLICA IDENTITY FULL;
+
+COMMIT;
