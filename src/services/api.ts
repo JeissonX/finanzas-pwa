@@ -16,6 +16,7 @@ import {
   enqueueMutationUnlocked,
   removeProcessedMutationsUnlocked,
   withQueueLock,
+  generateUuid,
   LeaseLostError,
   SessionChangedError,
   type QueuedMutation,
@@ -228,10 +229,10 @@ async function insertRemote(
   clientMutationId?: string,
   ownerUserId?: string
 ): Promise<InsertRemoteResult> {
-  const mutationId = clientMutationId || (
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `mut_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+  const mutationId = (
+    clientMutationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientMutationId)
+      ? clientMutationId
+      : generateUuid()
   );
 
   const effectiveUserId = ownerUserId || (await resolveCurrentUserId());
@@ -276,7 +277,7 @@ async function insertRemote(
 
   const txDate = tx.fecha || new Date().toISOString();
   const canonicalCycle = getPayrollCycleId(txDate);
-  const cleanMonto = sanitizeAmount(tx.monto);
+  const cleanMonto = Math.max(1, Math.round(sanitizeAmount(tx.monto)));
   const macroValue = tx.macroCategoria || tx.categoria || tx.macro || '';
   const subValue = tx.subcategoria || tx.sub || '';
 
@@ -298,14 +299,27 @@ async function insertRemote(
 
   let query = supabase
     .from('transacciones')
-    .upsert([payload], { onConflict: 'client_mutation_id', ignoreDuplicates: true })
+    .upsert([payload], { onConflict: 'id', ignoreDuplicates: true })
     .select('id,user_id');
 
   if (signal) {
     query = query.abortSignal(signal);
   }
 
-  const { data, error } = await query;
+  let { data, error } = await query;
+
+  // Fallback si la columna client_mutation_id no existe en la base remota (42703)
+  if (error && error.code === '42703' && payload.client_mutation_id) {
+    const { client_mutation_id: _, ...fallbackPayload } = payload;
+    let fallbackQuery = supabase
+      .from('transacciones')
+      .upsert([fallbackPayload], { onConflict: 'id', ignoreDuplicates: true })
+      .select('id,user_id');
+    if (signal) fallbackQuery = fallbackQuery.abortSignal(signal);
+    const retryRes = await fallbackQuery;
+    data = retryRes.data;
+    error = retryRes.error;
+  }
 
   // Caso 1: Fila insertada exitosamente (retornada por el select)
   if (!error && Array.isArray(data) && data.length > 0) {
@@ -325,30 +339,45 @@ async function insertRemote(
   const is23505 = error && (error.code === '23505' || String(error.message).includes('duplicate key'));
 
   if (isIgnored || is23505) {
-    // Consultar la fila por client_mutation_id = mutationId y user_id = effectiveUserId
+    // Consultar la fila por id o client_mutation_id para el effectiveUserId
     let verifyQuery = supabase
       .from('transacciones')
       .select('*')
-      .eq('client_mutation_id', mutationId)
+      .eq('id', String(tx.id))
       .eq('user_id', effectiveUserId);
 
     if (signal) {
       verifyQuery = verifyQuery.abortSignal(signal);
     }
 
-    const { data: existingRows, error: verifyErr } = await verifyQuery;
+    let { data: existingRows, error: verifyErr } = await verifyQuery;
+
+    // Si no se encuentra por id, intentar por client_mutation_id
+    if ((!existingRows || existingRows.length === 0) && mutationId) {
+      let mutQuery = supabase
+        .from('transacciones')
+        .select('*')
+        .eq('client_mutation_id', mutationId)
+        .eq('user_id', effectiveUserId);
+      if (signal) mutQuery = mutQuery.abortSignal(signal);
+      const mutRes = await mutQuery;
+      if (!mutRes.error && mutRes.data && mutRes.data.length > 0) {
+        existingRows = mutRes.data;
+        verifyErr = null;
+      }
+    }
 
     // Si la verificación falla (red, RLS, timeout): lanzar error para conservar la mutación en la cola
     if (verifyErr) {
       throw verifyErr;
     }
 
-    // Si la consulta no encuentra la fila: el error 23505 vino de otra restricción (ej. PK duplicada)
+    // Si la consulta no encuentra la fila: el error 23505 vino de otra restricción (ej. PK ajena)
     if (!existingRows || existingRows.length === 0) {
       return {
         confirmed: false,
         conflict: true,
-        reason: `Fila no encontrada por client_mutation_id (${mutationId}) y user_id (${effectiveUserId}). Posible colisión de PK u otra restricción ajena.`,
+        reason: `Fila no encontrada por id (${tx.id}) o mutationId (${mutationId}) para user_id (${effectiveUserId}). Posible colisión de PK u otra restricción ajena.`,
       };
     }
 
@@ -505,10 +534,7 @@ async function runOnlineMutation(
     throw new Error('Rechazado: no se puede ejecutar mutación online sin sesión autenticada');
   }
 
-  const assignedMutationId =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `mut_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const assignedMutationId = generateUuid();
 
   const SHORT_LOCK_TIMEOUT_MS = 2500;
 
@@ -841,26 +867,32 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
 // ── Actualización de Transacción con Contingencia Offline ─────────────────────
 
 function formatUpdatePayload(updatedData: Partial<Transaccion>): Record<string, any> {
-  const cuenta = updatedData.cuenta || '';
+  const cuenta = updatedData.cuenta ? updatedData.cuenta.trim() : '';
   const macroCategoria = updatedData.macroCategoria || updatedData.categoria || updatedData.macro || '';
   const subcategoria = updatedData.subcategoria || updatedData.sub || '';
   const detalle = updatedData.comentario !== undefined ? updatedData.comentario : (updatedData.detalle ?? '');
 
-  const cuentaOrigen = updatedData.tipo === 'GASTO'
-    ? cuenta
-    : (updatedData.cuentaOrigen || null);
+  let cuentaOrigen: string | null = null;
+  let cuentaDestino: string | null = null;
 
-  const cuentaDestino = updatedData.tipo === 'INGRESO'
-    ? cuenta
-    : (updatedData.cuentaDestino || null);
+  if (updatedData.tipo === 'GASTO') {
+    cuentaOrigen = cuenta || null;
+    cuentaDestino = null;
+  } else if (updatedData.tipo === 'INGRESO') {
+    cuentaOrigen = null;
+    cuentaDestino = cuenta || null;
+  } else {
+    cuentaOrigen = updatedData.cuentaOrigen && updatedData.cuentaOrigen.trim() !== '' ? updatedData.cuentaOrigen.trim() : null;
+    cuentaDestino = updatedData.cuentaDestino && updatedData.cuentaDestino.trim() !== '' ? updatedData.cuentaDestino.trim() : null;
+  }
 
   const payload: Record<string, any> = {};
 
   if (updatedData.monto !== undefined) {
-    payload.monto = sanitizeAmount(updatedData.monto);
+    payload.monto = Math.max(1, Math.round(sanitizeAmount(updatedData.monto)));
   }
-  if (macroCategoria) payload.macro_categoria = macroCategoria;
-  if (subcategoria) payload.subcategoria = subcategoria;
+  if (macroCategoria) payload.macro_categoria = macroCategoria.trim();
+  if (subcategoria) payload.subcategoria = subcategoria.trim();
   if (cuenta) payload.cuenta = cuenta;
   if (cuentaOrigen !== undefined) payload.cuenta_origen = cuentaOrigen;
   if (cuentaDestino !== undefined) payload.cuenta_destino = cuentaDestino;
@@ -887,7 +919,7 @@ export async function updateTransaction(
       return {
         ...t,
         ...updatedData,
-        monto: updatedData.monto !== undefined ? sanitizeAmount(updatedData.monto) : t.monto,
+        monto: updatedData.monto !== undefined ? Math.max(1, Math.round(sanitizeAmount(updatedData.monto))) : t.monto,
       };
     }
     return t;
@@ -896,7 +928,7 @@ export async function updateTransaction(
 
   // Ejecución serializada con la cola bajo lock
   const res = await runOnlineMutation('update', strId, updatedData);
-  if (res.status === 'confirmed') {
+  if (res.status === 'confirmed' || res.status === 'pending') {
     await fetchAppData(true);
     return true;
   }
@@ -1675,9 +1707,14 @@ export async function syncOfflineQueue(
 
             const { data: updatedRows, error: updateError } = await updateQuery;
             if (updateError) {
-              if (updateError.code === '42501' || String(updateError.message).toLowerCase().includes('row-level security')) {
-                // Violación de RLS: conservar en la cola y detener el lote completo
-                throw updateError;
+              const isRls = updateError.code === '42501' || String(updateError.message).toLowerCase().includes('row-level security');
+              const isNonRecoverable = isRls || updateError.code === '42703' || updateError.code === '23514';
+              if (isNonRecoverable) {
+                const reason = `Update rechazado por el servidor (${updateError.code || '4xx'}): ${updateError.message}`;
+                await markMutationConflictUnlocked(mut.mutationId, reason);
+                blockedEntityIds.add(entityId);
+                console.warn(reason);
+                continue;
               }
               if (isNetworkOrAbortError(updateError, effectiveSignal)) {
                 throw updateError;
@@ -1714,9 +1751,14 @@ export async function syncOfflineQueue(
 
             const { data: deletedRows, error: deleteError } = await deleteQuery;
             if (deleteError) {
-              if (deleteError.code === '42501' || String(deleteError.message).toLowerCase().includes('row-level security')) {
-                // Violación de RLS: conservar en cola y detener el lote completo
-                throw deleteError;
+              const isRls = deleteError.code === '42501' || String(deleteError.message).toLowerCase().includes('row-level security');
+              const isNonRecoverable = isRls || deleteError.code === '42703' || deleteError.code === '23514';
+              if (isNonRecoverable) {
+                const reason = `Delete rechazado por el servidor (${deleteError.code || '4xx'}): ${deleteError.message}`;
+                await markMutationConflictUnlocked(mut.mutationId, reason);
+                blockedEntityIds.add(entityId);
+                console.warn(reason);
+                continue;
               }
               if (isNetworkOrAbortError(deleteError, effectiveSignal)) {
                 throw deleteError;
@@ -1751,12 +1793,18 @@ export async function syncOfflineQueue(
           if (err instanceof SessionChangedError || err?.name === 'SessionChangedError') {
             throw err;
           }
-          if (err?.code === '42501' || String(err?.message).toLowerCase().includes('row-level security')) {
-            throw err;
-          }
           if (isNetworkOrAbortError(err, effectiveSignal)) {
             // Detener el lote completo ante errores de red, timeout, abort o pérdida de lease
             throw err;
+          }
+          const isRls = err?.code === '42501' || String(err?.message).toLowerCase().includes('row-level security');
+          const isNonRecoverable = isRls || err?.code === '42703' || err?.code === '23514' || (typeof err?.status === 'number' && err.status >= 400 && err.status < 500);
+          if (isNonRecoverable) {
+            const reason = `Operación rechazada por backend (${err?.code || err?.status || '4xx'}): ${err?.message || ''}`;
+            await markMutationConflictUnlocked(mut.mutationId, reason);
+            blockedEntityIds.add(entityId);
+            console.warn(reason);
+            continue;
           }
           // Error propio de la entidad: se bloquea la entidad pero se continúa con las demás
           blockedEntityIds.add(entityId);
@@ -1769,7 +1817,9 @@ export async function syncOfflineQueue(
       }
 
       const remainingQueue = await getQueuedMutationsUnlocked();
-      const userRemaining = remainingQueue.filter(m => m.ownerUserId === expectedUserId && m.status !== 'orphan');
+      const userRemaining = remainingQueue.filter(
+        m => m.ownerUserId === expectedUserId && m.status !== 'orphan' && m.status !== 'conflict'
+      );
 
       return { synced, remaining: userRemaining.length };
     });
