@@ -22,10 +22,17 @@ export interface Transaccion {
 export interface Cartera {
   id: string;
   nombre: string;
-  tipo: 'efectivo' | 'debito' | 'credito' | 'inversion' | 'deuda';
+  tipo: 'efectivo' | 'debito' | 'credito' | 'inversion' | 'deuda' | string;
   saldo: number;
+  saldo_inicial?: number;
+  saldo_actual?: number;
   icono: string;
   orden?: number;
+  permite_gasto?: boolean;
+  activa?: boolean;
+  dia_corte?: number | null;
+  dia_pago?: number | null;
+  limite_credito?: number | null;
 }
 
 export interface Subcategoria {
@@ -105,6 +112,10 @@ export interface CarteraInfo {
   icono?: string;
   permite_gasto?: boolean;
   orden?: number;
+  activa?: boolean;
+  dia_corte?: number | null;
+  dia_pago?: number | null;
+  limite_credito?: number | null;
 }
 
 export interface GastoRecurrente {

@@ -41,9 +41,22 @@ Aplicación web progresiva (PWA) offline-first para control financiero personal 
    - **Escenario Reducir Cuota**: recálculo de la nueva cuota mensual mediante fórmula de anualidad sobre el saldo restante.
    - Spread de liquidez frente a cuentas remuneradas en Colombia (tasa crédito vs. tasa de rendimiento).
 
-6. **Rendimiento, Code Splitting y PWA**:
+6. **Gestión de Carteras y Monitor de Ciclo de Facturación (TC 1 Cuota)**:
+   - **Ciclo de Vida de Carteras**:
+     - Creación y edición accesible (`WalletModal`) con selector de tipo (`BOLSILLO`, `DEBITO`, `EFECTIVO`, `CREDITO`, `PRESTAMO`), saldo inicial con formateo en vivo COP e icono personalizable.
+     - **Archivado Lógico Contable**: Si una cartera tiene movimientos históricos (`cuenta_origen`, `cuenta_destino` o `cuenta`), se archiva de forma lógica (`activa = false`) para no descuadrar balances pasados ni reportes. Si no tiene movimientos, se elimina físicamente.
+     - **Reactivación**: Sección colapsable *"Carteras Archivadas (X)"* en `WalletsView` con opción inmediata de `Restaurar`.
+     - **Selectores de Registro Limpios**: `QuickRegister` y `EditTransactionModal` listan únicamente carteras activas.
+   - **Monitor de Ciclo de Facturación para Tarjetas de Crédito (`CreditCardCycleModal`)**:
+     - Pastilla interactiva en `WalletsView`: `Corte: día {dia_corte} · Paga: día {dia_pago}`.
+     - Evaluación estricta en horario de Colombia (`America/Bogota`):
+       - Si el día actual es `<= dia_corte`: corte inició el día `dia_corte + 1` del mes anterior y cierra el `dia_corte` de este mes. Pago: `dia_pago` de este mes.
+       - Si el día actual es `> dia_corte`: corte inició el día `dia_corte + 1` de este mes y cierra el `dia_corte` del mes siguiente. Pago: `dia_pago` del mes siguiente.
+     - Métricas en vivo: Total a pagar en este corte (suma de compras GASTO), fecha límite con contador de días restantes, cupo disponible con barra de utilización porcentual, historial de compras del corte y edición rápida de los días de corte/pago.
+
+7. **Rendimiento, Code Splitting y PWA**:
    - Carga diferida (`React.lazy` y `Suspense`) del módulo de analíticas y gráficos Recharts.
-   - Service Worker (`finanzas-pwa-v17`) con estrategia cache-first para recursos estáticos y purga selectiva de versiones previas.
+   - Service Worker (`finanzas-pwa-v25`) con estrategia cache-first para recursos estáticos y purga selectiva de versiones previas.
 
 ---
 
@@ -91,6 +104,9 @@ COMMIT;
 ### 2. Migración de Idempotencia (`20261028_idempotency_client_mutation_id.sql`):
 Copie y ejecute directamente el script `supabase/migrations/20261028_idempotency_client_mutation_id.sql` en el SQL Editor de Supabase. Es completamente idempotente y re-ejecutable (`IF NOT EXISTS`).
 
+### 3. Migración de Ciclo de Facturación y Archivador de Carteras (`20261028_carteras_lifecycle_and_credit_cycle.sql`):
+Ejecute el script `supabase/migrations/20261028_carteras_lifecycle_and_credit_cycle.sql` para añadir las columnas `activa`, `dia_corte`, `dia_pago` y `limite_credito` a la tabla `public.carteras`.
+
 ---
 
 ## ⚠️ Riesgos Aceptados
@@ -102,4 +118,4 @@ Copie y ejecute directamente el script `supabase/migrations/20261028_idempotency
    Presupuestos y configuración se escriben solo online y no pasan por la cola offline.
 
 3. **Regla de despliegue**:
-   Aplicar migraciones `20261027_hardening_rls_and_constraints.sql`, `20261028_idempotency_client_mutation_id.sql` y `20261029_rls_owner_check.sql` (si existe) en Supabase antes de publicar el frontend.
+   Aplicar las migraciones `20261027_hardening_rls_and_constraints.sql`, `20261028_idempotency_client_mutation_id.sql` y `20261028_carteras_lifecycle_and_credit_cycle.sql` en Supabase antes de publicar el frontend.

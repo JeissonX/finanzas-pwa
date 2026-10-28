@@ -1,4 +1,4 @@
-const CACHE_NAME = 'finanzas-pwa-v24';
+const CACHE_NAME = 'finanzas-pwa-v25';
 const STATIC_ASSETS = ['/', '/index.html', '/manifest.json'];
 
 self.addEventListener('install', (event) => {

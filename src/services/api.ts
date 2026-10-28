@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { Transaccion, AppDataResponse, PresupuestoItem, CarteraInfo, GastoRecurrente, RunwayData, MatrizGastos } from '../types/finance';
+import type { Transaccion, AppDataResponse, PresupuestoItem, Cartera, CarteraInfo, GastoRecurrente, RunwayData, MatrizGastos } from '../types/finance';
 import {
   isDateInCurrentCycle,
   getCycleLabel,
@@ -1180,6 +1180,136 @@ export async function updateCarteraOrden(id: string, orden: number): Promise<voi
   if (error) throw error;
 }
 
+export async function createCartera(cartera: Omit<Cartera, 'id' | 'saldo_actual'>): Promise<boolean> {
+  try {
+    const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
+    if (!currentUserId) {
+      throw new Error('No se puede crear cartera sin sesión autenticada');
+    }
+
+    const uuid = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+      : Math.random().toString(36).slice(2, 10);
+    const id = `wallet_${uuid}`;
+
+    const { data: existingCarteras } = await supabase.from('carteras').select('id');
+    const orden = cartera.orden ?? ((existingCarteras?.length || 0) + 1);
+
+    const saldoInicial = Math.trunc(Number(cartera.saldo_inicial ?? cartera.saldo ?? 0));
+    const saldoActual = saldoInicial;
+
+    const { error } = await supabase.from('carteras').insert({
+      id,
+      user_id: currentUserId,
+      nombre: cartera.nombre.trim(),
+      tipo: cartera.tipo.toLowerCase(),
+      saldo_inicial: saldoInicial,
+      saldo_actual: saldoActual,
+      icono: cartera.icono || (cartera.tipo.toLowerCase() === 'credito' ? '💳' : '🏦'),
+      orden,
+      permite_gasto: cartera.permite_gasto !== false,
+      activa: cartera.activa !== false,
+      dia_corte: cartera.dia_corte != null ? Number(cartera.dia_corte) : null,
+      dia_pago: cartera.dia_pago != null ? Number(cartera.dia_pago) : null,
+      limite_credito: cartera.limite_credito != null ? Math.trunc(Number(cartera.limite_credito)) : null,
+    });
+
+    if (error) {
+      console.error('Error insertando cartera en Supabase:', error);
+      throw error;
+    }
+
+    await fetchAppData(true);
+    return true;
+  } catch (err) {
+    console.error('Error en createCartera:', err);
+    throw err;
+  }
+}
+
+export async function updateCartera(id: string, patch: Partial<Cartera>): Promise<boolean> {
+  try {
+    const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
+    const updateData: Record<string, any> = {
+      updated_at: new Date().toISOString(),
+    };
+
+    if (patch.nombre !== undefined) updateData.nombre = patch.nombre.trim();
+    if (patch.tipo !== undefined) updateData.tipo = patch.tipo.toLowerCase();
+    if (patch.icono !== undefined) updateData.icono = patch.icono;
+    if (patch.permite_gasto !== undefined) updateData.permite_gasto = patch.permite_gasto;
+    if (patch.orden !== undefined) updateData.orden = patch.orden;
+    if (patch.dia_corte !== undefined) updateData.dia_corte = patch.dia_corte != null ? Number(patch.dia_corte) : null;
+    if (patch.dia_pago !== undefined) updateData.dia_pago = patch.dia_pago != null ? Number(patch.dia_pago) : null;
+    if (patch.limite_credito !== undefined) updateData.limite_credito = patch.limite_credito != null ? Math.trunc(Number(patch.limite_credito)) : null;
+    if (patch.activa !== undefined) updateData.activa = patch.activa;
+    if (patch.saldo_inicial !== undefined) updateData.saldo_inicial = Math.trunc(Number(patch.saldo_inicial));
+
+    let query = supabase.from('carteras').update(updateData).eq('id', id);
+    if (currentUserId) {
+      query = query.eq('user_id', currentUserId);
+    }
+
+    const { error } = await query;
+    if (error) {
+      console.error('Error actualizando cartera en Supabase:', error);
+      throw error;
+    }
+
+    await fetchAppData(true);
+    return true;
+  } catch (err) {
+    console.error('Error en updateCartera:', err);
+    throw err;
+  }
+}
+
+export async function checkCarteraHasTransactions(nombre: string): Promise<number> {
+  const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
+  let origenQuery = supabase.from('transacciones').select('id', { count: 'exact', head: true }).eq('cuenta_origen', nombre);
+  let destinoQuery = supabase.from('transacciones').select('id', { count: 'exact', head: true }).eq('cuenta_destino', nombre);
+  let cuentaQuery = supabase.from('transacciones').select('id', { count: 'exact', head: true }).eq('cuenta', nombre);
+
+  if (currentUserId) {
+    origenQuery = origenQuery.eq('user_id', currentUserId);
+    destinoQuery = destinoQuery.eq('user_id', currentUserId);
+    cuentaQuery = cuentaQuery.eq('user_id', currentUserId);
+  }
+
+  const [origenRes, destinoRes, cuentaRes] = await Promise.all([origenQuery, destinoQuery, cuentaQuery]);
+  return (origenRes.count || 0) + (destinoRes.count || 0) + (cuentaRes.count || 0);
+}
+
+export async function archiveOrDeleteCartera(id: string, nombre: string): Promise<{ action: 'archived' | 'deleted' }> {
+  try {
+    const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
+    const txCount = await checkCarteraHasTransactions(nombre);
+
+    if (txCount > 0) {
+      let query = supabase.from('carteras').update({ activa: false, updated_at: new Date().toISOString() }).eq('id', id);
+      if (currentUserId) {
+        query = query.eq('user_id', currentUserId);
+      }
+      const { error } = await query;
+      if (error) throw error;
+      await fetchAppData(true);
+      return { action: 'archived' };
+    } else {
+      let query = supabase.from('carteras').delete().eq('id', id);
+      if (currentUserId) {
+        query = query.eq('user_id', currentUserId);
+      }
+      const { error } = await query;
+      if (error) throw error;
+      await fetchAppData(true);
+      return { action: 'deleted' };
+    }
+  } catch (err) {
+    console.error('Error archivando o eliminando cartera:', err);
+    throw err;
+  }
+}
+
 // ── Sincronización Principal y Consulta de AppData ────────────────────────────
 
 let currentFetchGeneration = 0;
@@ -1410,6 +1540,10 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         icono: c.icono || '💳',
         permite_gasto: c.permite_gasto !== false,
         orden: c.orden != null ? Number(c.orden) : 99,
+        activa: c.activa !== false,
+        dia_corte: c.dia_corte != null ? Number(c.dia_corte) : null,
+        dia_pago: c.dia_pago != null ? Number(c.dia_pago) : null,
+        limite_credito: c.limite_credito != null ? Math.trunc(Number(c.limite_credito)) : null,
       };
     }).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99));
 

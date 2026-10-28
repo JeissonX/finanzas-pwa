@@ -13,7 +13,12 @@
 
 BEGIN;
 -- REEMPLAZAR CON TU UUID DE SUPABASE AUTH (Authentication -> Users) ANTES DE EJECUTAR EN SQL EDITOR:
-SET LOCAL app.owner_user_id = '00000000-0000-0000-0000-000000000000';
+SET LOCAL app.owner_user_id = 'c7684ed3-cdd2-4b23-a468-5650381bf22d';
+-- Eliminar firmas previas para evitar error 42P13 por cambio de nombre de parámetro
+DROP FUNCTION IF EXISTS public.cycle_id_colombia(timestamptz);
+DROP FUNCTION IF EXISTS public.cycle_id_colombia();
+DROP FUNCTION IF EXISTS public.swap_carteras_orden(text, integer, text, integer);
+DROP FUNCTION IF EXISTS public.process_recurring_expenses_rpc();
 
 -- 1. EXTENSIONES
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -76,7 +81,7 @@ CREATE TABLE IF NOT EXISTS public.gastos_recurrentes (
 
 CREATE TABLE IF NOT EXISTS public.historico_patrimonio (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-    fecha TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fecha_cierre TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     total_activos NUMERIC NOT NULL DEFAULT 0,
     total_pasivos NUMERIC NOT NULL DEFAULT 0,
     patrimonio_neto NUMERIC NOT NULL DEFAULT 0,
@@ -294,7 +299,7 @@ CREATE INDEX IF NOT EXISTS idx_transacciones_user_ciclo ON public.transacciones 
 CREATE INDEX IF NOT EXISTS idx_transacciones_user_cuentas ON public.transacciones (user_id, cuenta_origen, cuenta_destino);
 CREATE INDEX IF NOT EXISTS idx_catalogo_user_macro ON public.catalogo_categorias (user_id, macro_categoria);
 CREATE INDEX IF NOT EXISTS idx_recurrentes_user_activo ON public.gastos_recurrentes (user_id, activo);
-CREATE INDEX IF NOT EXISTS idx_historico_patrimonio_user_fecha ON public.historico_patrimonio (user_id, fecha DESC);
+CREATE INDEX IF NOT EXISTS idx_historico_patrimonio_user_fecha_cierre ON public.historico_patrimonio (user_id, fecha_cierre DESC);
 
 -- ==============================================================================
 -- 8. FUNCIONES RPC

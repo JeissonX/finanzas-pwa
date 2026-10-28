@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS public.gastos_recurrentes (
 CREATE TABLE IF NOT EXISTS public.historico_patrimonio (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
-    fecha TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fecha_cierre TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     total_activos NUMERIC NOT NULL DEFAULT 0,
     total_pasivos NUMERIC NOT NULL DEFAULT 0,
     patrimonio_neto NUMERIC NOT NULL DEFAULT 0,
@@ -106,7 +106,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_transacciones_client_mutation_id_partial ON
 CREATE UNIQUE INDEX IF NOT EXISTS uq_transacciones_client_mutation_id ON public.transacciones (client_mutation_id);
 CREATE INDEX IF NOT EXISTS idx_catalogo_user_macro ON public.catalogo_categorias (user_id, macro_categoria);
 CREATE INDEX IF NOT EXISTS idx_recurrentes_user_activo ON public.gastos_recurrentes (user_id, activo);
-CREATE INDEX IF NOT EXISTS idx_historico_patrimonio_user_fecha ON public.historico_patrimonio (user_id, fecha DESC);
+CREATE INDEX IF NOT EXISTS idx_historico_patrimonio_user_fecha_cierre ON public.historico_patrimonio (user_id, fecha_cierre DESC);
 
 -- ==============================================================================
 -- 4. FUNCIONES RPC

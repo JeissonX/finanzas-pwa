@@ -47,25 +47,26 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
   const [cuentaDestino, setCuentaDestino] = useState('Lulo Principal (Cuenta)');
   const [comentario, setComentario] = useState('');
 
-  // Carteras dinámicas desde AppData
+  // Carteras dinámicas desde AppData (únicamente activas)
   const [carterasList, setCarterasList] = useState<CarteraInfo[]>(() => {
     try {
       const raw = localStorage.getItem('finanzas_cached_appdata_v4');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed?.data?.carteras && parsed.data.carteras.length > 0) {
-          return parsed.data.carteras;
+          return (parsed.data.carteras as CarteraInfo[]).filter(c => c.activa !== false);
         }
       }
     } catch {
       /* ignore */
     }
-    return CARTERAS.map(c => ({
+    return CARTERAS.filter(c => c.activa !== false).map(c => ({
       id: c.id,
       nombre: c.nombre,
       tipo: c.tipo,
       icono: c.icono,
       permite_gasto: !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre),
+      activa: true,
     }));
   });
 
@@ -73,7 +74,7 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
     const handleUpdate = (e: Event) => {
       const custom = e as CustomEvent<AppData>;
       if (custom.detail?.carteras && custom.detail.carteras.length > 0) {
-        setCarterasList(custom.detail.carteras);
+        setCarterasList(custom.detail.carteras.filter(c => c.activa !== false));
       }
     };
     window.addEventListener('finanzas_appdata_updated', handleUpdate);
@@ -82,12 +83,13 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
 
   const catalog = tipo === 'GASTO' ? CATALOG_GASTOS : tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
 
-  // Filtrar carteras disponibles para el selector de origen/pago
+  // Filtrar carteras disponibles para el selector de origen/pago (únicamente activas)
   const carterasDisponibles = useMemo(() => {
+    const activas = carterasList.filter(c => c.activa !== false);
     if (tipo === 'GASTO') {
-      return carterasList.filter(c => c.permite_gasto !== false);
+      return activas.filter(c => c.permite_gasto !== false);
     }
-    return carterasList;
+    return activas;
   }, [tipo, carterasList]);
 
   // Asegurar que al estar en GASTO la cuenta seleccionada sea permitida

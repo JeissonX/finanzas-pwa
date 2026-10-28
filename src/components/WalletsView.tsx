@@ -13,6 +13,10 @@ import {
   ChevronDown,
   ChevronUp,
   X,
+  Pencil,
+  CreditCard,
+  Archive,
+  RotateCcw,
 } from 'lucide-react';
 import {
   getSaldos,
@@ -25,7 +29,12 @@ import {
   saveGastoRecurrente,
   toggleGastoRecurrente,
   deleteGastoRecurrente,
+  updateCartera,
+  archiveOrDeleteCartera,
+  checkCarteraHasTransactions,
 } from '../services/api';
+import WalletModal from './WalletModal';
+import CreditCardCycleModal from './CreditCardCycleModal';
 import { supabase } from '../services/supabase';
 import { formatCOP, haptic, getCycleLabel } from '../utils/format';
 import { CARTERAS_DEFAULT, CATALOG_GASTOS } from '../data/catalog';
@@ -69,6 +78,10 @@ export default function WalletsView() {
       icono: c.icono,
       permite_gasto: !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre),
       orden: c.orden ?? (idx + 1),
+      activa: true,
+      dia_corte: c.tipo === 'credito' ? (c.nombre.includes('Rappi') ? 18 : 20) : null,
+      dia_pago: c.tipo === 'credito' ? (c.nombre.includes('Rappi') ? 8 : 5) : null,
+      limite_credito: null,
     })).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99))
   );
   const [recurrentes, setRecurrentes] = useState<GastoRecurrente[]>([]);
@@ -78,6 +91,15 @@ export default function WalletsView() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [queueCount, setQueueCount] = useState<number>(0);
+
+  // Modales de carteras y ciclo de crédito
+  const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
+  const [walletToEdit, setWalletToEdit] = useState<CarteraInfo | null>(null);
+  const [isCreditCycleModalOpen, setIsCreditCycleModalOpen] = useState(false);
+  const [selectedCreditCardWallet, setSelectedCreditCardWallet] = useState<CarteraInfo | null>(null);
+
+  // Sección colapsable de archivadas
+  const [isArchivedCollapsed, setIsArchivedCollapsed] = useState(true);
 
   // Estado del mini-formulario de ajuste / conciliación
   const [adjustingWallet, setAdjustingWallet] = useState<string | null>(null);
@@ -132,6 +154,10 @@ export default function WalletsView() {
           icono: c.icono,
           permite_gasto: c.permite_gasto !== false,
           orden: c.orden != null ? Number(c.orden) : (idx + 1),
+          activa: c.activa !== false,
+          dia_corte: c.dia_corte != null ? Number(c.dia_corte) : null,
+          dia_pago: c.dia_pago != null ? Number(c.dia_pago) : null,
+          limite_credito: c.limite_credito != null ? Math.trunc(Number(c.limite_credito)) : null,
         })).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99)));
       }
     } finally {
@@ -186,26 +212,24 @@ export default function WalletsView() {
   };
 
   const handleMoveUp = async (index: number) => {
-    if (index <= 0) return;
+    const activeList = carterasDb.filter(c => c.activa !== false);
+    if (index <= 0 || index >= activeList.length) return;
     haptic(30);
 
     const prevOrder = [...carterasDb];
-    const current = carterasDb[index];
-    const neighbor = carterasDb[index - 1];
+    const current = activeList[index];
+    const neighbor = activeList[index - 1];
 
     const targetOrderCurrent = index;
     const targetOrderNeighbor = index + 1;
 
-    const newArr = [...carterasDb];
-    newArr[index] = neighbor;
-    newArr[index - 1] = current;
-
-    const updatedWithOrders = newArr.map((item, i) => ({
-      ...item,
-      orden: i + 1,
-    }));
-
-    setCarterasDb(updatedWithOrders);
+    setCarterasDb(prev =>
+      prev.map(c => {
+        if (c.id === current.id) return { ...c, orden: targetOrderCurrent };
+        if (c.id === neighbor.id) return { ...c, orden: targetOrderNeighbor };
+        return c;
+      }).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99))
+    );
 
     try {
       const { error: rpcErr } = await supabase.rpc('swap_carteras_orden', {
@@ -215,9 +239,7 @@ export default function WalletsView() {
         orden_b: targetOrderNeighbor,
       });
 
-      if (rpcErr) {
-        throw rpcErr;
-      }
+      if (rpcErr) throw rpcErr;
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
       setCarterasDb(prevOrder);
@@ -229,26 +251,24 @@ export default function WalletsView() {
   };
 
   const handleMoveDown = async (index: number) => {
-    if (index >= carterasDb.length - 1) return;
+    const activeList = carterasDb.filter(c => c.activa !== false);
+    if (index < 0 || index >= activeList.length - 1) return;
     haptic(30);
 
     const prevOrder = [...carterasDb];
-    const current = carterasDb[index];
-    const neighbor = carterasDb[index + 1];
+    const current = activeList[index];
+    const neighbor = activeList[index + 1];
 
     const targetOrderCurrent = index + 2;
     const targetOrderNeighbor = index + 1;
 
-    const newArr = [...carterasDb];
-    newArr[index] = neighbor;
-    newArr[index + 1] = current;
-
-    const updatedWithOrders = newArr.map((item, i) => ({
-      ...item,
-      orden: i + 1,
-    }));
-
-    setCarterasDb(updatedWithOrders);
+    setCarterasDb(prev =>
+      prev.map(c => {
+        if (c.id === current.id) return { ...c, orden: targetOrderCurrent };
+        if (c.id === neighbor.id) return { ...c, orden: targetOrderNeighbor };
+        return c;
+      }).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99))
+    );
 
     try {
       const { error: rpcErr } = await supabase.rpc('swap_carteras_orden', {
@@ -258,9 +278,7 @@ export default function WalletsView() {
         orden_b: targetOrderNeighbor,
       });
 
-      if (rpcErr) {
-        throw rpcErr;
-      }
+      if (rpcErr) throw rpcErr;
     } catch (err) {
       console.error('Error actualizando orden de carteras:', err);
       setCarterasDb(prevOrder);
@@ -268,6 +286,55 @@ export default function WalletsView() {
       if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
       adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
       fetchSaldos(true);
+    }
+  };
+
+  const handleDeleteWallet = async (wallet: CarteraInfo) => {
+    haptic(50);
+    try {
+      const txCount = await checkCarteraHasTransactions(wallet.nombre);
+      let confirmed = false;
+      if (txCount > 0) {
+        confirmed = window.confirm(
+          `Esta cartera tiene movimientos históricos. Se archivará para no descuadrar tus saldos pasados.\n\n¿Deseas archivar "${wallet.nombre}"?`
+        );
+      } else {
+        confirmed = window.confirm(
+          `Esta cartera no tiene movimientos registrados. Se eliminará permanentemente.\n\n¿Deseas eliminar "${wallet.nombre}"?`
+        );
+      }
+      if (!confirmed) return;
+
+      const res = await archiveOrDeleteCartera(wallet.id, wallet.nombre);
+      setAdjustSuccessMsg(
+        res.action === 'archived'
+          ? `"${wallet.nombre}" se archivó para preservar el historial contable.`
+          : `"${wallet.nombre}" se eliminó definitivamente.`
+      );
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      await fetchSaldos(true);
+    } catch (err: any) {
+      console.error('Error eliminando o archivando cartera:', err);
+      setAdjustSuccessMsg(`Error: ${err?.message || 'No se pudo procesar la cartera'}`);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
+    }
+  };
+
+  const handleRestoreWallet = async (wallet: CarteraInfo) => {
+    haptic(40);
+    try {
+      await updateCartera(wallet.id, { activa: true });
+      setAdjustSuccessMsg(`"${wallet.nombre}" restaurada y activa nuevamente.`);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      await fetchSaldos(true);
+    } catch (err: any) {
+      console.error('Error restaurando cartera:', err);
+      setAdjustSuccessMsg(`Error: ${err?.message || 'No se pudo reactivar la cartera'}`);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
     }
   };
 
@@ -435,7 +502,10 @@ export default function WalletsView() {
     }
   };
 
-  const walletItems = carterasDb.map((c, index) => {
+  const activeCarteras = carterasDb.filter(c => c.activa !== false);
+  const archivedCarteras = carterasDb.filter(c => c.activa === false);
+
+  const walletItems = activeCarteras.map((c, index) => {
     const amount = saldos[c.nombre] ?? saldos[c.id] ?? 0;
     const permiteGasto = c.permite_gasto !== false;
 
@@ -447,6 +517,11 @@ export default function WalletsView() {
       icon: ACCOUNT_ICONS[c.nombre] ?? c.icono ?? '💳',
       permiteGasto,
       orden: c.orden ?? (index + 1),
+      dia_corte: c.dia_corte,
+      dia_pago: c.dia_pago,
+      limite_credito: c.limite_credito,
+      tipo: c.tipo,
+      rawCartera: c,
     };
   });
 
@@ -481,19 +556,36 @@ export default function WalletsView() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            haptic();
-            fetchSaldos(true);
-          }}
-          disabled={loading}
-          className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 transition shadow-sm cursor-pointer disabled:opacity-50"
-          aria-label="Actualizar saldos de carteras"
-          title="Actualizar saldos"
-        >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              haptic();
+              setWalletToEdit(null);
+              setIsWalletModalOpen(true);
+            }}
+            className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-sm transition flex items-center gap-1.5 cursor-pointer active:scale-95"
+            title="Crear nueva cartera"
+          >
+            <Plus size={14} />
+            <span className="hidden sm:inline">+ Nueva Cartera</span>
+            <span className="sm:hidden">+ Nueva</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              haptic();
+              fetchSaldos(true);
+            }}
+            disabled={loading}
+            className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 transition shadow-sm cursor-pointer disabled:opacity-50"
+            aria-label="Actualizar saldos de carteras"
+            title="Actualizar saldos"
+          >
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {/* Alerta de confirmación */}
@@ -880,9 +972,27 @@ export default function WalletsView() {
                   <p className="text-[10px] sm:text-xs font-medium text-slate-500 dark:text-slate-400">
                     {wallet.type}
                   </p>
+                  {/* Pastilla cliqueable para tarjetas de crédito */}
+                  {(wallet.rawCartera.tipo?.toLowerCase() === 'credito' || wallet.type.toLowerCase().includes('crédito')) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        haptic();
+                        setSelectedCreditCardWallet(wallet.rawCartera);
+                        setIsCreditCycleModalOpen(true);
+                      }}
+                      className="mt-1 px-2.5 py-0.5 rounded-full bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800/80 text-[10px] font-bold text-indigo-700 dark:text-indigo-300 inline-flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-xs"
+                      title="Ver corte y facturación a 1 cuota"
+                    >
+                      <CreditCard size={11} className="text-indigo-600 dark:text-indigo-400" />
+                      <span>
+                        Corte: día {wallet.rawCartera.dia_corte ?? 15} · Paga: día {wallet.rawCartera.dia_pago ?? 5}
+                      </span>
+                    </button>
+                  )}
                 </div>
 
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2">
                   <div className="flex items-center gap-1.5 text-right">
                     <Icon size={14} className={isDebt ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'} />
                     <span className={`text-sm sm:text-base font-bold tabular-nums font-mono ${isDebt ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-slate-100'}`}>
@@ -890,6 +1000,22 @@ export default function WalletsView() {
                     </span>
                   </div>
 
+                  {/* Botón Editar Cartera */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      haptic();
+                      setWalletToEdit(wallet.rawCartera);
+                      setIsWalletModalOpen(true);
+                    }}
+                    className="p-2 rounded-xl border border-slate-200/80 bg-slate-50 text-slate-500 hover:text-slate-800 hover:bg-slate-100 dark:bg-slate-800/80 dark:border-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition cursor-pointer"
+                    title={`Editar ${wallet.name}`}
+                    aria-label={`Editar ${wallet.name}`}
+                  >
+                    <Pencil size={13} />
+                  </button>
+
+                  {/* Botón Ajustar Saldo Bancario */}
                   <button
                     type="button"
                     onClick={() => handleOpenAdjust(wallet.name, wallet.amount)}
@@ -901,7 +1027,18 @@ export default function WalletsView() {
                     title={`Ajustar o conciliar saldo de ${wallet.name}`}
                     aria-label={`Ajustar saldo de ${wallet.name}`}
                   >
-                    <SlidersHorizontal size={14} />
+                    <SlidersHorizontal size={13} />
+                  </button>
+
+                  {/* Botón Eliminar / Archivar Cartera */}
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteWallet(wallet.rawCartera)}
+                    className="p-2 rounded-xl border border-slate-200/80 bg-slate-50 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:bg-slate-800/80 dark:border-slate-700 dark:text-slate-400 dark:hover:text-rose-400 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                    title={`Eliminar o archivar ${wallet.name}`}
+                    aria-label={`Eliminar o archivar ${wallet.name}`}
+                  >
+                    <Trash2 size={13} />
                   </button>
                 </div>
               </div>
@@ -1014,6 +1151,91 @@ export default function WalletsView() {
         })}
       </div>
 
+      {/* Sección Colapsable: Carteras Archivadas (X) */}
+      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all duration-200">
+        <div
+          className="p-4 flex items-center justify-between cursor-pointer select-none"
+          onClick={() => {
+            haptic();
+            setIsArchivedCollapsed(prev => !prev);
+          }}
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-500 dark:text-slate-400">
+              <Archive size={16} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
+                  Carteras Archivadas
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                  {archivedCarteras.length}
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                Cuentas inactivas preservadas para reportes históricos
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer"
+            aria-label="Colapsar u expandir carteras archivadas"
+          >
+            <ChevronDown
+              size={16}
+              className={`transition-transform duration-200 ${isArchivedCollapsed ? '-rotate-90' : 'rotate-0'}`}
+            />
+          </button>
+        </div>
+
+        {!isArchivedCollapsed && (
+          <div className="border-t border-slate-100 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
+            {archivedCarteras.length === 0 ? (
+              <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">
+                No tienes carteras archivadas en este momento.
+              </div>
+            ) : (
+              archivedCarteras.map(wallet => {
+                const amount = saldos[wallet.nombre] ?? saldos[wallet.id] ?? 0;
+                return (
+                  <div
+                    key={wallet.id}
+                    className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="text-xl flex-shrink-0" role="img" aria-label={wallet.nombre}>
+                        {wallet.icono || '💳'}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate opacity-75">
+                          {wallet.nombre}
+                        </p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                          {wallet.tipo} · Saldo: <span className="font-mono">{formatCOP(amount)}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleRestoreWallet(wallet)}
+                      className="px-3 py-1.5 rounded-xl text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800 transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-sm"
+                      title={`Restaurar ${wallet.nombre}`}
+                    >
+                      <RotateCcw size={12} />
+                      <span>Restaurar</span>
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Sincronización de cola offline */}
       {queueCount > 0 && (
         <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex items-center justify-between">
@@ -1035,6 +1257,30 @@ export default function WalletsView() {
             {syncing ? 'Sincronizando…' : 'Sincronizar ahora'}
           </button>
         </div>
+      )}
+
+      {/* Modal de Creación / Edición de Cartera */}
+      <WalletModal
+        isOpen={isWalletModalOpen}
+        onClose={() => {
+          setIsWalletModalOpen(false);
+          setWalletToEdit(null);
+        }}
+        walletToEdit={walletToEdit}
+        onSaved={() => fetchSaldos(true)}
+      />
+
+      {/* Modal de Ciclo de Facturación para Tarjeta de Crédito */}
+      {selectedCreditCardWallet && (
+        <CreditCardCycleModal
+          isOpen={isCreditCycleModalOpen}
+          onClose={() => {
+            setIsCreditCycleModalOpen(false);
+            setSelectedCreditCardWallet(null);
+          }}
+          wallet={selectedCreditCardWallet}
+          onUpdated={() => fetchSaldos(true)}
+        />
       )}
     </div>
   );

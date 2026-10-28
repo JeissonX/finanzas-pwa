@@ -38,25 +38,26 @@ export default function EditTransactionModal({
   const [comentario, setComentario] = useState<string>('');
   const [saving, setSaving] = useState(false);
 
-  // Carteras disponibles
+  // Carteras disponibles (únicamente activas)
   const [carterasList, setCarterasList] = useState<CarteraInfo[]>(() => {
     try {
       const raw = localStorage.getItem('finanzas_cached_appdata_v4');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed?.data?.carteras && parsed.data.carteras.length > 0) {
-          return parsed.data.carteras;
+          return (parsed.data.carteras as CarteraInfo[]).filter(c => c.activa !== false);
         }
       }
     } catch {
       /* ignore */
     }
-    return CARTERAS.map(c => ({
+    return CARTERAS.filter(c => c.activa !== false).map(c => ({
       id: c.id,
       nombre: c.nombre,
       tipo: c.tipo,
       icono: c.icono,
       permite_gasto: !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre),
+      activa: true,
     }));
   });
 
@@ -64,7 +65,7 @@ export default function EditTransactionModal({
     const handleUpdate = (e: Event) => {
       const custom = e as CustomEvent<AppData>;
       if (custom.detail?.carteras && custom.detail.carteras.length > 0) {
-        setCarterasList(custom.detail.carteras);
+        setCarterasList(custom.detail.carteras.filter(c => c.activa !== false));
       }
     };
     window.addEventListener('finanzas_appdata_updated', handleUpdate);
