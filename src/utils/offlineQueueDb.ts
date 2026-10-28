@@ -32,6 +32,13 @@ export class LeaseLostError extends Error {
   }
 }
 
+export class SessionChangedError extends Error {
+  constructor(message = 'Sesión de usuario cambiada o cerrada durante la sincronización') {
+    super(message);
+    this.name = 'SessionChangedError';
+  }
+}
+
 const DB_NAME = 'finanzas_offline_db';
 const DB_VERSION = 4;
 const STORE_NAME = 'mutations';
@@ -238,14 +245,17 @@ function releaseIdbLock(
 }
 
 /** Fallback multipestaña atómico mediante transacciones readwrite en IndexedDB con token de dueño, heartbeat y fail-closed */
-async function withIdbFallbackLock<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function withIdbFallbackLock<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs?: number
+): Promise<T> {
   const db = await openDatabase();
   const holderId = generateUuid();
   const ownerToken = generateUuid();
 
   const LEASE_MS = 15000;
   const HEARTBEAT_MS = 4000;
-  const MAX_WAIT_MS = 15000;
+  const MAX_WAIT_MS = timeoutMs ?? 15000;
   const startWait = Date.now();
 
   let acquired = false;
@@ -259,7 +269,7 @@ async function withIdbFallbackLock<T>(fn: (signal: AbortSignal) => Promise<T>): 
   if (!acquired) {
     db.close();
     // FAIL-CLOSED OBLIGATORIO: Jamás ejecutar la operación sin lock
-    throw new Error('Timeout esperando lock de cola offline en IndexedDB');
+    throw new Error(`Timeout (${MAX_WAIT_MS}ms) esperando lock de cola offline en IndexedDB`);
   }
 
   const controller = new AbortController();
@@ -299,13 +309,39 @@ async function withIdbFallbackLock<T>(fn: (signal: AbortSignal) => Promise<T>): 
   }
 }
 
-/** Ejecuta una operación bajo exclusión mutua de navigator.locks o lock atómico en IndexedDB */
-export async function withQueueLock<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+/** Ejecuta una operación bajo exclusión mutua de navigator.locks o lock atómico en IndexedDB con timeout opcional */
+export async function withQueueLock<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs?: number
+): Promise<T> {
   if (typeof navigator !== 'undefined' && 'locks' in navigator && typeof navigator.locks?.request === 'function') {
     const controller = new AbortController();
-    return navigator.locks.request(LOCK_NAME, () => fn(controller.signal));
+    let acquired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    if (timeoutMs !== undefined && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (!acquired) {
+          controller.abort(new Error(`Timeout (${timeoutMs}ms) esperando lock de cola offline`));
+        }
+      }, timeoutMs);
+    }
+
+    try {
+      return await navigator.locks.request(
+        LOCK_NAME,
+        timeoutMs ? { signal: controller.signal } : {},
+        async () => {
+          acquired = true;
+          if (timer) clearTimeout(timer);
+          return fn(controller.signal);
+        }
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
-  return withIdbFallbackLock(fn);
+  return withIdbFallbackLock(fn, timeoutMs);
 }
 
 function notifyQueueUpdated(count: number): void {
@@ -469,6 +505,34 @@ export async function markMutationConflict(
   reason: string
 ): Promise<void> {
   return withQueueLock(() => markMutationConflictUnlocked(mutationId, reason));
+}
+
+/** Comprueba si existe alguna mutación en cola (pending o conflict) para un dueño y entidad dados sin adquirir lock */
+export async function hasPendingForEntityUnlocked(
+  ownerUserId: string,
+  entityId: string
+): Promise<boolean> {
+  const db = await openDatabase();
+  await ensureLegacyMigrated(db);
+  const records = await readAllRecords(db);
+  db.close();
+
+  const targetEntity = String(entityId);
+  return records.some((r) => {
+    const m = r.mutation;
+    if (m.ownerUserId !== ownerUserId) return false;
+    if (m.status === 'orphan') return false;
+    const mEntityId = m.op === 'insert' ? String(m.tx.id) : String(m.id);
+    return mEntityId === targetEntity;
+  });
+}
+
+/** Comprueba si existe alguna mutación en cola para un dueño y entidad dados bajo lock */
+export async function hasPendingForEntity(
+  ownerUserId: string,
+  entityId: string
+): Promise<boolean> {
+  return withQueueLock(() => hasPendingForEntityUnlocked(ownerUserId, entityId));
 }
 
 /** Encola una mutación aplicando particionado por usuario y coalescencia atómica sin adquirir lock */

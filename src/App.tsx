@@ -75,6 +75,37 @@ function MainDashboard() {
   const currentUserIdRef = useRef<string | null>(null);
   currentUserIdRef.current = currentUserId;
 
+  const syncAbortControllerRef = useRef<AbortController | null>(null);
+
+  const triggerSync = useCallback(async (userId: string, isManualOrStartup = false): Promise<number> => {
+    if (!userId || !navigator.onLine) return 0;
+
+    // Un AbortController por corrida de sync: abortar cualquier corrida previa
+    if (syncAbortControllerRef.current) {
+      syncAbortControllerRef.current.abort('Nueva corrida de sincronización iniciada');
+    }
+    const controller = new AbortController();
+    syncAbortControllerRef.current = controller;
+
+    try {
+      setSincronizando(true);
+      const res = await syncOfflineQueue(controller.signal, { isManualOrStartup });
+      const remaining = await getQueuedMutations(userId);
+      setQueueCount(remaining.length);
+      return res.synced;
+    } catch (err: any) {
+      if (err?.name !== 'AbortError' && !controller.signal.aborted) {
+        console.warn('Error durante sincronización en App:', err);
+      }
+      return 0;
+    } finally {
+      if (syncAbortControllerRef.current === controller) {
+        syncAbortControllerRef.current = null;
+        setSincronizando(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     let mounted = true;
 
@@ -89,17 +120,10 @@ function MainDashboard() {
 
         // Disparar sincronización al inicio (startup) solo con sesión resuelta
         if (navigator.onLine && q.length > 0) {
-          if (mounted) setSincronizando(true);
-          await syncOfflineQueue(undefined, { isManualOrStartup: true });
-          const remaining = await getQueuedMutations(userId);
-          if (mounted) {
-            setQueueCount(remaining.length);
-            setSincronizando(false);
-          }
+          await triggerSync(userId, true);
         }
       } catch (err) {
-        console.warn('Error sincronizando cola al evaluar usuario:', err);
-        if (mounted) setSincronizando(false);
+        console.warn('Error evaluando cola de usuario:', err);
       }
     };
 
@@ -113,16 +137,27 @@ function MainDashboard() {
       }
     });
 
-    // 2. Volver a evaluar al cambiar de usuario
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    // 2. Volver a evaluar al cambiar de usuario o evento de auth
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
       const uid = session?.user?.id || null;
-      setCurrentUserId(prev => {
-        if (prev !== uid) {
-          evaluateUserAndSync(uid);
-        }
-        return uid;
-      });
+      const prevUid = currentUserIdRef.current;
+
+      if (event === 'SIGNED_OUT' || !uid) {
+        // Abortar sync activo al desautenticarse
+        syncAbortControllerRef.current?.abort('Usuario desautenticado (SIGNED_OUT)');
+        setCurrentUserId(null);
+        setQueueCount(0);
+        setSincronizando(false);
+        return;
+      }
+
+      if (prevUid !== uid) {
+        // Abortar sync activo ante cambio de identidad
+        syncAbortControllerRef.current?.abort('Cambio de usuario en sesión');
+        setCurrentUserId(uid);
+        evaluateUserAndSync(uid);
+      }
     });
 
     // 3. Manejar reconexión online (solo con sesión resuelta)
@@ -133,15 +168,10 @@ function MainDashboard() {
       try {
         const currentQueue = await getQueuedMutations(uid);
         if (currentQueue.length > 0) {
-          setSincronizando(true);
-          await syncOfflineQueue();
-          const remaining = await getQueuedMutations(uid);
-          setQueueCount(remaining.length);
-          setSincronizando(false);
+          await triggerSync(uid, false);
         }
       } catch (err) {
         console.warn('Error sincronizando cola al volver a estar online:', err);
-        setSincronizando(false);
       }
     };
 
@@ -164,12 +194,14 @@ function MainDashboard() {
 
     return () => {
       mounted = false;
+      // Abortar sync activo en el cleanup del efecto
+      syncAbortControllerRef.current?.abort('Efecto desmontado');
       subscription.unsubscribe();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('finanzas_queue_updated', handleQueueChange);
     };
-  }, []);
+  }, [triggerSync]);
 
   // ── Navigation (persistencia en F5) ────────────────────────
   const [tab, setTab] = useState<TabNavegacion>(() => {
@@ -263,9 +295,7 @@ function MainDashboard() {
       if (uid) {
         const q = await getQueuedMutations(uid);
         if (q.length > 0) {
-          await syncOfflineQueue(undefined, { isManualOrStartup: true });
-          const remaining = await getQueuedMutations(uid);
-          setQueueCount(remaining.length);
+          await triggerSync(uid, true);
         }
       }
 
