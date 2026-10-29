@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { X, PlusCircle } from 'lucide-react';
 import QuickRegister from './QuickRegister';
-import type { TipoTransaccion } from '../types/finance';
+import type { TipoTransaccion, CatalogoItem } from '../types/finance';
 import { haptic } from '../utils/format';
 
 interface QuickRegisterModalProps {
@@ -22,6 +22,7 @@ interface QuickRegisterModalProps {
     detalle?: string;
   }) => Promise<void>;
   saving: boolean;
+  catalogo?: CatalogoItem[];
 }
 
 export default function QuickRegisterModal({
@@ -29,6 +30,7 @@ export default function QuickRegisterModal({
   onClose,
   onSave,
   saving,
+  catalogo,
 }: QuickRegisterModalProps) {
   useEffect(() => {
     if (!open) return;
@@ -120,6 +122,7 @@ export default function QuickRegisterModal({
             saving={saving}
             onSuccess={handleSuccess}
             onClose={onClose}
+            catalogo={catalogo}
           />
         </div>
       </div>

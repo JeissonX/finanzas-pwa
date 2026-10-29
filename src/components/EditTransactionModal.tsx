@@ -12,7 +12,7 @@ import {
   DollarSign,
   FileText,
 } from 'lucide-react';
-import type { Transaccion, CarteraInfo, TipoTransaccion } from '../types/finance';
+import type { Transaccion, CarteraInfo, TipoTransaccion, CatalogoItem } from '../types/finance';
 import type { AppData } from '../services/api';
 import { CATALOG_GASTOS, CATALOG_INGRESOS, CATALOG_TRANSFERENCIAS, CARTERAS } from '../data/catalog';
 import { formatCOP, haptic } from '../utils/format';
@@ -22,6 +22,36 @@ interface EditTransactionModalProps {
   onClose: () => void;
   transaccion: Transaccion | null;
   onSave: (id: string | number, updated: Partial<Transaccion>) => Promise<void>;
+  catalogo?: CatalogoItem[];
+}
+
+const MACRO_ICONS: Record<string, string> = {
+  'Alimentación': '🛒',
+  'Transporte': '⛽',
+  'Vivienda / Hogar': '🏠',
+  'Vivienda': '🏠',
+  'Servicios Públicos': '💡',
+  'Servicios': '💡',
+  'Salud y Bienestar': '🏋️',
+  'Mascota': '🐾',
+  'Ocio y Viajes': '✈️',
+  'Suscripciones': '📱',
+  'Inversión y Ahorro': '📈',
+  'Pago Deuda': '🚗',
+  'Deudas Mazda 2': '🚗',
+  'Varios': '📦',
+  'Ingresos Laborales': '💼',
+  'Ingresos Agencia': '🚀',
+  'Rentas del Capital': '💰',
+  'Otros Ingresos': '📥',
+  'Movimientos Propios': '🔄',
+};
+
+function getMacroIcon(macro: string, fallbackTipo: TipoTransaccion): string {
+  if (MACRO_ICONS[macro]) return MACRO_ICONS[macro];
+  const cat = [...CATALOG_GASTOS, ...CATALOG_INGRESOS, ...CATALOG_TRANSFERENCIAS].find(c => c.nombre === macro);
+  if (cat?.icono) return cat.icono;
+  return fallbackTipo === 'INGRESO' ? '💰' : fallbackTipo === 'TRANSFERENCIA' ? '🔄' : '📊';
 }
 
 export default function EditTransactionModal({
@@ -29,6 +59,7 @@ export default function EditTransactionModal({
   onClose,
   transaccion,
   onSave,
+  catalogo,
 }: EditTransactionModalProps) {
   const [monto, setMonto] = useState<string>('');
   const [macroCategoria, setMacroCategoria] = useState<string>('');
@@ -37,6 +68,29 @@ export default function EditTransactionModal({
   const [cuentaDestino, setCuentaDestino] = useState<string>('');
   const [comentario, setComentario] = useState<string>('');
   const [saving, setSaving] = useState(false);
+
+  // Catálogo dinámico unificado con fallback a caché local
+  const [internalCatalogo, setInternalCatalogo] = useState<CatalogoItem[]>(() => {
+    if (catalogo && catalogo.length > 0) return catalogo;
+    try {
+      const raw = localStorage.getItem('finanzas_cached_appdata_v4');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.data?.catalogo && Array.isArray(parsed.data.catalogo)) {
+          return parsed.data.catalogo;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    if (catalogo && catalogo.length > 0) {
+      setInternalCatalogo(catalogo);
+    }
+  }, [catalogo]);
 
   // Carteras disponibles (únicamente activas)
   const [carterasList, setCarterasList] = useState<CarteraInfo[]>(() => {
@@ -67,10 +121,15 @@ export default function EditTransactionModal({
       if (custom.detail?.carteras && custom.detail.carteras.length > 0) {
         setCarterasList(custom.detail.carteras.filter(c => c.activa !== false));
       }
+      if (custom.detail?.catalogo && Array.isArray(custom.detail.catalogo)) {
+        setInternalCatalogo(custom.detail.catalogo);
+      }
     };
     window.addEventListener('finanzas_appdata_updated', handleUpdate);
     return () => window.removeEventListener('finanzas_appdata_updated', handleUpdate);
   }, []);
+
+  const activeCatalogo = (catalogo && catalogo.length > 0) ? catalogo : internalCatalogo;
 
   // Pre-cargar valores cuando cambia la transacción o abre el modal
   useEffect(() => {
@@ -100,30 +159,73 @@ export default function EditTransactionModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // Catálogo reactivo según el tipo de transacción
-  const catalog = useMemo(() => {
-    if (!transaccion) return CATALOG_GASTOS;
-    if (transaccion.tipo === 'INGRESO') return CATALOG_INGRESOS;
-    if (transaccion.tipo === 'TRANSFERENCIA') return CATALOG_TRANSFERENCIAS;
-    return CATALOG_GASTOS;
-  }, [transaccion]);
+  const tipo = transaccion?.tipo || 'GASTO';
 
-  // Subcategorías correspondientes a la macro-categoría seleccionada
-  const availableSubcategorias = useMemo(() => {
-    const found = catalog.find(m => m.nombre === macroCategoria);
-    const subs = found ? found.subcategorias.map(s => s.nombre) : [];
-    if (subcategoria && !subs.includes(subcategoria)) {
-      return [subcategoria, ...subs];
+  // Derivar las Macro-categorías disponibles dinámicamente unificando catálogo vivo con base
+  const macrosDisponibles = useMemo(() => {
+    if (tipo === 'GASTO') {
+      const fromLive = activeCatalogo
+        .filter(c => c.activo !== false && c.macro_categoria)
+        .map(c => c.macro_categoria.trim());
+      const fromBase = CATALOG_GASTOS.map(c => c.nombre);
+      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      if (macroCategoria && !unified.includes(macroCategoria)) {
+        return [macroCategoria, ...unified];
+      }
+      return unified.length > 0 ? unified : ['Alimentación'];
     }
-    return subs;
-  }, [catalog, macroCategoria, subcategoria]);
+    if (tipo === 'INGRESO') {
+      const base = CATALOG_INGRESOS.map(c => c.nombre);
+      return macroCategoria && !base.includes(macroCategoria) ? [macroCategoria, ...base] : base;
+    }
+    const base = CATALOG_TRANSFERENCIAS.map(c => c.nombre);
+    return macroCategoria && !base.includes(macroCategoria) ? [macroCategoria, ...base] : base;
+  }, [activeCatalogo, tipo, macroCategoria]);
+
+  // Derivar las Subcategorías disponibles en función de la Macro seleccionada
+  const subcategoriasDisponibles = useMemo(() => {
+    if (!macroCategoria) return [];
+    if (tipo === 'GASTO') {
+      const fromLive = activeCatalogo
+        .filter(c => c.macro_categoria.trim().toLowerCase() === macroCategoria.trim().toLowerCase() && c.activo !== false)
+        .map(c => c.subcategoria.trim());
+      const baseCat = CATALOG_GASTOS.find(c => c.nombre.trim().toLowerCase() === macroCategoria.trim().toLowerCase());
+      const fromBase = baseCat ? baseCat.subcategorias.map(s => s.nombre.trim()) : [];
+      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      if (subcategoria && !unified.includes(subcategoria)) {
+        return [subcategoria, ...unified];
+      }
+      return unified;
+    }
+    const currentList = tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+    const found = currentList.find(c => c.nombre === macroCategoria);
+    const base = found ? found.subcategorias.map(s => s.nombre) : [];
+    if (subcategoria && !base.includes(subcategoria)) {
+      return [subcategoria, ...base];
+    }
+    return base;
+  }, [activeCatalogo, macroCategoria, subcategoria, tipo]);
 
   // Manejador del cambio de macro-categoría
   const handleMacroChange = (newMacro: string) => {
     setMacroCategoria(newMacro);
-    const found = catalog.find(m => m.nombre === newMacro);
-    if (found && found.subcategorias.length > 0) {
-      setSubcategoria(found.subcategorias[0].nombre);
+    let nextSubs: string[] = [];
+    if (tipo === 'GASTO') {
+      const fromLive = activeCatalogo
+        .filter(c => c.macro_categoria.trim().toLowerCase() === newMacro.trim().toLowerCase() && c.activo !== false)
+        .map(c => c.subcategoria.trim());
+      const baseCat = CATALOG_GASTOS.find(c => c.nombre.trim().toLowerCase() === newMacro.trim().toLowerCase());
+      const fromBase = baseCat ? baseCat.subcategorias.map(s => s.nombre.trim()) : [];
+      nextSubs = Array.from(new Set([...fromLive, ...fromBase]));
+    } else {
+      const currentList = tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+      const found = currentList.find(c => c.nombre === newMacro);
+      nextSubs = found ? found.subcategorias.map(s => s.nombre) : [];
+    }
+    if (nextSubs.length > 0) {
+      setSubcategoria(nextSubs[0]);
+    } else {
+      setSubcategoria('');
     }
   };
 
@@ -332,9 +434,9 @@ export default function EditTransactionModal({
                   transition cursor-pointer
                 "
               >
-                {catalog.map(cat => (
-                  <option key={cat.nombre} value={cat.nombre}>
-                    {cat.icono} {cat.nombre}
+                {macrosDisponibles.map(macro => (
+                  <option key={macro} value={macro}>
+                    {getMacroIcon(macro, tipo)} {macro}
                   </option>
                 ))}
               </select>
@@ -359,7 +461,7 @@ export default function EditTransactionModal({
                   transition cursor-pointer
                 "
               >
-                {availableSubcategorias.map(sub => (
+                {subcategoriasDisponibles.map(sub => (
                   <option key={sub} value={sub}>
                     {sub}
                   </option>

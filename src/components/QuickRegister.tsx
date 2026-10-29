@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { ChevronDown, X } from 'lucide-react';
-import type { TipoTransaccion, CarteraInfo } from '../types/finance';
+import type { TipoTransaccion, CarteraInfo, CatalogoItem } from '../types/finance';
 import type { AppData } from '../services/api';
 import { CATALOG_GASTOS, CATALOG_INGRESOS, CATALOG_TRANSFERENCIAS, CARTERAS, PAYMENT_RULES } from '../data/catalog';
 import { formatDisplay, parseAmount, formatCOP, haptic } from '../utils/format';
@@ -23,6 +23,7 @@ interface QuickRegisterProps {
   saving: boolean;
   onSuccess?: () => void;
   onClose?: () => void;
+  catalogo?: CatalogoItem[];
 }
 
 const TABS: { key: TipoTransaccion; label: string }[] = [
@@ -38,7 +39,36 @@ const TAB_ACCENT: Record<TipoTransaccion, string> = {
   AJUSTE: 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/60 dark:text-indigo-300 dark:border-indigo-800 shadow-sm font-bold',
 };
 
-export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegisterProps) {
+const MACRO_ICONS: Record<string, string> = {
+  'Alimentación': '🛒',
+  'Transporte': '⛽',
+  'Vivienda / Hogar': '🏠',
+  'Vivienda': '🏠',
+  'Servicios Públicos': '💡',
+  'Servicios': '💡',
+  'Salud y Bienestar': '🏋️',
+  'Mascota': '🐾',
+  'Ocio y Viajes': '✈️',
+  'Suscripciones': '📱',
+  'Inversión y Ahorro': '📈',
+  'Pago Deuda': '🚗',
+  'Deudas Mazda 2': '🚗',
+  'Varios': '📦',
+  'Ingresos Laborales': '💼',
+  'Ingresos Agencia': '🚀',
+  'Rentas del Capital': '💰',
+  'Otros Ingresos': '📥',
+  'Movimientos Propios': '🔄',
+};
+
+function getMacroIcon(macro: string, fallbackTipo: TipoTransaccion): string {
+  if (MACRO_ICONS[macro]) return MACRO_ICONS[macro];
+  const cat = [...CATALOG_GASTOS, ...CATALOG_INGRESOS, ...CATALOG_TRANSFERENCIAS].find(c => c.nombre === macro);
+  if (cat?.icono) return cat.icono;
+  return fallbackTipo === 'INGRESO' ? '💰' : fallbackTipo === 'TRANSFERENCIA' ? '🔄' : '📊';
+}
+
+export default function QuickRegister({ onSave, saving, onSuccess, catalogo }: QuickRegisterProps) {
   const [tipo, setTipo] = useState<TipoTransaccion>('GASTO');
   const [display, setDisplay] = useState('0');
   const [categoria, setCategoria] = useState('Alimentación');
@@ -46,6 +76,29 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
   const [cuenta, setCuenta] = useState('TC Lulo Bank');
   const [cuentaDestino, setCuentaDestino] = useState('Lulo Principal (Cuenta)');
   const [comentario, setComentario] = useState('');
+
+  // Catálogo dinámico unificado con fallback a caché local
+  const [internalCatalogo, setInternalCatalogo] = useState<CatalogoItem[]>(() => {
+    if (catalogo && catalogo.length > 0) return catalogo;
+    try {
+      const raw = localStorage.getItem('finanzas_cached_appdata_v4');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.data?.catalogo && Array.isArray(parsed.data.catalogo)) {
+          return parsed.data.catalogo;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    if (catalogo && catalogo.length > 0) {
+      setInternalCatalogo(catalogo);
+    }
+  }, [catalogo]);
 
   // Carteras dinámicas desde AppData (únicamente activas)
   const [carterasList, setCarterasList] = useState<CarteraInfo[]>(() => {
@@ -76,12 +129,15 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
       if (custom.detail?.carteras && custom.detail.carteras.length > 0) {
         setCarterasList(custom.detail.carteras.filter(c => c.activa !== false));
       }
+      if (custom.detail?.catalogo && Array.isArray(custom.detail.catalogo)) {
+        setInternalCatalogo(custom.detail.catalogo);
+      }
     };
     window.addEventListener('finanzas_appdata_updated', handleUpdate);
     return () => window.removeEventListener('finanzas_appdata_updated', handleUpdate);
   }, []);
 
-  const catalog = tipo === 'GASTO' ? CATALOG_GASTOS : tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+  const activeCatalogo = (catalogo && catalogo.length > 0) ? catalogo : internalCatalogo;
 
   // Filtrar carteras disponibles para el selector de origen/pago (únicamente activas)
   const carterasDisponibles = useMemo(() => {
@@ -102,32 +158,102 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
     }
   }, [tipo, carterasDisponibles, cuenta]);
 
-  // Reset category when tab changes
+  // Derivar las Macro-categorías disponibles dinámicamente
+  const macrosDisponibles = useMemo(() => {
+    if (tipo === 'GASTO') {
+      const fromLive = (activeCatalogo || [])
+        .filter(c => c.activo !== false && c.macro_categoria)
+        .map(c => c.macro_categoria.trim());
+      const fromBase = CATALOG_GASTOS.map(c => c.nombre);
+      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      return unified.length > 0 ? unified : ['Alimentación'];
+    }
+    if (tipo === 'INGRESO') {
+      return CATALOG_INGRESOS.map(c => c.nombre);
+    }
+    return CATALOG_TRANSFERENCIAS.map(c => c.nombre);
+  }, [activeCatalogo, tipo]);
+
+  // Derivar las Subcategorías disponibles en función de la Macro seleccionada
+  const subcategoriasDisponibles = useMemo(() => {
+    if (!categoria) return [];
+    if (tipo === 'GASTO') {
+      const fromLive = (activeCatalogo || [])
+        .filter(c => c.macro_categoria.trim().toLowerCase() === categoria.trim().toLowerCase() && c.activo !== false)
+        .map(c => c.subcategoria.trim());
+      const baseCat = CATALOG_GASTOS.find(c => c.nombre.trim().toLowerCase() === categoria.trim().toLowerCase());
+      const fromBase = baseCat ? baseCat.subcategorias.map(s => s.nombre.trim()) : [];
+      return Array.from(new Set([...fromLive, ...fromBase]));
+    }
+    const currentList = tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+    const found = currentList.find(c => c.nombre === categoria);
+    return found ? found.subcategorias.map(s => s.nombre) : [];
+  }, [activeCatalogo, categoria, tipo]);
+
+  // Regla de sugerencia de cuenta/medio de pago
+  const getSuggestedPayment = useCallback((macroName: string, subName: string) => {
+    const item = activeCatalogo.find(
+      c => c.macro_categoria.trim().toLowerCase() === macroName.trim().toLowerCase() &&
+           c.subcategoria.trim().toLowerCase() === subName.trim().toLowerCase()
+    );
+    return item?.medio_pago_sugerido || PAYMENT_RULES[subName];
+  }, [activeCatalogo]);
+
+  // Reset de categoría cuando cambia la pestaña de tipo
   useEffect(() => {
-    const first = catalog[0];
-    setCategoria(first.nombre);
-    const firstSub = first.subcategorias[0];
-    setSubcategoria(firstSub.nombre);
-    const rule = PAYMENT_RULES[firstSub.nombre];
-    if (rule) {
+    if (macrosDisponibles.length > 0) {
+      const firstMacro = macrosDisponibles[0];
+      setCategoria(firstMacro);
+      let firstSub = '';
       if (tipo === 'GASTO') {
-        const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
-        setCuenta(isPermitida ? rule : (carterasDisponibles[0]?.nombre || rule));
+        const liveSubs = (activeCatalogo || [])
+          .filter(c => c.macro_categoria.trim().toLowerCase() === firstMacro.trim().toLowerCase() && c.activo !== false)
+          .map(c => c.subcategoria.trim());
+        const baseCat = CATALOG_GASTOS.find(c => c.nombre.trim().toLowerCase() === firstMacro.trim().toLowerCase());
+        const baseSubs = baseCat ? baseCat.subcategorias.map(s => s.nombre.trim()) : [];
+        firstSub = Array.from(new Set([...liveSubs, ...baseSubs]))[0] || '';
       } else {
-        setCuenta(rule);
+        const currentList = tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+        const found = currentList.find(c => c.nombre === firstMacro);
+        firstSub = found?.subcategorias[0]?.nombre || '';
       }
-    } else if (tipo === 'TRANSFERENCIA') {
+      setSubcategoria(firstSub);
+      if (firstSub) {
+        const rule = getSuggestedPayment(firstMacro, firstSub);
+        if (rule) {
+          if (tipo === 'GASTO') {
+            const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
+            setCuenta(isPermitida ? rule : (carterasDisponibles[0]?.nombre || rule));
+          } else {
+            setCuenta(rule);
+          }
+        }
+      }
+    }
+    if (tipo === 'TRANSFERENCIA') {
       setCuenta('Lulo Principal (Cuenta)');
       setCuentaDestino('Lulo Bolsillo - Ahorro');
     }
   }, [tipo]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const currentCat = catalog.find(c => c.nombre === categoria) ?? catalog[0];
-  const subcats = currentCat.subcategorias;
+  // Si la subcategoría seleccionada previamente no existe en la nueva lista, seleccionar la primera disponible
+  useEffect(() => {
+    if (subcategoriasDisponibles.length > 0 && !subcategoriasDisponibles.includes(subcategoria)) {
+      const nextSub = subcategoriasDisponibles[0];
+      setSubcategoria(nextSub);
+      const rule = getSuggestedPayment(categoria, nextSub);
+      if (rule) {
+        if (tipo === 'GASTO') {
+          const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
+          setCuenta(isPermitida ? rule : (carterasDisponibles[0]?.nombre || rule));
+        } else {
+          setCuenta(rule);
+        }
+      }
+    }
+  }, [subcategoriasDisponibles, subcategoria, categoria, tipo, carterasDisponibles, getSuggestedPayment]);
 
   const amount = parseAmount(display);
-
-
 
   const handleClear = useCallback(() => {
     haptic();
@@ -142,11 +268,23 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
   const handleSelectCat = useCallback((catName: string) => {
     haptic();
     setCategoria(catName);
-    const cat = catalog.find(c => c.nombre === catName);
-    const firstSub = cat?.subcategorias[0];
+    let nextSubs: string[] = [];
+    if (tipo === 'GASTO') {
+      const liveSubs = (activeCatalogo || [])
+        .filter(c => c.macro_categoria.trim().toLowerCase() === catName.trim().toLowerCase() && c.activo !== false)
+        .map(c => c.subcategoria.trim());
+      const baseCat = CATALOG_GASTOS.find(c => c.nombre.trim().toLowerCase() === catName.trim().toLowerCase());
+      const baseSubs = baseCat ? baseCat.subcategorias.map(s => s.nombre.trim()) : [];
+      nextSubs = Array.from(new Set([...liveSubs, ...baseSubs]));
+    } else {
+      const currentList = tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+      const found = currentList.find(c => c.nombre === catName);
+      nextSubs = found ? found.subcategorias.map(s => s.nombre) : [];
+    }
+    const firstSub = nextSubs[0] || '';
+    setSubcategoria(firstSub);
     if (firstSub) {
-      setSubcategoria(firstSub.nombre);
-      const rule = PAYMENT_RULES[firstSub.nombre];
+      const rule = getSuggestedPayment(catName, firstSub);
       if (rule) {
         if (tipo === 'GASTO') {
           const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
@@ -156,12 +294,12 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
         }
       }
     }
-  }, [catalog, tipo, carterasDisponibles]);
+  }, [tipo, activeCatalogo, carterasDisponibles, getSuggestedPayment]);
 
   const handleSelectSub = useCallback((sub: string) => {
     haptic();
     setSubcategoria(sub);
-    const rule = PAYMENT_RULES[sub];
+    const rule = getSuggestedPayment(categoria, sub);
     if (rule) {
       if (tipo === 'GASTO') {
         const isPermitida = carterasDisponibles.some(c => c.nombre === rule || c.id === rule);
@@ -170,7 +308,7 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
         setCuenta(rule);
       }
     }
-  }, [tipo, carterasDisponibles]);
+  }, [tipo, categoria, carterasDisponibles, getSuggestedPayment]);
 
   const handleSave = async () => {
     if (amount <= 0) return;
@@ -258,7 +396,7 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
             {tipo === 'TRANSFERENCIA' ? 'Tipo de Movimiento' : tipo === 'INGRESO' ? 'Fuente de Ingreso' : 'Macro-Categoría'}
           </label>
           <span className="text-[11px] font-bold text-slate-800 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 px-2.5 py-0.5 rounded-lg border border-slate-200/70 dark:border-slate-700 truncate max-w-[180px]">
-            {currentCat?.icono} {categoria}
+            {getMacroIcon(categoria, tipo)} {categoria}
           </span>
         </div>
         <div className="relative">
@@ -268,9 +406,9 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
             onChange={e => handleSelectCat(e.target.value)}
             className="w-full appearance-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3.5 pr-10 text-sm font-semibold text-slate-900 dark:text-slate-100 shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 cursor-pointer transition-colors"
           >
-            {catalog.map(cat => (
-              <option key={cat.nombre} value={cat.nombre} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
-                {cat.icono} {cat.nombre}
+            {macrosDisponibles.map(macro => (
+              <option key={macro} value={macro} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
+                {getMacroIcon(macro, tipo)} {macro}
               </option>
             ))}
           </select>
@@ -297,9 +435,9 @@ export default function QuickRegister({ onSave, saving, onSuccess }: QuickRegist
             onChange={e => handleSelectSub(e.target.value)}
             className="w-full appearance-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3.5 pr-10 text-sm font-semibold text-slate-900 dark:text-slate-100 shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 cursor-pointer transition-colors"
           >
-            {subcats.map(sub => (
-              <option key={sub.nombre} value={sub.nombre} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
-                {sub.nombre}
+            {subcategoriasDisponibles.map(sub => (
+              <option key={sub} value={sub} className="text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-900 font-medium py-1">
+                {sub}
               </option>
             ))}
           </select>

@@ -14,7 +14,7 @@ import {
   Download,
   Pencil,
 } from 'lucide-react';
-import type { Transaccion, TipoTransaccion } from '../types/finance';
+import type { Transaccion, TipoTransaccion, CatalogoItem } from '../types/finance';
 import {
   formatCOP,
   formatDateSpanish,
@@ -31,6 +31,7 @@ interface TransactionsViewProps {
   transacciones: Transaccion[];
   onDeleteTransaction: (id: number | string) => Promise<boolean>;
   onUpdateTransaction?: (id: number | string, updated: Partial<Transaccion>) => Promise<boolean | void>;
+  catalogo?: CatalogoItem[];
 }
 
 type FiltroTipo = 'TODOS' | TipoTransaccion;
@@ -41,6 +42,7 @@ export default function TransactionsView({
   transacciones,
   onDeleteTransaction,
   onUpdateTransaction,
+  catalogo,
 }: TransactionsViewProps) {
   const [editingTx, setEditingTx] = useState<Transaccion | null>(null);
   const handleRegister = () => {
@@ -470,6 +472,7 @@ export default function TransactionsView({
         isOpen={Boolean(editingTx)}
         onClose={() => setEditingTx(null)}
         transaccion={editingTx}
+        catalogo={catalogo}
         onSave={async (id, updated) => {
           if (onUpdateTransaction) {
             await onUpdateTransaction(id, updated);

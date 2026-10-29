@@ -91,6 +91,15 @@ export interface GastoRecurrente {
   ultimoCicloEjecutado?: string;
 }
 
+export interface CatalogoItem {
+  id?: string | number;
+  macro_categoria: string;
+  subcategoria: string;
+  activo?: boolean;
+  medio_pago_sugerido?: string;
+  presupuesto_base?: number;
+}
+
 export interface AppDataResponse {
   saldos: Record<string, number>;
   gastadoPorSubcat: Record<string, number>;
@@ -114,4 +123,5 @@ export interface AppDataResponse {
   presupuestos?: PresupuestoItem[];
   carteras?: CarteraInfo[];
   gastosRecurrentes?: GastoRecurrente[];
+  catalogo?: CatalogoItem[];
 }

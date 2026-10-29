@@ -17,7 +17,7 @@ import {
 } from './services/api';
 import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
-import type { TabNavegacion, TipoTransaccion, Transaccion } from './types/finance';
+import type { TabNavegacion, TipoTransaccion, Transaccion, CatalogoItem } from './types/finance';
 
 // Lazy loading del módulo analítico pesado para code splitting (~97.5 kB gzip ahorrados)
 const AnalyticsView = lazy(() => import('./components/AnalyticsView'));
@@ -41,6 +41,22 @@ const NAV_TABS: { key: TabNavegacion; label: string; Icon: typeof ListOrdered }[
 function MainDashboard() {
   // ── Global transactions state ──────────────────────────────
   const [transacciones, setTransacciones] = useState<Transaccion[]>(() => getTransacciones());
+
+  // ── Global live categories catalog state ───────────────────
+  const [catalogo, setCatalogo] = useState<CatalogoItem[]>(() => {
+    try {
+      const raw = localStorage.getItem('finanzas_cached_appdata_v4');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.data?.catalogo && Array.isArray(parsed.data.catalogo)) {
+          return parsed.data.catalogo;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
 
   // ── Theme ──────────────────────────────────────────────────
   const [tema, setTema] = useState<'dark' | 'light'>(() => {
@@ -270,8 +286,13 @@ function MainDashboard() {
     const gen = ++refreshGenRef.current;
     try {
       const data = await fetchAppData(force);
-      if (gen === refreshGenRef.current && data?.transacciones) {
-        setTransacciones(data.transacciones);
+      if (gen === refreshGenRef.current) {
+        if (data?.transacciones) {
+          setTransacciones(data.transacciones);
+        }
+        if (data?.catalogo) {
+          setCatalogo(data.catalogo);
+        }
       }
     } catch (err) {
       console.error('Error sincronizando datos:', err);
@@ -512,6 +533,9 @@ function MainDashboard() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'carteras' }, () => {
         triggerDebouncedRefresh();
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'catalogo_categorias' }, () => {
+        triggerDebouncedRefresh();
+      })
       .subscribe();
 
     const handleTxUpdated = (e: Event) => {
@@ -522,12 +546,21 @@ function MainDashboard() {
     };
     window.addEventListener('finanzas_transacciones_updated', handleTxUpdated);
 
+    const handleAppDataUpdated = (e: Event) => {
+      const custom = e as CustomEvent<{ catalogo?: CatalogoItem[]; transacciones?: Transaccion[] }>;
+      if (custom.detail?.catalogo) {
+        setCatalogo(custom.detail.catalogo);
+      }
+    };
+    window.addEventListener('finanzas_appdata_updated', handleAppDataUpdated);
+
     return () => {
       if (realtimeDebounceRef.current) {
         clearTimeout(realtimeDebounceRef.current);
       }
       supabase.removeChannel(channel);
       window.removeEventListener('finanzas_transacciones_updated', handleTxUpdated);
+      window.removeEventListener('finanzas_appdata_updated', handleAppDataUpdated);
     };
   }, [refreshData, triggerDebouncedRefresh]);
 
@@ -557,6 +590,7 @@ function MainDashboard() {
         onClose={() => setIsRegisterOpen(false)}
         onSave={handleSave}
         saving={saving}
+        catalogo={catalogo}
       />
 
       {/* App shell con scroll vertical natural en PC y móvil */}
@@ -581,6 +615,7 @@ function MainDashboard() {
               onUpdateTransaction={handleUpdateTransaction}
               onOpenRegister={() => setIsRegisterOpen(true)}
               onNavigateToRegister={() => setIsRegisterOpen(true)}
+              catalogo={catalogo}
             />
           )}
           {tab === 'carteras' && <WalletsView />}

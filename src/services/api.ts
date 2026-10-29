@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { Transaccion, AppDataResponse, PresupuestoItem, Cartera, CarteraInfo, GastoRecurrente } from '../types/finance';
+import type { Transaccion, AppDataResponse, PresupuestoItem, Cartera, CarteraInfo, GastoRecurrente, CatalogoItem } from '../types/finance';
 import {
   isDateInCurrentCycle,
   getCycleLabel,
@@ -90,6 +90,7 @@ export const DEFAULT_APPDATA: AppData = {
   presupuestos: [],
   carteras: [],
   gastosRecurrentes: [],
+  catalogo: [],
 };
 
 /** Sanitiza montos garantizando enteros seguros en COP */
@@ -1410,6 +1411,15 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       ultimoCicloEjecutado: r.ultimo_ciclo_ejecutado || undefined,
     }));
 
+    const catalogo: CatalogoItem[] = catalogoData.map((c: any) => ({
+      id: c.id ? String(c.id) : undefined,
+      macro_categoria: (c.macro_categoria || '').trim(),
+      subcategoria: (c.subcategoria || '').trim(),
+      activo: c.activo !== false,
+      medio_pago_sugerido: c.medio_pago_sugerido || undefined,
+      presupuesto_base: sanitizeAmount(c.presupuesto_base),
+    }));
+
     const updatedSaldos: Record<string, number> = { ...DEFAULT_SALDOS };
     let saldoRemunerados = 0;
     let balanceDisponible = 0;
@@ -1603,6 +1613,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       presupuestos,
       carteras: carterasMapped,
       gastosRecurrentes,
+      catalogo,
     };
 
     // Almacenar en caché solo si la generación sigue siendo la más reciente
