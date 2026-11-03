@@ -42,7 +42,12 @@ Aplicación web progresiva (PWA) offline-first para control financiero personal 
    - **Escenario Reducir Cuota**: recálculo de la nueva cuota mensual mediante fórmula de anualidad sobre el saldo restante.
    - Spread de liquidez frente a cuentas remuneradas en Colombia (tasa crédito vs. tasa de rendimiento).
 
-6. **Gestión de Carteras y Monitor de Ciclo de Facturación (TC 1 Cuota)**:
+6. **Gasto con Amortización de Deuda (Doble Impacto Contable)**:
+   - Registro unificado de pagos de deuda (ej. Cuota regular Mazda 2 o abonos extraordinarios a capital) sin necesidad de movimientos manuales adicionales.
+   - **Impacto Presupuestal y Pasivo Simultáneo**: Se computa como gasto del ciclo en la macro "Pago Deuda", se descuenta de la cartera de origen líquida (`cuenta_origen`) y suma contablemente a la cartera de pasivo (`cuenta_destino`), amortizando directamente su saldo negativo mediante el trigger transaccional de Supabase.
+   - **Selector Dual y Sugerencia Inteligente**: En `QuickRegister` y `EditTransactionModal`, al seleccionar la macro "Pago Deuda", se activan dos selectores: cartera líquida de origen y cartera de deuda receptora (con pre-selección automática basada en subcategoría: Mazda/Carro -> Crédito Mazda 2, Lulo -> TC Lulo Bank, Rappi -> RappiCard).
+
+7. **Gestión de Carteras y Monitor de Ciclo de Facturación (TC 1 Cuota)**:
    - **Ciclo de Vida de Carteras**:
      - Creación y edición accesible (`WalletModal`) con selector de tipo (`BOLSILLO`, `DEBITO`, `EFECTIVO`, `CREDITO`, `PRESTAMO`), saldo inicial con formateo en vivo COP e icono personalizable.
      - **Archivado Lógico Contable**: Si una cartera tiene movimientos históricos (`cuenta_origen`, `cuenta_destino` o `cuenta`), se archiva de forma lógica (`activa = false`) para no descuadrar balances pasados ni reportes. Si no tiene movimientos, se elimina físicamente.
@@ -55,9 +60,9 @@ Aplicación web progresiva (PWA) offline-first para control financiero personal 
        - Si el día actual es `> dia_corte`: corte inició el día `dia_corte + 1` de este mes y cierra el `dia_corte` del mes siguiente. Pago: `dia_pago` del mes siguiente.
      - Métricas en vivo: Total a pagar en este corte (suma de compras GASTO), fecha límite con contador de días restantes, cupo disponible con barra de utilización porcentual, historial de compras del corte y edición rápida de los días de corte/pago.
 
-7. **Rendimiento, Code Splitting y PWA**:
+8. **Rendimiento, Code Splitting y PWA**:
    - Carga diferida (`React.lazy` y `Suspense`) del módulo de analíticas y gráficos Recharts.
-   - Service Worker (`finanzas-pwa-v28`) con estrategia cache-first para recursos estáticos y purga selectiva de versiones previas.
+   - Service Worker (`finanzas-pwa-v30`) con estrategia cache-first para recursos estáticos y purga selectiva de versiones previas.
 
 ---
 

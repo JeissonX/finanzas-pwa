@@ -1,12 +1,20 @@
-import { supabase } from './supabase';
-import type { Transaccion, AppDataResponse, PresupuestoItem, Cartera, CarteraInfo, GastoRecurrente, CatalogoItem } from '../types/finance';
+import { supabase } from "./supabase";
+import type {
+  Transaccion,
+  AppDataResponse,
+  PresupuestoItem,
+  Cartera,
+  CarteraInfo,
+  GastoRecurrente,
+  CatalogoItem,
+} from "../types/finance";
 import {
   isDateInCurrentCycle,
   getCycleLabel,
   getPayrollCycleId,
   getBogotaDateParts,
   getDaysInBogotaMonth,
-} from '../utils/format';
+} from "../utils/format";
 import {
   getQueuedMutations,
   getQueuedMutationsUnlocked,
@@ -22,7 +30,7 @@ import {
   type QueuedMutation,
   type QueuedMutationInput,
   type MutationStatus,
-} from '../utils/offlineQueueDb';
+} from "../utils/offlineQueueDb";
 
 export { getQueuedMutations };
 export type { QueuedMutation, QueuedMutationInput, MutationStatus };
@@ -31,36 +39,38 @@ export type { QueuedMutation, QueuedMutationInput, MutationStatus };
  * Emite un evento global 'supabase-sync-error' para visibilidad inmediata de errores de PostgreSQL/PostgREST en la UI.
  */
 export function dispatchSupabaseSyncError(error: any): string {
-  if (!error) return '';
+  if (!error) return "";
   let errMsg: string;
-  if (typeof error === 'string') {
+  if (typeof error === "string") {
     errMsg = error;
   } else {
-    const code = error.code || error.status || 'ERR';
-    const message = error.message || 'Error desconocido';
-    const extra = [error.details, error.hint].filter(Boolean).join(' - ');
+    const code = error.code || error.status || "ERR";
+    const message = error.message || "Error desconocido";
+    const extra = [error.details, error.hint].filter(Boolean).join(" - ");
     errMsg = extra ? `${code}: ${message} (${extra})` : `${code}: ${message}`;
   }
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('supabase-sync-error', { detail: errMsg }));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("supabase-sync-error", { detail: errMsg }),
+    );
   }
   return errMsg;
 }
 
-const TRANSACTIONS_KEY = 'finanzas_transacciones_ciclo_v2';
-const APPDATA_CACHE_KEY = 'finanzas_cached_appdata_v4';
+const TRANSACTIONS_KEY = "finanzas_transacciones_ciclo_v2";
+const APPDATA_CACHE_KEY = "finanzas_cached_appdata_v4";
 const APPDATA_CACHE_TTL = 5 * 60 * 1000;
 
 export const DEFAULT_SALDOS: Record<string, number> = {
-  'Lulo Principal (Cuenta)': 0,
-  'Lulo Bolsillo - Ahorro': 0,
-  'Lulo Bolsillo - Carro / Moto': 0,
-  'Lulo Bolsillo - Vacaciones': 0,
-  'Nequi': 0,
-  'Efectivo': 0,
-  'TC Lulo Bank': 0,
-  'RappiCard': 0,
-  'Crédito Mazda 2 (Lulo)': 0,
+  "Lulo Principal (Cuenta)": 0,
+  "Lulo Bolsillo - Ahorro": 0,
+  "Lulo Bolsillo - Carro / Moto": 0,
+  "Lulo Bolsillo - Vacaciones": 0,
+  Nequi: 0,
+  Efectivo: 0,
+  "TC Lulo Bank": 0,
+  RappiCard: 0,
+  "Crédito Mazda 2 (Lulo)": 0,
 };
 
 export interface AppData extends AppDataResponse {}
@@ -77,9 +87,7 @@ export const DEFAULT_APPDATA: AppData = {
     saldoRemunerados: 0,
     balanceDisponible: 0,
   },
-  historico: [
-    { ciclo: 'Ciclo Actual', gastos: 0, ingresos: 0 },
-  ],
+  historico: [{ ciclo: "Ciclo Actual", gastos: 0, ingresos: 0 }],
   fromCache: true,
   timestamp: 0,
   tasas: {
@@ -118,15 +126,17 @@ function saveTransacciones(txs: Transaccion[]): void {
   } catch {
     /* ignore */
   }
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: txs }));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("finanzas_transacciones_updated", { detail: txs }),
+    );
   }
 }
 
 function markTransactionSynced(id: number | string, synced = true): void {
   const list = getTransacciones();
   let changed = false;
-  const updated = list.map(t => {
+  const updated = list.map((t) => {
     if (String(t.id) === String(id)) {
       changed = true;
       return { ...t, sincronizado: synced };
@@ -142,7 +152,7 @@ function markTransactionSynced(id: number | string, synced = true): void {
 
 function applyOptimisticTransaction(tx: Transaccion): AppData {
   const txList = getTransacciones();
-  const existingIdx = txList.findIndex(t => String(t.id) === String(tx.id));
+  const existingIdx = txList.findIndex((t) => String(t.id) === String(tx.id));
   let updatedList: Transaccion[];
   if (existingIdx >= 0) {
     updatedList = [...txList];
@@ -168,38 +178,52 @@ function applyOptimisticTransaction(tx: Transaccion): AppData {
   const saldos = { ...DEFAULT_SALDOS, ...(current.saldos || {}) };
   const gastadoPorSubcat = { ...(current.gastadoPorSubcat || {}) };
   const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
-  const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
+  const kpis = {
+    ...(current.kpis || {
+      ingresos: 0,
+      gastos: 0,
+      balance: 0,
+      tasaAhorro: 0,
+      saldoRemunerados: 0,
+      balanceDisponible: 0,
+    }),
+  };
 
   const monto = sanitizeAmount(tx.monto);
-  const subcatNombre = tx.subcategoria || tx.sub || '';
-  const macroNombre = tx.categoria || tx.macro || '';
-  const cuentaNombre = tx.cuenta || tx.cuentaOrigen || '';
-  const cuentaDestino = tx.cuentaDestino || '';
+  const subcatNombre = tx.subcategoria || tx.sub || "";
+  const macroNombre = tx.categoria || tx.macro || "";
+  const cuentaNombre = tx.cuenta || tx.cuentaOrigen || "";
+  const cuentaDestino = tx.cuentaDestino || "";
 
-  if (tx.tipo === 'GASTO') {
-    if (cuentaNombre) {
-      saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
-    }
-    if (subcatNombre) {
-      gastadoPorSubcat[subcatNombre] = (gastadoPorSubcat[subcatNombre] ?? 0) + monto;
-    }
-    if (macroNombre) {
-      gastadoPorMacro[macroNombre] = (gastadoPorMacro[macroNombre] ?? 0) + monto;
-    }
-    kpis.gastos = (kpis.gastos ?? 0) + monto;
-  } else if (tx.tipo === 'INGRESO') {
-    if (cuentaNombre) {
-      saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
-    }
-    kpis.ingresos = (kpis.ingresos ?? 0) + monto;
-  } else if (tx.tipo === 'TRANSFERENCIA') {
+  if (tx.tipo === "GASTO") {
     if (cuentaNombre) {
       saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
     }
     if (cuentaDestino) {
       saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) + monto;
     }
-  } else if (tx.tipo === 'AJUSTE') {
+    if (subcatNombre) {
+      gastadoPorSubcat[subcatNombre] =
+        (gastadoPorSubcat[subcatNombre] ?? 0) + monto;
+    }
+    if (macroNombre) {
+      gastadoPorMacro[macroNombre] =
+        (gastadoPorMacro[macroNombre] ?? 0) + monto;
+    }
+    kpis.gastos = (kpis.gastos ?? 0) + monto;
+  } else if (tx.tipo === "INGRESO") {
+    if (cuentaNombre) {
+      saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
+    }
+    kpis.ingresos = (kpis.ingresos ?? 0) + monto;
+  } else if (tx.tipo === "TRANSFERENCIA") {
+    if (cuentaNombre) {
+      saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
+    }
+    if (cuentaDestino) {
+      saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) + monto;
+    }
+  } else if (tx.tipo === "AJUSTE") {
     if (tx.cuentaDestino || cuentaDestino) {
       const dest = (tx.cuentaDestino || cuentaDestino)!;
       saldos[dest] = (saldos[dest] ?? 0) + monto;
@@ -210,7 +234,8 @@ function applyOptimisticTransaction(tx: Transaccion): AppData {
   }
 
   kpis.balance = (kpis.ingresos ?? 0) - (kpis.gastos ?? 0);
-  kpis.tasaAhorro = kpis.ingresos > 0 ? (kpis.balance / kpis.ingresos) * 100 : 0;
+  kpis.tasaAhorro =
+    kpis.ingresos > 0 ? (kpis.balance / kpis.ingresos) * 100 : 0;
 
   const updatedData: AppData = {
     ...current,
@@ -223,14 +248,23 @@ function applyOptimisticTransaction(tx: Transaccion): AppData {
   };
 
   try {
-    localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: updatedData.timestamp, data: updatedData }));
+    localStorage.setItem(
+      APPDATA_CACHE_KEY,
+      JSON.stringify({ timestamp: updatedData.timestamp, data: updatedData }),
+    );
   } catch {
     /* ignore */
   }
 
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: updatedData }));
-    window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: updatedData.saldos }));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("finanzas_appdata_updated", { detail: updatedData }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("finanzas_saldos_updated", {
+        detail: updatedData.saldos,
+      }),
+    );
   }
 
   return updatedData;
@@ -248,18 +282,21 @@ async function insertRemote(
   tx: Transaccion,
   signal?: AbortSignal,
   clientMutationId?: string,
-  ownerUserId?: string
+  ownerUserId?: string,
 ): Promise<InsertRemoteResult> {
-  const mutationId = (
-    clientMutationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientMutationId)
+  const mutationId =
+    clientMutationId &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      clientMutationId,
+    )
       ? clientMutationId
-      : generateUuid()
-  );
+      : generateUuid();
 
   const { data: sessionData } = await supabase.auth.getSession();
   const session = sessionData?.session;
   if (!session || !session.user?.id) {
-    const errMsg = '42501: Inserción remota rechazada: no hay usuario autenticado en la sesión de Supabase Auth';
+    const errMsg =
+      "42501: Inserción remota rechazada: no hay usuario autenticado en la sesión de Supabase Auth";
     dispatchSupabaseSyncError(errMsg);
     throw new Error(errMsg);
   }
@@ -276,16 +313,16 @@ async function insertRemote(
   let cuentaOrigen: string | null = null;
   let cuentaDestino: string | null = null;
 
-  if (tx.tipo === 'GASTO') {
+  if (tx.tipo === "GASTO") {
     cuentaOrigen = tx.cuentaOrigen || tx.cuenta || null;
-    cuentaDestino = null;
-  } else if (tx.tipo === 'INGRESO') {
+    cuentaDestino = tx.cuentaDestino ? tx.cuentaDestino : null;
+  } else if (tx.tipo === "INGRESO") {
     cuentaOrigen = null;
     cuentaDestino = tx.cuentaDestino || tx.cuenta || null;
-  } else if (tx.tipo === 'TRANSFERENCIA') {
+  } else if (tx.tipo === "TRANSFERENCIA") {
     cuentaOrigen = tx.cuentaOrigen || null;
     cuentaDestino = tx.cuentaDestino || null;
-  } else if (tx.tipo === 'AJUSTE') {
+  } else if (tx.tipo === "AJUSTE") {
     if (tx.cuentaDestino && !tx.cuentaOrigen) {
       cuentaDestino = tx.cuentaDestino;
       cuentaOrigen = null;
@@ -304,15 +341,22 @@ async function insertRemote(
     }
   }
 
-  cuentaOrigen = cuentaOrigen && cuentaOrigen.trim() !== '' ? cuentaOrigen.trim() : null;
-  cuentaDestino = cuentaDestino && cuentaDestino.trim() !== '' ? cuentaDestino.trim() : null;
-  const cuentaPrincipal = tx.cuenta || cuentaDestino || cuentaOrigen || '';
+  cuentaOrigen =
+    cuentaOrigen && cuentaOrigen.trim() !== "" ? cuentaOrigen.trim() : null;
+  cuentaDestino =
+    cuentaDestino && cuentaDestino.trim() !== "" ? cuentaDestino.trim() : null;
+  const cuentaPrincipal = tx.cuenta || cuentaDestino || cuentaOrigen || "";
 
   const txDate = tx.fecha || new Date().toISOString();
   const canonicalCycle = getPayrollCycleId(txDate);
   const cleanMonto = Math.max(1, Math.trunc(Math.round(Number(tx.monto) || 0)));
-  const macroValue = (tx.macroCategoria || tx.categoria || tx.macro || '').trim();
-  const subValue = (tx.subcategoria || tx.sub || '').trim();
+  const macroValue = (
+    tx.macroCategoria ||
+    tx.categoria ||
+    tx.macro ||
+    ""
+  ).trim();
+  const subValue = (tx.subcategoria || tx.sub || "").trim();
 
   const payload: Record<string, any> = {
     id: String(tx.id),
@@ -326,14 +370,14 @@ async function insertRemote(
     cuenta: cuentaPrincipal,
     cuenta_origen: cuentaOrigen,
     cuenta_destino: cuentaDestino,
-    detalle: (tx.comentario || tx.detalle || '').trim(),
+    detalle: (tx.comentario || tx.detalle || "").trim(),
     ciclo: canonicalCycle,
   };
 
   let query = supabase
-    .from('transacciones')
-    .upsert([payload], { onConflict: 'id', ignoreDuplicates: true })
-    .select('id,user_id');
+    .from("transacciones")
+    .upsert([payload], { onConflict: "id", ignoreDuplicates: true })
+    .select("id,user_id");
 
   if (signal) {
     query = query.abortSignal(signal);
@@ -342,12 +386,12 @@ async function insertRemote(
   let { data, error } = await query;
 
   // Fallback si la columna client_mutation_id no existe en la base remota (42703)
-  if (error && error.code === '42703' && payload.client_mutation_id) {
+  if (error && error.code === "42703" && payload.client_mutation_id) {
     const { client_mutation_id: _, ...fallbackPayload } = payload;
     let fallbackQuery = supabase
-      .from('transacciones')
-      .upsert([fallbackPayload], { onConflict: 'id', ignoreDuplicates: true })
-      .select('id,user_id');
+      .from("transacciones")
+      .upsert([fallbackPayload], { onConflict: "id", ignoreDuplicates: true })
+      .select("id,user_id");
     if (signal) fallbackQuery = fallbackQuery.abortSignal(signal);
     const retryRes = await fallbackQuery;
     data = retryRes.data;
@@ -375,15 +419,17 @@ async function insertRemote(
 
   // Caso 2: Fila ignorada por ON CONFLICT DO NOTHING (data vacía) o colisión 23505
   const isIgnored = !error && Array.isArray(data) && data.length === 0;
-  const is23505 = error && (error.code === '23505' || String(error.message).includes('duplicate key'));
+  const is23505 =
+    error &&
+    (error.code === "23505" || String(error.message).includes("duplicate key"));
 
   if (isIgnored || is23505) {
     // Consultar la fila por id o client_mutation_id para el effectiveUserId
     let verifyQuery = supabase
-      .from('transacciones')
-      .select('*')
-      .eq('id', String(tx.id))
-      .eq('user_id', effectiveUserId);
+      .from("transacciones")
+      .select("*")
+      .eq("id", String(tx.id))
+      .eq("user_id", effectiveUserId);
 
     if (signal) {
       verifyQuery = verifyQuery.abortSignal(signal);
@@ -394,10 +440,10 @@ async function insertRemote(
     // Si no se encuentra por id, intentar por client_mutation_id
     if ((!existingRows || existingRows.length === 0) && mutationId) {
       let mutQuery = supabase
-        .from('transacciones')
-        .select('*')
-        .eq('client_mutation_id', mutationId)
-        .eq('user_id', effectiveUserId);
+        .from("transacciones")
+        .select("*")
+        .eq("client_mutation_id", mutationId)
+        .eq("user_id", effectiveUserId);
       if (signal) mutQuery = mutQuery.abortSignal(signal);
       const mutRes = await mutQuery;
       if (!mutRes.error && mutRes.data && mutRes.data.length > 0) {
@@ -428,7 +474,7 @@ async function insertRemote(
     // Verificar usuario autenticado (Fallar cerrado)
     const rowUserId = row?.user_id;
     if (!rowUserId || String(rowUserId) !== String(sessionUserId)) {
-      const reason = `Verificación de conflicto falló cerrado: usuario no coincide (remoto: ${rowUserId || 'falsy'}, dueño: ${sessionUserId})`;
+      const reason = `Verificación de conflicto falló cerrado: usuario no coincide (remoto: ${rowUserId || "falsy"}, dueño: ${sessionUserId})`;
       dispatchSupabaseSyncError(reason);
       throw new Error(reason);
     }
@@ -445,11 +491,13 @@ async function insertRemote(
     }
 
     // Normalizaciones estrictas para comparación contable
-    const normalizeStr = (val: any): string => (val === null || val === undefined ? '' : String(val).trim());
-    const normalizeStrCase = (val: any): string => normalizeStr(val).toLowerCase();
+    const normalizeStr = (val: any): string =>
+      val === null || val === undefined ? "" : String(val).trim();
+    const normalizeStrCase = (val: any): string =>
+      normalizeStr(val).toLowerCase();
     const normalizeNullable = (val: any): string | null => {
       const s = normalizeStr(val);
-      return s === '' ? null : s.toLowerCase();
+      return s === "" ? null : s.toLowerCase();
     };
 
     // Comparar TODOS los campos que determinan el asiento contable
@@ -463,7 +511,10 @@ async function insertRemote(
 
     const remoteTime = new Date(row.fecha).getTime();
     const localTime = new Date(txDate).getTime();
-    const fechaMatch = !isNaN(remoteTime) && !isNaN(localTime) && Math.abs(remoteTime - localTime) <= 1000;
+    const fechaMatch =
+      !isNaN(remoteTime) &&
+      !isNaN(localTime) &&
+      Math.abs(remoteTime - localTime) <= 1000;
 
     const remoteCuenta = normalizeStrCase(row.cuenta);
     const localCuenta = normalizeStrCase(cuentaPrincipal);
@@ -490,7 +541,7 @@ async function insertRemote(
     const cicloMatch = remoteCiclo === localCiclo;
 
     const remoteDetalle = normalizeStr(row.detalle);
-    const localDetalle = normalizeStr(tx.comentario || tx.detalle || '');
+    const localDetalle = normalizeStr(tx.comentario || tx.detalle || "");
     const detalleMatch = remoteDetalle === localDetalle;
 
     if (
@@ -514,7 +565,7 @@ async function insertRemote(
       `Cuenta: ${row.cuenta} vs ${cuentaPrincipal}, Origen: ${row.cuenta_origen} vs ${cuentaOrigen}, ` +
       `Destino: ${row.cuenta_destino} vs ${cuentaDestino}, Macro: ${row.macro_categoria} vs ${macroValue}, ` +
       `Sub: ${row.subcategoria} vs ${subValue}, Ciclo: ${row.ciclo} vs ${canonicalCycle}, ` +
-      `Detalle: "${row.detalle}" vs "${tx.comentario || tx.detalle || ''}"`;
+      `Detalle: "${row.detalle}" vs "${tx.comentario || tx.detalle || ""}"`;
 
     dispatchSupabaseSyncError(reason);
     return {
@@ -530,7 +581,7 @@ async function insertRemote(
     throw error;
   }
 
-  return { confirmed: false, reason: 'Estado de inserción indeterminado' };
+  return { confirmed: false, reason: "Estado de inserción indeterminado" };
 }
 
 // ── Guardado de Transacción con Contingencia Offline ──────────────────────────
@@ -539,7 +590,8 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
   const { data: sessionData } = await supabase.auth.getSession();
   const session = sessionData?.session;
   if (!session || !session.user?.id) {
-    const errMsg = '42501: No se puede registrar transacción sin sesión autenticada en Supabase Auth';
+    const errMsg =
+      "42501: No se puede registrar transacción sin sesión autenticada en Supabase Auth";
     dispatchSupabaseSyncError(errMsg);
     throw new Error(errMsg);
   }
@@ -549,22 +601,24 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
   let cuentaOrigen: string | null = null;
   let cuentaDestino: string | null = null;
 
-  if (tx.tipo === 'GASTO') {
+  if (tx.tipo === "GASTO") {
     cuentaOrigen = tx.cuentaOrigen || tx.cuenta || null;
-    cuentaDestino = null;
-  } else if (tx.tipo === 'INGRESO') {
+    cuentaDestino = tx.cuentaDestino ? tx.cuentaDestino : null;
+  } else if (tx.tipo === "INGRESO") {
     cuentaOrigen = null;
     cuentaDestino = tx.cuentaDestino || tx.cuenta || null;
-  } else if (tx.tipo === 'TRANSFERENCIA') {
+  } else if (tx.tipo === "TRANSFERENCIA") {
     cuentaOrigen = tx.cuentaOrigen || null;
     cuentaDestino = tx.cuentaDestino || null;
-  } else if (tx.tipo === 'AJUSTE') {
+  } else if (tx.tipo === "AJUSTE") {
     cuentaOrigen = tx.cuentaOrigen || null;
     cuentaDestino = tx.cuentaDestino || null;
   }
 
-  cuentaOrigen = cuentaOrigen && cuentaOrigen.trim() !== '' ? cuentaOrigen.trim() : null;
-  cuentaDestino = cuentaDestino && cuentaDestino.trim() !== '' ? cuentaDestino.trim() : null;
+  cuentaOrigen =
+    cuentaOrigen && cuentaOrigen.trim() !== "" ? cuentaOrigen.trim() : null;
+  cuentaDestino =
+    cuentaDestino && cuentaDestino.trim() !== "" ? cuentaDestino.trim() : null;
   const cleanMonto = Math.max(1, Math.trunc(Math.round(Number(tx.monto) || 0)));
 
   const fullTx: Transaccion = {
@@ -579,8 +633,8 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
   applyOptimisticTransaction(fullTx);
 
   // 2. Serializar inserción online pasando por runOnlineMutation bajo el lock de la cola
-  const res = await runOnlineMutation('insert', fullTx);
-  if (res.status === 'confirmed') {
+  const res = await runOnlineMutation("insert", fullTx);
+  if (res.status === "confirmed") {
     markTransactionSynced(tx.id, true);
   } else {
     markTransactionSynced(tx.id, false);
@@ -590,25 +644,27 @@ export async function saveTransaction(tx: Transaccion): Promise<void> {
   }
 }
 
-
 // ── Helper para Escrituras Online Serializadas con la Cola ──────────────────
 
 export type OnlineMutationResult =
-  | { status: 'confirmed'; mutationId?: string }
-  | { status: 'pending'; mutationId: string; reason?: string };
+  | { status: "confirmed"; mutationId?: string }
+  | { status: "pending"; mutationId: string; reason?: string };
 
 /** Helper que serializa escrituras online sobre entidades (insert, update, delete) bajo el lock de la cola */
 async function runOnlineMutation(
-  op: 'insert' | 'update' | 'delete',
+  op: "insert" | "update" | "delete",
   entityOrId: Transaccion | string | number,
-  patch?: Partial<Transaccion>
+  patch?: Partial<Transaccion>,
 ): Promise<OnlineMutationResult> {
-  const isInsert = op === 'insert';
-  const strId = isInsert ? String((entityOrId as Transaccion).id) : String(entityOrId);
+  const isInsert = op === "insert";
+  const strId = isInsert
+    ? String((entityOrId as Transaccion).id)
+    : String(entityOrId);
   const { data: sessionData } = await supabase.auth.getSession();
   const session = sessionData?.session;
   if (!session || !session.user?.id) {
-    const errMsg = '42501: Rechazado: no se puede ejecutar mutación online sin sesión autenticada';
+    const errMsg =
+      "42501: Rechazado: no se puede ejecutar mutación online sin sesión autenticada";
     dispatchSupabaseSyncError(errMsg);
     throw new Error(errMsg);
   }
@@ -623,104 +679,119 @@ async function runOnlineMutation(
       // 1. Dentro del lock, leer mutaciones activas de este dueño
       const userQueue = await getQueuedMutationsUnlocked(currentUserId);
       const entityMutations = userQueue.filter(
-        m => (m.op === 'insert' ? String(m.tx.id) : String(m.id)) === strId
+        (m) => (m.op === "insert" ? String(m.tx.id) : String(m.id)) === strId,
       );
 
-      if (op === 'insert') {
+      if (op === "insert") {
         const tx = entityOrId as Transaccion;
 
         // a. Si hay un insert pendiente con el mismo id y distinto mutationId:
         // no encolar segundo insert; devolver error de conflicto claro
-        const pendingInsert = entityMutations.find(m => m.op === 'insert');
+        const pendingInsert = entityMutations.find((m) => m.op === "insert");
         if (pendingInsert && pendingInsert.mutationId !== assignedMutationId) {
           throw new Error(
-            `Conflicto: la transacción ${strId} ya está pendiente de creación en cola (mutationId: ${pendingInsert.mutationId})`
+            `Conflicto: la transacción ${strId} ya está pendiente de creación en cola (mutationId: ${pendingInsert.mutationId})`,
           );
         }
 
         // b. Si hay un delete o update pendiente para ese id:
         // encolar el insert DETRÁS (con ownerUserId y mutationId propios) y devolver "pendiente". No enviar online.
-        const hasPendingDeleteOrUpdate = entityMutations.some(m => m.op === 'delete' || m.op === 'update');
+        const hasPendingDeleteOrUpdate = entityMutations.some(
+          (m) => m.op === "delete" || m.op === "update",
+        );
         if (hasPendingDeleteOrUpdate) {
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
-            op: 'insert',
+            op: "insert",
             tx: { ...tx, sincronizado: false },
           });
           return {
-            status: 'pending',
+            status: "pending",
             mutationId: assignedMutationId,
-            reason: 'Inserción encolada tras operaciones previas (delete/update) pendientes para esta entidad',
+            reason:
+              "Inserción encolada tras operaciones previas (delete/update) pendientes para esta entidad",
           };
         }
 
         // c. Si no hay pendientes: llamar a insertRemote y retirar solo con confirmación explícita
         try {
-          const res = await insertRemote(tx, lockSignal, assignedMutationId, currentUserId);
+          const res = await insertRemote(
+            tx,
+            lockSignal,
+            assignedMutationId,
+            currentUserId,
+          );
           if (res && res.confirmed) {
-            return { status: 'confirmed', mutationId: assignedMutationId };
+            return { status: "confirmed", mutationId: assignedMutationId };
           }
 
           // No confirmado o con conflicto devuelto por verificación
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
-            op: 'insert',
+            op: "insert",
             tx: { ...tx, user_id: currentUserId, sincronizado: false },
-            status: res?.conflict ? 'conflict' : 'pending',
+            status: res?.conflict ? "conflict" : "pending",
             conflictReason: res?.reason,
           });
           if (res?.reason) {
             dispatchSupabaseSyncError(res.reason);
           }
           return {
-            status: 'pending',
+            status: "pending",
             mutationId: assignedMutationId,
-            reason: res?.reason || 'Inserción remota no confirmada explícitamente',
+            reason:
+              res?.reason || "Inserción remota no confirmada explícitamente",
           };
         } catch (remoteErr: any) {
           dispatchSupabaseSyncError(remoteErr);
           // Si el lease se pierde durante la petición online (signal abortado), tratar el resultado como incierto:
           // encolar la operación con su mutationId. El replay es seguro por idempotencia (client_mutation_id).
-          console.warn(`Error o aborto en inserción online (${strId}), encolando:`, remoteErr);
+          console.warn(
+            `Error o aborto en inserción online (${strId}), encolando:`,
+            remoteErr,
+          );
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
-            op: 'insert',
+            op: "insert",
             tx: { ...tx, user_id: currentUserId, sincronizado: false },
           });
           return {
-            status: 'pending',
+            status: "pending",
             mutationId: assignedMutationId,
-            reason: remoteErr?.message || 'Error de red o aborto durante inserción online',
+            reason:
+              remoteErr?.message ||
+              "Error de red o aborto durante inserción online",
           };
         }
-      } else if (op === 'update') {
+      } else if (op === "update") {
         const hasPending = entityMutations.length > 0;
         if (hasPending) {
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
-            op: 'update',
+            op: "update",
             id: strId,
             patch: patch || {},
           });
           return {
-            status: 'pending',
+            status: "pending",
             mutationId: assignedMutationId,
-            reason: 'Operación encolada porque existen mutaciones previas pendientes para esta entidad',
+            reason:
+              "Operación encolada porque existen mutaciones previas pendientes para esta entidad",
           };
         }
 
         try {
           const payload = formatUpdatePayload(patch || {});
           let updateQuery = supabase
-            .from('transacciones')
+            .from("transacciones")
             .update(payload)
-            .eq('id', strId)
-            .eq('user_id', currentUserId)
-            .select('id,user_id');
+            .eq("id", strId)
+            .eq("user_id", currentUserId)
+            .select("id,user_id");
 
           if (lockSignal) {
             updateQuery = updateQuery.abortSignal(lockSignal);
@@ -736,16 +807,18 @@ async function runOnlineMutation(
             await enqueueMutationUnlocked({
               mutationId: assignedMutationId,
               ownerUserId: currentUserId,
-              op: 'update',
+              op: "update",
               id: strId,
               patch: patch || {},
-              status: 'conflict',
-              conflictReason: 'Update online devolvió 0 filas (fila no encontrada o bloqueo RLS)',
+              status: "conflict",
+              conflictReason:
+                "Update online devolvió 0 filas (fila no encontrada o bloqueo RLS)",
             });
             return {
-              status: 'pending',
+              status: "pending",
               mutationId: assignedMutationId,
-              reason: 'Update no afectó filas en servidor; guardado en cola como pendiente',
+              reason:
+                "Update no afectó filas en servidor; guardado en cola como pendiente",
             };
           }
 
@@ -753,34 +826,40 @@ async function runOnlineMutation(
             await enqueueMutationUnlocked({
               mutationId: assignedMutationId,
               ownerUserId: currentUserId,
-              op: 'update',
+              op: "update",
               id: strId,
               patch: patch || {},
-              status: 'conflict',
+              status: "conflict",
               conflictReason: `Mismatch de user_id devuelto (${data[0].user_id}) vs dueño (${currentUserId})`,
             });
             return {
-              status: 'pending',
+              status: "pending",
               mutationId: assignedMutationId,
-              reason: 'Conflicto de usuario en respuesta de actualización remota',
+              reason:
+                "Conflicto de usuario en respuesta de actualización remota",
             };
           }
 
-          return { status: 'confirmed', mutationId: assignedMutationId };
+          return { status: "confirmed", mutationId: assignedMutationId };
         } catch (remoteErr: any) {
           dispatchSupabaseSyncError(remoteErr);
-          console.warn(`Error en envío online de update (${strId}), encolando:`, remoteErr);
+          console.warn(
+            `Error en envío online de update (${strId}), encolando:`,
+            remoteErr,
+          );
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
-            op: 'update',
+            op: "update",
             id: strId,
             patch: patch || {},
           });
           return {
-            status: 'pending',
+            status: "pending",
             mutationId: assignedMutationId,
-            reason: remoteErr?.message || 'Error de red o backend al ejecutar mutación online',
+            reason:
+              remoteErr?.message ||
+              "Error de red o backend al ejecutar mutación online",
           };
         }
       } else {
@@ -790,23 +869,24 @@ async function runOnlineMutation(
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
-            op: 'delete',
+            op: "delete",
             id: strId,
           });
           return {
-            status: 'pending',
+            status: "pending",
             mutationId: assignedMutationId,
-            reason: 'Operación encolada porque existen mutaciones previas pendientes para esta entidad',
+            reason:
+              "Operación encolada porque existen mutaciones previas pendientes para esta entidad",
           };
         }
 
         try {
           let deleteQuery = supabase
-            .from('transacciones')
+            .from("transacciones")
             .delete()
-            .eq('id', strId)
-            .eq('user_id', currentUserId)
-            .select('id');
+            .eq("id", strId)
+            .eq("user_id", currentUserId)
+            .select("id");
 
           if (lockSignal) {
             deleteQuery = deleteQuery.abortSignal(lockSignal);
@@ -822,44 +902,54 @@ async function runOnlineMutation(
             await enqueueMutationUnlocked({
               mutationId: assignedMutationId,
               ownerUserId: currentUserId,
-              op: 'delete',
+              op: "delete",
               id: strId,
-              status: 'conflict',
-              conflictReason: 'Delete online devolvió 0 filas (fila no encontrada o bloqueo RLS)',
+              status: "conflict",
+              conflictReason:
+                "Delete online devolvió 0 filas (fila no encontrada o bloqueo RLS)",
             });
             return {
-              status: 'pending',
+              status: "pending",
               mutationId: assignedMutationId,
-              reason: 'Delete no afectó filas en servidor; guardado en cola como pendiente',
+              reason:
+                "Delete no afectó filas en servidor; guardado en cola como pendiente",
             };
           }
 
-          return { status: 'confirmed', mutationId: assignedMutationId };
+          return { status: "confirmed", mutationId: assignedMutationId };
         } catch (remoteErr: any) {
           dispatchSupabaseSyncError(remoteErr);
-          console.warn(`Error en envío online de delete (${strId}), encolando:`, remoteErr);
+          console.warn(
+            `Error en envío online de delete (${strId}), encolando:`,
+            remoteErr,
+          );
           await enqueueMutationUnlocked({
             mutationId: assignedMutationId,
             ownerUserId: currentUserId,
-            op: 'delete',
+            op: "delete",
             id: strId,
           });
           return {
-            status: 'pending',
+            status: "pending",
             mutationId: assignedMutationId,
-            reason: remoteErr?.message || 'Error de red o backend al ejecutar mutación online',
+            reason:
+              remoteErr?.message ||
+              "Error de red o backend al ejecutar mutación online",
           };
         }
       }
     }, SHORT_LOCK_TIMEOUT_MS);
   } catch (lockErr: any) {
     // Si no se obtuvo el lock a tiempo: NUNCA enviar online sin lock.
-    console.warn(`Timeout de lock en runOnlineMutation (${op} ${strId}), encolando:`, lockErr);
-    if (op === 'insert') {
+    console.warn(
+      `Timeout de lock en runOnlineMutation (${op} ${strId}), encolando:`,
+      lockErr,
+    );
+    if (op === "insert") {
       await enqueueMutation({
         mutationId: assignedMutationId,
         ownerUserId: currentUserId,
-        op: 'insert',
+        op: "insert",
         tx: { ...(entityOrId as Transaccion), sincronizado: false },
       });
     } else {
@@ -868,14 +958,15 @@ async function runOnlineMutation(
         ownerUserId: currentUserId,
         op,
         id: strId,
-        patch: op === 'update' ? patch : undefined,
+        patch: op === "update" ? patch : undefined,
       } as QueuedMutationInput);
     }
 
     return {
-      status: 'pending',
+      status: "pending",
       mutationId: assignedMutationId,
-      reason: 'No se obtuvo el lock a tiempo; guardado en cola para sincronización posterior',
+      reason:
+        "No se obtuvo el lock a tiempo; guardado en cola para sincronización posterior",
     };
   }
 }
@@ -885,7 +976,7 @@ async function runOnlineMutation(
 export async function deleteTransaction(id: number | string): Promise<boolean> {
   const strId = String(id);
   const list = getTransacciones();
-  const tx = list.find(t => String(t.id) === strId);
+  const tx = list.find((t) => String(t.id) === strId);
 
   if (tx) {
     let current: AppData = { ...DEFAULT_APPDATA };
@@ -902,29 +993,53 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
     const saldos = { ...DEFAULT_SALDOS, ...(current.saldos || {}) };
     const gastadoPorSubcat = { ...(current.gastadoPorSubcat || {}) };
     const gastadoPorMacro = { ...(current.gastadoPorMacro || {}) };
-    const kpis = { ...(current.kpis || { ingresos: 0, gastos: 0, balance: 0, tasaAhorro: 0, saldoRemunerados: 0, balanceDisponible: 0 }) };
+    const kpis = {
+      ...(current.kpis || {
+        ingresos: 0,
+        gastos: 0,
+        balance: 0,
+        tasaAhorro: 0,
+        saldoRemunerados: 0,
+        balanceDisponible: 0,
+      }),
+    };
 
     const monto = sanitizeAmount(tx.monto);
-    const subcatNombre = tx.subcategoria || tx.sub || '';
-    const macroNombre = tx.categoria || tx.macro || '';
-    const cuentaNombre = tx.cuenta || tx.cuentaOrigen || '';
-    const cuentaDestino = tx.cuentaDestino || '';
+    const subcatNombre = tx.subcategoria || tx.sub || "";
+    const macroNombre = tx.categoria || tx.macro || "";
+    const cuentaNombre = tx.cuenta || tx.cuentaOrigen || "";
+    const cuentaDestino = tx.cuentaDestino || "";
 
-    if (tx.tipo === 'GASTO') {
-      if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
-      if (subcatNombre) gastadoPorSubcat[subcatNombre] = Math.max(0, (gastadoPorSubcat[subcatNombre] ?? 0) - monto);
-      if (macroNombre) gastadoPorMacro[macroNombre] = Math.max(0, (gastadoPorMacro[macroNombre] ?? 0) - monto);
+    if (tx.tipo === "GASTO") {
+      if (cuentaNombre)
+        saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
+      if (cuentaDestino)
+        saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) - monto;
+      if (subcatNombre)
+        gastadoPorSubcat[subcatNombre] = Math.max(
+          0,
+          (gastadoPorSubcat[subcatNombre] ?? 0) - monto,
+        );
+      if (macroNombre)
+        gastadoPorMacro[macroNombre] = Math.max(
+          0,
+          (gastadoPorMacro[macroNombre] ?? 0) - monto,
+        );
       kpis.gastos = Math.max(0, (kpis.gastos ?? 0) - monto);
-    } else if (tx.tipo === 'INGRESO') {
-      if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
+    } else if (tx.tipo === "INGRESO") {
+      if (cuentaNombre)
+        saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) - monto;
       kpis.ingresos = Math.max(0, (kpis.ingresos ?? 0) - monto);
-    } else if (tx.tipo === 'TRANSFERENCIA') {
-      if (cuentaNombre) saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
-      if (cuentaDestino) saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) - monto;
+    } else if (tx.tipo === "TRANSFERENCIA") {
+      if (cuentaNombre)
+        saldos[cuentaNombre] = (saldos[cuentaNombre] ?? 0) + monto;
+      if (cuentaDestino)
+        saldos[cuentaDestino] = (saldos[cuentaDestino] ?? 0) - monto;
     }
 
     kpis.balance = (kpis.ingresos ?? 0) - (kpis.gastos ?? 0);
-    kpis.tasaAhorro = kpis.ingresos > 0 ? (kpis.balance / kpis.ingresos) * 100 : 0;
+    kpis.tasaAhorro =
+      kpis.ingresos > 0 ? (kpis.balance / kpis.ingresos) * 100 : 0;
 
     const updatedData: AppData = {
       ...current,
@@ -936,58 +1051,90 @@ export async function deleteTransaction(id: number | string): Promise<boolean> {
     };
 
     try {
-      localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: updatedData.timestamp, data: updatedData }));
+      localStorage.setItem(
+        APPDATA_CACHE_KEY,
+        JSON.stringify({ timestamp: updatedData.timestamp, data: updatedData }),
+      );
     } catch {
       /* ignore */
     }
 
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: updatedData }));
-      window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: updatedData.saldos }));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("finanzas_appdata_updated", { detail: updatedData }),
+      );
+      window.dispatchEvent(
+        new CustomEvent("finanzas_saldos_updated", {
+          detail: updatedData.saldos,
+        }),
+      );
     }
   }
 
-  const remainingTxs = list.filter(t => String(t.id) !== strId);
+  const remainingTxs = list.filter((t) => String(t.id) !== strId);
   saveTransacciones(remainingTxs);
 
   // Ejecución serializada con la cola bajo lock
-  const res = await runOnlineMutation('delete', strId);
-  return res.status === 'confirmed';
+  const res = await runOnlineMutation("delete", strId);
+  return res.status === "confirmed";
 }
-
 
 // ── Actualización de Transacción con Contingencia Offline ─────────────────────
 
-function formatUpdatePayload(updatedData: Partial<Transaccion>): Record<string, any> {
-  const cuenta = updatedData.cuenta ? updatedData.cuenta.trim() : '';
-  const macroCategoria = updatedData.macroCategoria || updatedData.categoria || updatedData.macro || '';
-  const subcategoria = updatedData.subcategoria || updatedData.sub || '';
-  const detalle = updatedData.comentario !== undefined ? updatedData.comentario : (updatedData.detalle ?? '');
+function formatUpdatePayload(
+  updatedData: Partial<Transaccion>,
+): Record<string, any> {
+  const cuenta = updatedData.cuenta ? updatedData.cuenta.trim() : "";
+  const macroCategoria =
+    updatedData.macroCategoria ||
+    updatedData.categoria ||
+    updatedData.macro ||
+    "";
+  const subcategoria = updatedData.subcategoria || updatedData.sub || "";
+  const detalle =
+    updatedData.comentario !== undefined
+      ? updatedData.comentario
+      : (updatedData.detalle ?? "");
 
   let cuentaOrigen: string | null = null;
   let cuentaDestino: string | null = null;
 
-  if (updatedData.tipo === 'GASTO') {
-    cuentaOrigen = cuenta || null;
-    cuentaDestino = null;
-  } else if (updatedData.tipo === 'INGRESO') {
+  if (updatedData.tipo === "GASTO") {
+    cuentaOrigen = updatedData.cuentaOrigen || cuenta || null;
+    cuentaDestino = updatedData.cuentaDestino || null;
+  } else if (updatedData.tipo === "INGRESO") {
     cuentaOrigen = null;
-    cuentaDestino = cuenta || null;
+    cuentaDestino = updatedData.cuentaDestino || cuenta || null;
   } else {
-    cuentaOrigen = updatedData.cuentaOrigen && updatedData.cuentaOrigen.trim() !== '' ? updatedData.cuentaOrigen.trim() : null;
-    cuentaDestino = updatedData.cuentaDestino && updatedData.cuentaDestino.trim() !== '' ? updatedData.cuentaDestino.trim() : null;
+    cuentaOrigen =
+      updatedData.cuentaOrigen && updatedData.cuentaOrigen.trim() !== ""
+        ? updatedData.cuentaOrigen.trim()
+        : null;
+    cuentaDestino =
+      updatedData.cuentaDestino && updatedData.cuentaDestino.trim() !== ""
+        ? updatedData.cuentaDestino.trim()
+        : null;
   }
 
   const payload: Record<string, any> = {};
 
   if (updatedData.monto !== undefined) {
-    payload.monto = Math.max(1, Math.trunc(Math.round(Number(updatedData.monto) || 0)));
+    payload.monto = Math.max(
+      1,
+      Math.trunc(Math.round(Number(updatedData.monto) || 0)),
+    );
   }
   if (macroCategoria) payload.macro_categoria = macroCategoria.trim();
   if (subcategoria) payload.subcategoria = subcategoria.trim();
   if (cuenta) payload.cuenta = cuenta;
-  if (cuentaOrigen !== undefined) payload.cuenta_origen = cuentaOrigen && cuentaOrigen.trim() !== '' ? cuentaOrigen.trim() : null;
-  if (cuentaDestino !== undefined) payload.cuenta_destino = cuentaDestino && cuentaDestino.trim() !== '' ? cuentaDestino.trim() : null;
+  if (cuentaOrigen !== undefined)
+    payload.cuenta_origen =
+      cuentaOrigen && cuentaOrigen.trim() !== "" ? cuentaOrigen.trim() : null;
+  if (cuentaDestino !== undefined)
+    payload.cuenta_destino =
+      updatedData.tipo === "INGRESO"
+        ? (updatedData.cuentaDestino || updatedData.cuenta || null)
+        : (updatedData.cuentaDestino || null);
   if (detalle !== undefined) payload.detalle = detalle;
   if (updatedData.tipo) payload.tipo = updatedData.tipo;
   if (updatedData.fecha) {
@@ -1000,18 +1147,21 @@ function formatUpdatePayload(updatedData: Partial<Transaccion>): Record<string, 
 
 export async function updateTransaction(
   id: string | number,
-  updatedData: Partial<Transaccion>
+  updatedData: Partial<Transaccion>,
 ): Promise<boolean> {
   const strId = String(id);
 
   // Actualización optimista local en memoria
   const list = getTransacciones();
-  const updatedList = list.map(t => {
+  const updatedList = list.map((t) => {
     if (String(t.id) === strId) {
       return {
         ...t,
         ...updatedData,
-        monto: updatedData.monto !== undefined ? Math.max(1, Math.round(sanitizeAmount(updatedData.monto))) : t.monto,
+        monto:
+          updatedData.monto !== undefined
+            ? Math.max(1, Math.round(sanitizeAmount(updatedData.monto)))
+            : t.monto,
       };
     }
     return t;
@@ -1019,14 +1169,13 @@ export async function updateTransaction(
   saveTransacciones(updatedList);
 
   // Ejecución serializada con la cola bajo lock
-  const res = await runOnlineMutation('update', strId, updatedData);
-  if (res.status === 'confirmed' || res.status === 'pending') {
+  const res = await runOnlineMutation("update", strId, updatedData);
+  if (res.status === "confirmed" || res.status === "pending") {
     await fetchAppData(true);
     return true;
   }
   return false;
 }
-
 
 // ── Motor de Gastos Recurrentes ───────────────────────────────────────────────
 
@@ -1041,8 +1190,10 @@ export async function processRecurringExpenses(): Promise<number> {
   try {
     // 1. Intentar RPC atómica en PostgreSQL
     try {
-      const { data: rpcCount, error: rpcErr } = await supabase.rpc('process_recurring_expenses_rpc');
-      if (!rpcErr && typeof rpcCount === 'number') {
+      const { data: rpcCount, error: rpcErr } = await supabase.rpc(
+        "process_recurring_expenses_rpc",
+      );
+      if (!rpcErr && typeof rpcCount === "number") {
         return rpcCount;
       }
     } catch {
@@ -1054,9 +1205,9 @@ export async function processRecurringExpenses(): Promise<number> {
     const cycleLabel = getCycleLabel();
 
     const { data: recurrentes, error } = await supabase
-      .from('gastos_recurrentes')
-      .select('*')
-      .eq('activo', true);
+      .from("gastos_recurrentes")
+      .select("*")
+      .eq("activo", true);
 
     if (error || !recurrentes || recurrentes.length === 0) {
       return 0;
@@ -1072,45 +1223,51 @@ export async function processRecurringExpenses(): Promise<number> {
       const diaPagoEfectivo = Math.min(diaPago, daysInMonth);
       const ultimoCiclo = r.ultimo_ciclo_ejecutado;
 
-      if (diaActual >= diaPagoEfectivo && ultimoCiclo !== cycleId && ultimoCiclo !== cycleLabel) {
+      if (
+        diaActual >= diaPagoEfectivo &&
+        ultimoCiclo !== cycleId &&
+        ultimoCiclo !== cycleLabel
+      ) {
         const deterministicId = `REC_${r.id}_${cycleId}`;
 
         const txPayload: Transaccion = {
           id: deterministicId,
           fecha: new Date().toISOString(),
-          tipo: 'GASTO',
+          tipo: "GASTO",
           monto: sanitizeAmount(r.monto),
-          macroCategoria: r.macro_categoria || '',
-          categoria: r.macro_categoria || '',
-          macro: r.macro_categoria || '',
-          subcategoria: r.subcategoria || '',
-          sub: r.subcategoria || '',
-          cuenta: r.cuenta || '',
-          cuentaOrigen: r.cuenta || '',
-          cuentaDestino: '',
+          macroCategoria: r.macro_categoria || "",
+          categoria: r.macro_categoria || "",
+          macro: r.macro_categoria || "",
+          subcategoria: r.subcategoria || "",
+          sub: r.subcategoria || "",
+          cuenta: r.cuenta || "",
+          cuentaOrigen: r.cuenta || "",
+          cuentaDestino: "",
           detalle: `Débito automático programado: ${r.nombre}`,
           comentario: `Débito automático programado: ${r.nombre}`,
           sincronizado: false,
         };
 
-        const res = await runOnlineMutation('insert', txPayload);
+        const res = await runOnlineMutation("insert", txPayload);
 
-        if (res.status === 'confirmed') {
+        if (res.status === "confirmed") {
           executedCount++;
           // Sellar con ID canónico en Supabase
           await supabase
-            .from('gastos_recurrentes')
+            .from("gastos_recurrentes")
             .update({ ultimo_ciclo_ejecutado: cycleId })
-            .eq('id', r.id);
+            .eq("id", r.id);
         } else {
-          console.warn(`Gasto recurrente ${r.nombre} encolado o retenido (${res.reason}); no se sella ciclo aún.`);
+          console.warn(
+            `Gasto recurrente ${r.nombre} encolado o retenido (${res.reason}); no se sella ciclo aún.`,
+          );
         }
       }
     }
 
     return executedCount;
   } catch (err) {
-    console.warn('Advertencia en processRecurringExpenses:', err);
+    console.warn("Advertencia en processRecurringExpenses:", err);
     return 0;
   } finally {
     isProcessingRecurring = false;
@@ -1120,9 +1277,9 @@ export async function processRecurringExpenses(): Promise<number> {
 export async function getGastosRecurrentes(): Promise<GastoRecurrente[]> {
   try {
     const { data, error } = await supabase
-      .from('gastos_recurrentes')
-      .select('*')
-      .order('dia_pago', { ascending: true });
+      .from("gastos_recurrentes")
+      .select("*")
+      .order("dia_pago", { ascending: true });
 
     if (error || !data) return [];
 
@@ -1130,15 +1287,15 @@ export async function getGastosRecurrentes(): Promise<GastoRecurrente[]> {
       id: r.id,
       nombre: r.nombre,
       monto: sanitizeAmount(r.monto),
-      macroCategoria: r.macro_categoria || '',
-      subcategoria: r.subcategoria || '',
-      cuenta: r.cuenta || '',
+      macroCategoria: r.macro_categoria || "",
+      subcategoria: r.subcategoria || "",
+      cuenta: r.cuenta || "",
       diaPago: Number(r.dia_pago) || 1,
       activo: r.activo !== false,
       ultimoCicloEjecutado: r.ultimo_ciclo_ejecutado || undefined,
     }));
   } catch (err) {
-    console.warn('Error obteniendo gastos recurrentes:', err);
+    console.warn("Error obteniendo gastos recurrentes:", err);
     return [];
   }
 }
@@ -1167,30 +1324,33 @@ export async function saveGastoRecurrente(gasto: {
     };
 
     const { error } = await supabase
-      .from('gastos_recurrentes')
+      .from("gastos_recurrentes")
       .upsert([payload]);
 
     if (error) throw error;
     await fetchAppData(true);
     return true;
   } catch (err) {
-    console.error('Error guardando gasto recurrente:', err);
+    console.error("Error guardando gasto recurrente:", err);
     throw err;
   }
 }
 
-export async function toggleGastoRecurrente(id: string, activo: boolean): Promise<boolean> {
+export async function toggleGastoRecurrente(
+  id: string,
+  activo: boolean,
+): Promise<boolean> {
   try {
     const { error } = await supabase
-      .from('gastos_recurrentes')
+      .from("gastos_recurrentes")
       .update({ activo })
-      .eq('id', id);
+      .eq("id", id);
 
     if (error) throw error;
     await fetchAppData(true);
     return true;
   } catch (err) {
-    console.error('Error alternando estado de gasto recurrente:', err);
+    console.error("Error alternando estado de gasto recurrente:", err);
     throw err;
   }
 }
@@ -1198,70 +1358,88 @@ export async function toggleGastoRecurrente(id: string, activo: boolean): Promis
 export async function deleteGastoRecurrente(id: string): Promise<boolean> {
   try {
     const { error } = await supabase
-      .from('gastos_recurrentes')
+      .from("gastos_recurrentes")
       .delete()
-      .eq('id', id);
+      .eq("id", id);
 
     if (error) throw error;
     await fetchAppData(true);
     return true;
   } catch (err) {
-    console.error('Error eliminando gasto recurrente:', err);
+    console.error("Error eliminando gasto recurrente:", err);
     throw err;
   }
 }
 
-
-export async function createCartera(cartera: Omit<Cartera, 'id' | 'saldo_actual'>): Promise<boolean> {
+export async function createCartera(
+  cartera: Omit<Cartera, "id" | "saldo_actual">,
+): Promise<boolean> {
   try {
-    const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
+    const currentUserId =
+      (await resolveCurrentUserId()) ||
+      (await supabase.auth.getUser()).data.user?.id;
     if (!currentUserId) {
-      throw new Error('No se puede crear cartera sin sesión autenticada');
+      throw new Error("No se puede crear cartera sin sesión autenticada");
     }
 
-    const uuid = typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
-      : Math.random().toString(36).slice(2, 10);
+    const uuid =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID().replace(/-/g, "").slice(0, 12)
+        : Math.random().toString(36).slice(2, 10);
     const id = `wallet_${uuid}`;
 
-    const { data: existingCarteras } = await supabase.from('carteras').select('id');
-    const orden = cartera.orden ?? ((existingCarteras?.length || 0) + 1);
+    const { data: existingCarteras } = await supabase
+      .from("carteras")
+      .select("id");
+    const orden = cartera.orden ?? (existingCarteras?.length || 0) + 1;
 
-    const saldoInicial = Math.trunc(Number(cartera.saldo_inicial ?? cartera.saldo ?? 0));
+    const saldoInicial = Math.trunc(
+      Number(cartera.saldo_inicial ?? cartera.saldo ?? 0),
+    );
     const saldoActual = saldoInicial;
 
-    const { error } = await supabase.from('carteras').insert({
+    const { error } = await supabase.from("carteras").insert({
       id,
       user_id: currentUserId,
       nombre: cartera.nombre.trim(),
       tipo: cartera.tipo.toLowerCase(),
       saldo_inicial: saldoInicial,
       saldo_actual: saldoActual,
-      icono: cartera.icono || (cartera.tipo.toLowerCase() === 'credito' ? '💳' : '🏦'),
+      icono:
+        cartera.icono ||
+        (cartera.tipo.toLowerCase() === "credito" ? "💳" : "🏦"),
       orden,
       permite_gasto: cartera.permite_gasto !== false,
       activa: cartera.activa !== false,
       dia_corte: cartera.dia_corte != null ? Number(cartera.dia_corte) : null,
       dia_pago: cartera.dia_pago != null ? Number(cartera.dia_pago) : null,
-      limite_credito: cartera.limite_credito != null ? Math.trunc(Number(cartera.limite_credito)) : null,
+      limite_credito:
+        cartera.limite_credito != null
+          ? Math.trunc(Number(cartera.limite_credito))
+          : null,
     });
 
     if (error) {
-      console.error('Error insertando cartera en Supabase:', error);
+      console.error("Error insertando cartera en Supabase:", error);
       throw error;
     }
 
     await fetchAppData(true);
     return true;
   } catch (err) {
-    console.error('Error en createCartera:', err);
+    console.error("Error en createCartera:", err);
     throw err;
   }
 }
 
-export async function updateCartera(id: string, patch: Partial<Cartera>): Promise<boolean> {
+export async function updateCartera(
+  id: string,
+  patch: Partial<Cartera>,
+): Promise<boolean> {
   try {
-    const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
+    const currentUserId =
+      (await resolveCurrentUserId()) ||
+      (await supabase.auth.getUser()).data.user?.id;
     const updateData: Record<string, any> = {
       updated_at: new Date().toISOString(),
     };
@@ -1269,75 +1447,112 @@ export async function updateCartera(id: string, patch: Partial<Cartera>): Promis
     if (patch.nombre !== undefined) updateData.nombre = patch.nombre.trim();
     if (patch.tipo !== undefined) updateData.tipo = patch.tipo.toLowerCase();
     if (patch.icono !== undefined) updateData.icono = patch.icono;
-    if (patch.permite_gasto !== undefined) updateData.permite_gasto = patch.permite_gasto;
+    if (patch.permite_gasto !== undefined)
+      updateData.permite_gasto = patch.permite_gasto;
     if (patch.orden !== undefined) updateData.orden = patch.orden;
-    if (patch.dia_corte !== undefined) updateData.dia_corte = patch.dia_corte != null ? Number(patch.dia_corte) : null;
-    if (patch.dia_pago !== undefined) updateData.dia_pago = patch.dia_pago != null ? Number(patch.dia_pago) : null;
-    if (patch.limite_credito !== undefined) updateData.limite_credito = patch.limite_credito != null ? Math.trunc(Number(patch.limite_credito)) : null;
+    if (patch.dia_corte !== undefined)
+      updateData.dia_corte =
+        patch.dia_corte != null ? Number(patch.dia_corte) : null;
+    if (patch.dia_pago !== undefined)
+      updateData.dia_pago =
+        patch.dia_pago != null ? Number(patch.dia_pago) : null;
+    if (patch.limite_credito !== undefined)
+      updateData.limite_credito =
+        patch.limite_credito != null
+          ? Math.trunc(Number(patch.limite_credito))
+          : null;
     if (patch.activa !== undefined) updateData.activa = patch.activa;
-    if (patch.saldo_inicial !== undefined) updateData.saldo_inicial = Math.trunc(Number(patch.saldo_inicial));
+    if (patch.saldo_inicial !== undefined)
+      updateData.saldo_inicial = Math.trunc(Number(patch.saldo_inicial));
 
-    let query = supabase.from('carteras').update(updateData).eq('id', id);
+    let query = supabase.from("carteras").update(updateData).eq("id", id);
     if (currentUserId) {
-      query = query.eq('user_id', currentUserId);
+      query = query.eq("user_id", currentUserId);
     }
 
     const { error } = await query;
     if (error) {
-      console.error('Error actualizando cartera en Supabase:', error);
+      console.error("Error actualizando cartera en Supabase:", error);
       throw error;
     }
 
     await fetchAppData(true);
     return true;
   } catch (err) {
-    console.error('Error en updateCartera:', err);
+    console.error("Error en updateCartera:", err);
     throw err;
   }
 }
 
-export async function checkCarteraHasTransactions(nombre: string): Promise<number> {
-  const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
-  let origenQuery = supabase.from('transacciones').select('id', { count: 'exact', head: true }).eq('cuenta_origen', nombre);
-  let destinoQuery = supabase.from('transacciones').select('id', { count: 'exact', head: true }).eq('cuenta_destino', nombre);
-  let cuentaQuery = supabase.from('transacciones').select('id', { count: 'exact', head: true }).eq('cuenta', nombre);
+export async function checkCarteraHasTransactions(
+  nombre: string,
+): Promise<number> {
+  const currentUserId =
+    (await resolveCurrentUserId()) ||
+    (await supabase.auth.getUser()).data.user?.id;
+  let origenQuery = supabase
+    .from("transacciones")
+    .select("id", { count: "exact", head: true })
+    .eq("cuenta_origen", nombre);
+  let destinoQuery = supabase
+    .from("transacciones")
+    .select("id", { count: "exact", head: true })
+    .eq("cuenta_destino", nombre);
+  let cuentaQuery = supabase
+    .from("transacciones")
+    .select("id", { count: "exact", head: true })
+    .eq("cuenta", nombre);
 
   if (currentUserId) {
-    origenQuery = origenQuery.eq('user_id', currentUserId);
-    destinoQuery = destinoQuery.eq('user_id', currentUserId);
-    cuentaQuery = cuentaQuery.eq('user_id', currentUserId);
+    origenQuery = origenQuery.eq("user_id", currentUserId);
+    destinoQuery = destinoQuery.eq("user_id", currentUserId);
+    cuentaQuery = cuentaQuery.eq("user_id", currentUserId);
   }
 
-  const [origenRes, destinoRes, cuentaRes] = await Promise.all([origenQuery, destinoQuery, cuentaQuery]);
-  return (origenRes.count || 0) + (destinoRes.count || 0) + (cuentaRes.count || 0);
+  const [origenRes, destinoRes, cuentaRes] = await Promise.all([
+    origenQuery,
+    destinoQuery,
+    cuentaQuery,
+  ]);
+  return (
+    (origenRes.count || 0) + (destinoRes.count || 0) + (cuentaRes.count || 0)
+  );
 }
 
-export async function archiveOrDeleteCartera(id: string, nombre: string): Promise<{ action: 'archived' | 'deleted' }> {
+export async function archiveOrDeleteCartera(
+  id: string,
+  nombre: string,
+): Promise<{ action: "archived" | "deleted" }> {
   try {
-    const currentUserId = (await resolveCurrentUserId()) || (await supabase.auth.getUser()).data.user?.id;
+    const currentUserId =
+      (await resolveCurrentUserId()) ||
+      (await supabase.auth.getUser()).data.user?.id;
     const txCount = await checkCarteraHasTransactions(nombre);
 
     if (txCount > 0) {
-      let query = supabase.from('carteras').update({ activa: false, updated_at: new Date().toISOString() }).eq('id', id);
+      let query = supabase
+        .from("carteras")
+        .update({ activa: false, updated_at: new Date().toISOString() })
+        .eq("id", id);
       if (currentUserId) {
-        query = query.eq('user_id', currentUserId);
+        query = query.eq("user_id", currentUserId);
       }
       const { error } = await query;
       if (error) throw error;
       await fetchAppData(true);
-      return { action: 'archived' };
+      return { action: "archived" };
     } else {
-      let query = supabase.from('carteras').delete().eq('id', id);
+      let query = supabase.from("carteras").delete().eq("id", id);
       if (currentUserId) {
-        query = query.eq('user_id', currentUserId);
+        query = query.eq("user_id", currentUserId);
       }
       const { error } = await query;
       if (error) throw error;
       await fetchAppData(true);
-      return { action: 'deleted' };
+      return { action: "deleted" };
     }
   } catch (err) {
-    console.error('Error archivando o eliminando cartera:', err);
+    console.error("Error archivando o eliminando cartera:", err);
     throw err;
   }
 }
@@ -1353,7 +1568,11 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       if (raw) {
         const parsed = JSON.parse(raw) as { timestamp: number; data: AppData };
         if (Date.now() - parsed.timestamp < APPDATA_CACHE_TTL) {
-          return { ...parsed.data, fromCache: true, timestamp: parsed.timestamp };
+          return {
+            ...parsed.data,
+            fromCache: true,
+            timestamp: parsed.timestamp,
+          };
         }
       }
     } catch {
@@ -1366,12 +1585,22 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
   try {
     await processRecurringExpenses().catch(() => {});
 
-    const [carterasRes, catalogoRes, txsRes, recurrentesRes] = await Promise.all([
-      supabase.from('carteras').select('*').order('orden', { ascending: true, nullsFirst: false }),
-      supabase.from('catalogo_categorias').select('*').eq('activo', true),
-      supabase.from('transacciones').select('*').order('fecha', { ascending: false }),
-      supabase.from('gastos_recurrentes').select('*').order('dia_pago', { ascending: true }),
-    ]);
+    const [carterasRes, catalogoRes, txsRes, recurrentesRes] =
+      await Promise.all([
+        supabase
+          .from("carteras")
+          .select("*")
+          .order("orden", { ascending: true, nullsFirst: false }),
+        supabase.from("catalogo_categorias").select("*").eq("activo", true),
+        supabase
+          .from("transacciones")
+          .select("*")
+          .order("fecha", { ascending: false }),
+        supabase
+          .from("gastos_recurrentes")
+          .select("*")
+          .order("dia_pago", { ascending: true }),
+      ]);
 
     // Validación estricta de respuestas: Si alguna falla, lanzar y caer a caché
     if (carterasRes.error) throw carterasRes.error;
@@ -1396,25 +1625,27 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
 
     // CORRECCIÓN D: Si carterasData.length === 0, lanzar error para impedir sobrescribir caché con ceros
     if (carterasData.length === 0) {
-      throw new Error('Snapshot inválido: cero carteras retornadas');
+      throw new Error("Snapshot inválido: cero carteras retornadas");
     }
 
-    const gastosRecurrentes: GastoRecurrente[] = recurrentesData.map((r: any) => ({
-      id: r.id,
-      nombre: r.nombre,
-      monto: sanitizeAmount(r.monto),
-      macroCategoria: r.macro_categoria || '',
-      subcategoria: r.subcategoria || '',
-      cuenta: r.cuenta || '',
-      diaPago: Number(r.dia_pago) || 1,
-      activo: r.activo !== false,
-      ultimoCicloEjecutado: r.ultimo_ciclo_ejecutado || undefined,
-    }));
+    const gastosRecurrentes: GastoRecurrente[] = recurrentesData.map(
+      (r: any) => ({
+        id: r.id,
+        nombre: r.nombre,
+        monto: sanitizeAmount(r.monto),
+        macroCategoria: r.macro_categoria || "",
+        subcategoria: r.subcategoria || "",
+        cuenta: r.cuenta || "",
+        diaPago: Number(r.dia_pago) || 1,
+        activo: r.activo !== false,
+        ultimoCicloEjecutado: r.ultimo_ciclo_ejecutado || undefined,
+      }),
+    );
 
     const catalogo: CatalogoItem[] = catalogoData.map((c: any) => ({
       id: c.id ? String(c.id) : undefined,
-      macro_categoria: (c.macro_categoria || '').trim(),
-      subcategoria: (c.subcategoria || '').trim(),
+      macro_categoria: (c.macro_categoria || "").trim(),
+      subcategoria: (c.subcategoria || "").trim(),
       activo: c.activo !== false,
       medio_pago_sugerido: c.medio_pago_sugerido || undefined,
       presupuesto_base: sanitizeAmount(c.presupuesto_base),
@@ -1425,28 +1656,43 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     let balanceDisponible = 0;
 
     for (const c of carterasData) {
-      // CORRECCIÓN D: Saldo autoritativo estricto calculado por trigger en Supabase
-      const saldoAutoritativo = Math.trunc(Number(c.saldo_actual));
+      // Saldo autoritativo estricto calculado por trigger en Supabase con fallback contable
+      let saldo = Number(c.saldo_actual);
+      if (!Number.isFinite(saldo)) {
+        const entradas = transaccionesData
+          .filter((t: any) => t.cuenta_destino === c.nombre)
+          .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
+        const salidas = transaccionesData
+          .filter((t: any) => t.cuenta_origen === c.nombre)
+          .reduce((acc: number, t: any) => acc + Number(t.monto), 0);
+        saldo = (Number(c.saldo_inicial) || 0) + entradas - salidas;
+      }
+      const saldoAutoritativo = Math.trunc(saldo);
       if (!Number.isFinite(saldoAutoritativo)) {
-        throw new Error(`Saldo autoritativo inválido para cartera ${c.nombre}: ${c.saldo_actual}`);
+        throw new Error(
+          `Saldo autoritativo inválido para cartera ${c.nombre}: ${c.saldo_actual}`,
+        );
       }
 
       updatedSaldos[c.nombre] = saldoAutoritativo;
 
-      const tipoLower = (c.tipo || '').toLowerCase();
-      const nombreLower = (c.nombre || '').toLowerCase();
+      const tipoLower = (c.tipo || "").toLowerCase();
+      const nombreLower = (c.nombre || "").toLowerCase();
 
-      if (tipoLower.includes('remunerado') || nombreLower.includes('bolsillo')) {
+      if (
+        tipoLower.includes("remunerado") ||
+        nombreLower.includes("bolsillo")
+      ) {
         saldoRemunerados += saldoAutoritativo;
       }
 
       if (
-        tipoLower.includes('débito') ||
-        tipoLower.includes('debito') ||
-        tipoLower.includes('efectivo') ||
-        tipoLower.includes('billetera') ||
-        tipoLower.includes('líquido') ||
-        tipoLower.includes('liquido')
+        tipoLower.includes("débito") ||
+        tipoLower.includes("debito") ||
+        tipoLower.includes("efectivo") ||
+        tipoLower.includes("billetera") ||
+        tipoLower.includes("líquido") ||
+        tipoLower.includes("liquido")
       ) {
         balanceDisponible += saldoAutoritativo;
       }
@@ -1456,16 +1702,16 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       id: row.id ?? crypto.randomUUID(),
       tipo: row.tipo,
       monto: sanitizeAmount(row.monto),
-      categoria: row.macro_categoria || '',
-      macroCategoria: row.macro_categoria || '',
-      macro: row.macro_categoria || '',
-      subcategoria: row.subcategoria || '',
-      sub: row.subcategoria || '',
-      cuenta: row.cuenta || row.cuenta_origen || '',
-      cuentaOrigen: row.cuenta_origen || '',
-      cuentaDestino: row.cuenta_destino || '',
-      detalle: row.detalle || '',
-      comentario: row.detalle || '',
+      categoria: row.macro_categoria || "",
+      macroCategoria: row.macro_categoria || "",
+      macro: row.macro_categoria || "",
+      subcategoria: row.subcategoria || "",
+      sub: row.subcategoria || "",
+      cuenta: row.cuenta || row.cuenta_origen || "",
+      cuentaOrigen: row.cuenta_origen || "",
+      cuentaDestino: row.cuenta_destino || "",
+      detalle: row.detalle || "",
+      comentario: row.detalle || "",
       fecha: row.fecha || row.created_at || new Date().toISOString(),
       sincronizado: true,
     }));
@@ -1474,11 +1720,13 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const queue = await getQueuedMutations(currentUserId || undefined);
     const queueIds = new Set(
       queue
-        .filter(q => q.op === 'insert' && q.status !== 'orphan')
-        .map(q => (q as { op: 'insert'; tx: Transaccion }).tx.id)
-        .map(String)
+        .filter((q) => q.op === "insert" && q.status !== "orphan")
+        .map((q) => (q as { op: "insert"; tx: Transaccion }).tx.id)
+        .map(String),
     );
-    const pendingLocalTxs = getTransacciones().filter(t => queueIds.has(String(t.id)));
+    const pendingLocalTxs = getTransacciones().filter((t) =>
+      queueIds.has(String(t.id)),
+    );
 
     const mergedMap = new Map<number | string, Transaccion>();
     for (const t of remoteTxs) {
@@ -1490,41 +1738,47 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       }
     }
     const mergedList = Array.from(mergedMap.values()).sort(
-      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
     );
     saveTransacciones(mergedList);
 
-    const cicloTxs = mergedList.filter(t => isDateInCurrentCycle(t.fecha));
+    const cicloTxs = mergedList.filter((t) => isDateInCurrentCycle(t.fecha));
 
     let totalIngresos = 0;
     let totalGastos = 0;
 
     for (const tx of cicloTxs) {
       const monto = sanitizeAmount(tx.monto);
-      if (tx.tipo === 'GASTO') {
+      if (tx.tipo === "GASTO") {
         totalGastos += monto;
-      } else if (tx.tipo === 'INGRESO') {
+      } else if (tx.tipo === "INGRESO") {
         totalIngresos += monto;
       }
     }
 
     const presupuestos: PresupuestoItem[] = catalogoData.map((catRow: any) => {
-      const macro = (catRow.macro_categoria || '').trim();
-      const sub = (catRow.subcategoria || '').trim();
+      const macro = (catRow.macro_categoria || "").trim();
+      const sub = (catRow.subcategoria || "").trim();
       const presupuesto = sanitizeAmount(catRow.presupuesto_base);
 
-      const matchingTxs = cicloTxs.filter(t => {
-        if (t.tipo !== 'GASTO') return false;
-        const txSub = (t.subcategoria || t.sub || '').trim().toLowerCase();
+      const matchingTxs = cicloTxs.filter((t) => {
+        if (t.tipo !== "GASTO") return false;
+        const txSub = (t.subcategoria || t.sub || "").trim().toLowerCase();
         const pSub = sub.toLowerCase();
         if (txSub === pSub) return true;
-        if (pSub === 'streaming y apps digitales' && (txSub.includes('streaming') || txSub.includes('apps digitales'))) {
+        if (
+          pSub === "streaming y apps digitales" &&
+          (txSub.includes("streaming") || txSub.includes("apps digitales"))
+        ) {
           return true;
         }
         return false;
       });
 
-      const gastado = matchingTxs.reduce((sum, t) => sum + sanitizeAmount(t.monto), 0);
+      const gastado = matchingTxs.reduce(
+        (sum, t) => sum + sanitizeAmount(t.monto),
+        0,
+      );
       const disponible = presupuesto - gastado;
       const pct = presupuesto > 0 ? (gastado / presupuesto) * 100 : 0;
       return {
@@ -1543,22 +1797,29 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
 
     for (const p of presupuestos) {
       gastadoPorSubcat[p.sub] = p.gastado || 0;
-      gastadoPorMacro[p.macro] = (gastadoPorMacro[p.macro] ?? 0) + (p.gastado || 0);
+      gastadoPorMacro[p.macro] =
+        (gastadoPorMacro[p.macro] ?? 0) + (p.gastado || 0);
     }
 
     for (const tx of cicloTxs) {
-      if (tx.tipo === 'GASTO') {
-        const sub = (tx.subcategoria || tx.sub || '').trim();
-        const macro = (tx.categoria || tx.macro || '').trim();
-        const yaContabilizado = presupuestos.some(p => {
+      if (tx.tipo === "GASTO") {
+        const sub = (tx.subcategoria || tx.sub || "").trim();
+        const macro = (tx.categoria || tx.macro || "").trim();
+        const yaContabilizado = presupuestos.some((p) => {
           const pSub = p.sub.trim().toLowerCase();
           const txSub = sub.toLowerCase();
-          return txSub === pSub || (pSub === 'streaming y apps digitales' && (txSub.includes('streaming') || txSub.includes('apps digitales')));
+          return (
+            txSub === pSub ||
+            (pSub === "streaming y apps digitales" &&
+              (txSub.includes("streaming") || txSub.includes("apps digitales")))
+          );
         });
         if (!yaContabilizado && sub) {
-          gastadoPorSubcat[sub] = (gastadoPorSubcat[sub] ?? 0) + sanitizeAmount(tx.monto);
+          gastadoPorSubcat[sub] =
+            (gastadoPorSubcat[sub] ?? 0) + sanitizeAmount(tx.monto);
           if (macro) {
-            gastadoPorMacro[macro] = (gastadoPorMacro[macro] ?? 0) + sanitizeAmount(tx.monto);
+            gastadoPorMacro[macro] =
+              (gastadoPorMacro[macro] ?? 0) + sanitizeAmount(tx.monto);
           }
         }
       }
@@ -1567,26 +1828,32 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const balance = totalIngresos - totalGastos;
     const tasaAhorro = totalIngresos > 0 ? (balance / totalIngresos) * 100 : 0;
 
-    const carterasMapped: CarteraInfo[] = carterasData.map((c: any) => {
-      const saldoEfectivo = updatedSaldos[c.nombre] ?? (Number(c.saldo_inicial) || 0);
+    const carterasMapped: CarteraInfo[] = carterasData
+      .map((c: any) => {
+        const saldoEfectivo =
+          updatedSaldos[c.nombre] ?? (Number(c.saldo_inicial) || 0);
 
-      return {
-        id: c.id,
-        nombre: c.nombre,
-        tipo: c.tipo,
-        saldo_inicial: sanitizeAmount(c.saldo_inicial),
-        saldo_actual: saldoEfectivo,
-        saldo: saldoEfectivo,
-        saldoActual: saldoEfectivo,
-        icono: c.icono || '💳',
-        permite_gasto: c.permite_gasto !== false,
-        orden: c.orden != null ? Number(c.orden) : 99,
-        activa: c.activa !== false,
-        dia_corte: c.dia_corte != null ? Number(c.dia_corte) : null,
-        dia_pago: c.dia_pago != null ? Number(c.dia_pago) : null,
-        limite_credito: c.limite_credito != null ? Math.trunc(Number(c.limite_credito)) : null,
-      };
-    }).sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99));
+        return {
+          id: c.id,
+          nombre: c.nombre,
+          tipo: c.tipo,
+          saldo_inicial: sanitizeAmount(c.saldo_inicial),
+          saldo_actual: saldoEfectivo,
+          saldo: saldoEfectivo,
+          saldoActual: saldoEfectivo,
+          icono: c.icono || "💳",
+          permite_gasto: c.permite_gasto !== false,
+          orden: c.orden != null ? Number(c.orden) : 99,
+          activa: c.activa !== false,
+          dia_corte: c.dia_corte != null ? Number(c.dia_corte) : null,
+          dia_pago: c.dia_pago != null ? Number(c.dia_pago) : null,
+          limite_credito:
+            c.limite_credito != null
+              ? Math.trunc(Number(c.limite_credito))
+              : null,
+        };
+      })
+      .sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99));
 
     const result: AppData = {
       saldos: updatedSaldos,
@@ -1601,7 +1868,11 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         balanceDisponible,
       },
       historico: [
-        { ciclo: getCycleLabel(), gastos: totalGastos, ingresos: totalIngresos },
+        {
+          ciclo: getCycleLabel(),
+          gastos: totalGastos,
+          ingresos: totalIngresos,
+        },
       ],
       fromCache: false,
       timestamp: Date.now(),
@@ -1619,21 +1890,35 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     // Almacenar en caché solo si la generación sigue siendo la más reciente
     if (thisGen === currentFetchGeneration) {
       try {
-        localStorage.setItem(APPDATA_CACHE_KEY, JSON.stringify({ timestamp: result.timestamp, data: result }));
+        localStorage.setItem(
+          APPDATA_CACHE_KEY,
+          JSON.stringify({ timestamp: result.timestamp, data: result }),
+        );
       } catch {
         /* ignore */
       }
 
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('finanzas_appdata_updated', { detail: result }));
-        window.dispatchEvent(new CustomEvent('finanzas_saldos_updated', { detail: result.saldos }));
-        window.dispatchEvent(new CustomEvent('finanzas_transacciones_updated', { detail: result.transacciones }));
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("finanzas_appdata_updated", { detail: result }),
+        );
+        window.dispatchEvent(
+          new CustomEvent("finanzas_saldos_updated", { detail: result.saldos }),
+        );
+        window.dispatchEvent(
+          new CustomEvent("finanzas_transacciones_updated", {
+            detail: result.transacciones,
+          }),
+        );
       }
     }
 
     return result;
   } catch (err) {
-    console.warn('Error sincronizando con Supabase, usando caché íntegra:', err);
+    console.warn(
+      "Error sincronizando con Supabase, usando caché íntegra:",
+      err,
+    );
   }
 
   // Fallback limpio a la última caché disponible sin destruirla ni sobrescribir con ceros
@@ -1671,8 +1956,13 @@ export async function getSaldos(forceRefresh = false): Promise<SaldosResponse> {
 
 function isLeaseLostOrAbortError(err: any, signal?: AbortSignal): boolean {
   if (!err) return false;
-  if (err instanceof LeaseLostError || err.name === 'LeaseLostError') return true;
-  if (err.name === 'AbortError' || err.message?.includes('aborted') || err.message?.includes('AbortError')) {
+  if (err instanceof LeaseLostError || err.name === "LeaseLostError")
+    return true;
+  if (
+    err.name === "AbortError" ||
+    err.message?.includes("aborted") ||
+    err.message?.includes("AbortError")
+  ) {
     return true;
   }
   if (signal?.aborted) return true;
@@ -1682,24 +1972,37 @@ function isLeaseLostOrAbortError(err: any, signal?: AbortSignal): boolean {
 function isNetworkOrAbortError(err: any, signal?: AbortSignal): boolean {
   if (!err) return false;
   if (isLeaseLostOrAbortError(err, signal)) return true;
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+  if (typeof navigator !== "undefined" && navigator.onLine === false)
+    return true;
 
-  const msg = String(err.message || '').toLowerCase();
-  const name = String(err.name || '').toLowerCase();
-  const code = String(err.code || '');
+  const msg = String(err.message || "").toLowerCase();
+  const name = String(err.name || "").toLowerCase();
+  const code = String(err.code || "");
 
-  if (name === 'aborterror' || name === 'timeouterror') return true;
-  if (msg.includes('aborted') || msg.includes('timeout') || msg.includes('timed out')) return true;
+  if (name === "aborterror" || name === "timeouterror") return true;
   if (
-    msg.includes('network') ||
-    msg.includes('failed to fetch') ||
-    msg.includes('fetch error') ||
-    msg.includes('connection')
+    msg.includes("aborted") ||
+    msg.includes("timeout") ||
+    msg.includes("timed out")
+  )
+    return true;
+  if (
+    msg.includes("network") ||
+    msg.includes("failed to fetch") ||
+    msg.includes("fetch error") ||
+    msg.includes("connection")
   ) {
     return true;
   }
-  if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND') return true;
-  if (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504) return true;
+  if (code === "ECONNREFUSED" || code === "ETIMEDOUT" || code === "ENOTFOUND")
+    return true;
+  if (
+    err.status === 0 ||
+    err.status === 502 ||
+    err.status === 503 ||
+    err.status === 504
+  )
+    return true;
 
   return false;
 }
@@ -1710,13 +2013,13 @@ export interface SyncOptions {
 
 export async function syncOfflineQueue(
   signal?: AbortSignal,
-  options?: SyncOptions
+  options?: SyncOptions,
 ): Promise<{ synced: number; remaining: number }> {
   try {
     return await withQueueLock(async (lockSignal: AbortSignal) => {
       const getActiveSignal = (): AbortSignal => {
         if (!signal) return lockSignal;
-        if (typeof AbortSignal.any === 'function') {
+        if (typeof AbortSignal.any === "function") {
           return AbortSignal.any([signal, lockSignal]);
         }
         const controller = new AbortController();
@@ -1726,8 +2029,8 @@ export async function syncOfflineQueue(
         if (signal.aborted || lockSignal.aborted) {
           onAbort();
         } else {
-          signal.addEventListener('abort', onAbort, { once: true });
-          lockSignal.addEventListener('abort', onAbort, { once: true });
+          signal.addEventListener("abort", onAbort, { once: true });
+          lockSignal.addEventListener("abort", onAbort, { once: true });
         }
         return controller.signal;
       };
@@ -1742,7 +2045,9 @@ export async function syncOfflineQueue(
 
       // 2. Procesar SOLO mutaciones del usuario actual que no sean orphan
       const allRecords = await getQueuedMutationsUnlocked();
-      const userQueue = allRecords.filter(m => m.ownerUserId === expectedUserId && m.status !== 'orphan');
+      const userQueue = allRecords.filter(
+        (m) => m.ownerUserId === expectedUserId && m.status !== "orphan",
+      );
       if (userQueue.length === 0) return { synced: 0, remaining: 0 };
 
       const processedIds: string[] = [];
@@ -1752,17 +2057,25 @@ export async function syncOfflineQueue(
 
       for (const mut of userQueue) {
         if (effectiveSignal?.aborted) {
-          throw effectiveSignal.reason || new LeaseLostError('Sincronización abortada por pérdida de lease o señal');
+          throw (
+            effectiveSignal.reason ||
+            new LeaseLostError(
+              "Sincronización abortada por pérdida de lease o señal",
+            )
+          );
         }
 
         // Re-verificar identidad antes de CADA mutación/petición remota (sin red vía getSession)
         const { data: sessionCheck } = await supabase.auth.getSession();
         const activeUid = sessionCheck?.session?.user?.id;
         if (!activeUid || activeUid !== expectedUserId) {
-          throw new SessionChangedError(`Sesión activa (${activeUid || 'ninguna'}) difiere del usuario esperado (${expectedUserId})`);
+          throw new SessionChangedError(
+            `Sesión activa (${activeUid || "ninguna"}) difiere del usuario esperado (${expectedUserId})`,
+          );
         }
 
-        const entityId = mut.op === 'insert' ? String(mut.tx.id) : String(mut.id);
+        const entityId =
+          mut.op === "insert" ? String(mut.tx.id) : String(mut.id);
 
         // Si la entidad ya está bloqueada por error, conflicto o no confirmada previa en este lote:
         // NO procesar mutaciones posteriores de la misma entidad (quedan en la cola: insert, updates y delete)
@@ -1771,14 +2084,19 @@ export async function syncOfflineQueue(
         }
 
         // Si la mutación ya está en estado conflict y no es sincronización manual o startup, omitir para no reintentar en bucle
-        if (mut.status === 'conflict' && !options?.isManualOrStartup) {
+        if (mut.status === "conflict" && !options?.isManualOrStartup) {
           blockedEntityIds.add(entityId);
           continue;
         }
 
         try {
-          if (mut.op === 'insert') {
-            const res = await insertRemote(mut.tx, effectiveSignal, mut.mutationId, mut.ownerUserId);
+          if (mut.op === "insert") {
+            const res = await insertRemote(
+              mut.tx,
+              effectiveSignal,
+              mut.mutationId,
+              mut.ownerUserId,
+            );
             if (res && res.confirmed) {
               markTransactionSynced(mut.tx.id, true);
               processedIds.push(mut.mutationId);
@@ -1789,22 +2107,26 @@ export async function syncOfflineQueue(
               if (res?.conflict) {
                 await markMutationConflictUnlocked(
                   mut.mutationId,
-                  res.reason || `Conflicto en inserción de entidad ${entityId}`
+                  res.reason || `Conflicto en inserción de entidad ${entityId}`,
                 );
               }
               if (res?.reason) {
                 dispatchSupabaseSyncError(res.reason);
               }
-              console.warn('Inserción en cola no confirmada:', mut.mutationId, res?.reason);
+              console.warn(
+                "Inserción en cola no confirmada:",
+                mut.mutationId,
+                res?.reason,
+              );
             }
-          } else if (mut.op === 'update') {
+          } else if (mut.op === "update") {
             const payload = formatUpdatePayload(mut.patch);
             let updateQuery = supabase
-              .from('transacciones')
+              .from("transacciones")
               .update(payload)
-              .eq('id', entityId)
-              .eq('user_id', mut.ownerUserId)
-              .select('id,user_id');
+              .eq("id", entityId)
+              .eq("user_id", mut.ownerUserId)
+              .select("id,user_id");
 
             if (effectiveSignal) {
               updateQuery = updateQuery.abortSignal(effectiveSignal);
@@ -1813,10 +2135,17 @@ export async function syncOfflineQueue(
             const { data: updatedRows, error: updateError } = await updateQuery;
             if (updateError) {
               dispatchSupabaseSyncError(updateError);
-              const isRls = updateError.code === '42501' || String(updateError.message).toLowerCase().includes('row-level security');
-              const isNonRecoverable = isRls || updateError.code === '42703' || updateError.code === '23514';
+              const isRls =
+                updateError.code === "42501" ||
+                String(updateError.message)
+                  .toLowerCase()
+                  .includes("row-level security");
+              const isNonRecoverable =
+                isRls ||
+                updateError.code === "42703" ||
+                updateError.code === "23514";
               if (isNonRecoverable) {
-                const reason = `Update rechazado por el servidor (${updateError.code || '4xx'}): ${updateError.message}`;
+                const reason = `Update rechazado por el servidor (${updateError.code || "4xx"}): ${updateError.message}`;
                 await markMutationConflictUnlocked(mut.mutationId, reason);
                 blockedEntityIds.add(entityId);
                 console.warn(reason);
@@ -1826,7 +2155,11 @@ export async function syncOfflineQueue(
                 throw updateError;
               }
               blockedEntityIds.add(entityId);
-              console.warn('Error en update de entidad:', entityId, updateError);
+              console.warn(
+                "Error en update de entidad:",
+                entityId,
+                updateError,
+              );
             } else if (!updatedRows || updatedRows.length === 0) {
               // Confirmación de filas afectadas: 0 filas -> conflicto, conservar en cola
               const reason = `Update devolvió 0 filas para entidad ${entityId} (registro inexistente o RLS bloqueado)`;
@@ -1845,13 +2178,13 @@ export async function syncOfflineQueue(
                 synced++;
               }
             }
-          } else if (mut.op === 'delete') {
+          } else if (mut.op === "delete") {
             let deleteQuery = supabase
-              .from('transacciones')
+              .from("transacciones")
               .delete()
-              .eq('id', entityId)
-              .eq('user_id', mut.ownerUserId)
-              .select('id');
+              .eq("id", entityId)
+              .eq("user_id", mut.ownerUserId)
+              .select("id");
 
             if (effectiveSignal) {
               deleteQuery = deleteQuery.abortSignal(effectiveSignal);
@@ -1860,10 +2193,17 @@ export async function syncOfflineQueue(
             const { data: deletedRows, error: deleteError } = await deleteQuery;
             if (deleteError) {
               dispatchSupabaseSyncError(deleteError);
-              const isRls = deleteError.code === '42501' || String(deleteError.message).toLowerCase().includes('row-level security');
-              const isNonRecoverable = isRls || deleteError.code === '42703' || deleteError.code === '23514';
+              const isRls =
+                deleteError.code === "42501" ||
+                String(deleteError.message)
+                  .toLowerCase()
+                  .includes("row-level security");
+              const isNonRecoverable =
+                isRls ||
+                deleteError.code === "42703" ||
+                deleteError.code === "23514";
               if (isNonRecoverable) {
-                const reason = `Delete rechazado por el servidor (${deleteError.code || '4xx'}): ${deleteError.message}`;
+                const reason = `Delete rechazado por el servidor (${deleteError.code || "4xx"}): ${deleteError.message}`;
                 await markMutationConflictUnlocked(mut.mutationId, reason);
                 blockedEntityIds.add(entityId);
                 console.warn(reason);
@@ -1873,19 +2213,27 @@ export async function syncOfflineQueue(
                 throw deleteError;
               }
               blockedEntityIds.add(entityId);
-              console.warn('Error en delete de entidad:', entityId, deleteError);
+              console.warn(
+                "Error en delete de entidad:",
+                entityId,
+                deleteError,
+              );
             } else {
-              const rowsCount = Array.isArray(deletedRows) ? deletedRows.length : 0;
+              const rowsCount = Array.isArray(deletedRows)
+                ? deletedRows.length
+                : 0;
               if (rowsCount > 0) {
                 processedIds.push(mut.mutationId);
                 synced++;
               } else {
                 // 0 filas devueltas: solo éxito idempotente si el insert de esa entidad ya fue confirmado o no existe en la cola
                 const hasInsertInQueue = userQueue.some(
-                  m => m.op === 'insert' && String(m.tx.id) === entityId
+                  (m) => m.op === "insert" && String(m.tx.id) === entityId,
                 );
-                const insertWasConfirmed = confirmedInsertEntityIds.has(entityId);
-                const isIdempotentSuccess = !hasInsertInQueue || insertWasConfirmed;
+                const insertWasConfirmed =
+                  confirmedInsertEntityIds.has(entityId);
+                const isIdempotentSuccess =
+                  !hasInsertInQueue || insertWasConfirmed;
 
                 if (isIdempotentSuccess) {
                   processedIds.push(mut.mutationId);
@@ -1900,7 +2248,10 @@ export async function syncOfflineQueue(
             }
           }
         } catch (err: any) {
-          if (err instanceof SessionChangedError || err?.name === 'SessionChangedError') {
+          if (
+            err instanceof SessionChangedError ||
+            err?.name === "SessionChangedError"
+          ) {
             throw err;
           }
           if (isNetworkOrAbortError(err, effectiveSignal)) {
@@ -1908,10 +2259,18 @@ export async function syncOfflineQueue(
             throw err;
           }
           dispatchSupabaseSyncError(err);
-          const isRls = err?.code === '42501' || String(err?.message).toLowerCase().includes('row-level security');
-          const isNonRecoverable = isRls || err?.code === '42703' || err?.code === '23514' || (typeof err?.status === 'number' && err.status >= 400 && err.status < 500);
+          const isRls =
+            err?.code === "42501" ||
+            String(err?.message).toLowerCase().includes("row-level security");
+          const isNonRecoverable =
+            isRls ||
+            err?.code === "42703" ||
+            err?.code === "23514" ||
+            (typeof err?.status === "number" &&
+              err.status >= 400 &&
+              err.status < 500);
           if (isNonRecoverable) {
-            const reason = `Operación rechazada por backend (${err?.code || err?.status || '4xx'}): ${err?.message || ''}`;
+            const reason = `Operación rechazada por backend (${err?.code || err?.status || "4xx"}): ${err?.message || ""}`;
             await markMutationConflictUnlocked(mut.mutationId, reason);
             blockedEntityIds.add(entityId);
             console.warn(reason);
@@ -1919,7 +2278,11 @@ export async function syncOfflineQueue(
           }
           // Error propio de la entidad: se bloquea la entidad pero se continúa con las demás
           blockedEntityIds.add(entityId);
-          console.warn('Error propio de la entidad durante sincronización:', entityId, err);
+          console.warn(
+            "Error propio de la entidad durante sincronización:",
+            entityId,
+            err,
+          );
         }
       }
 
@@ -1929,20 +2292,32 @@ export async function syncOfflineQueue(
 
       const remainingQueue = await getQueuedMutationsUnlocked();
       const userRemaining = remainingQueue.filter(
-        m => m.ownerUserId === expectedUserId && m.status !== 'orphan' && m.status !== 'conflict'
+        (m) =>
+          m.ownerUserId === expectedUserId &&
+          m.status !== "orphan" &&
+          m.status !== "conflict",
       );
 
       return { synced, remaining: userRemaining.length };
     });
   } catch (err: any) {
-    if (err instanceof SessionChangedError || err?.name === 'SessionChangedError') {
+    if (
+      err instanceof SessionChangedError ||
+      err?.name === "SessionChangedError"
+    ) {
       // Salida silenciosa: la sesión cambió, las mutaciones de la cola quedan intactas
       const current = await getQueuedMutationsUnlocked().catch(() => []);
       return { synced: 0, remaining: current.length };
     }
     dispatchSupabaseSyncError(err);
-    if (err?.code === '42501' || String(err?.message).toLowerCase().includes('row-level security')) {
-      console.warn('Sincronización detenida por violación RLS (42501); lote retenido en cola:', err);
+    if (
+      err?.code === "42501" ||
+      String(err?.message).toLowerCase().includes("row-level security")
+    ) {
+      console.warn(
+        "Sincronización detenida por violación RLS (42501); lote retenido en cola:",
+        err,
+      );
       const current = await getQueuedMutationsUnlocked().catch(() => []);
       return { synced: 0, remaining: current.length };
     }

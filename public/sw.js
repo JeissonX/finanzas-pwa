@@ -1,29 +1,31 @@
-const CACHE_NAME = 'finanzas-pwa-v29';
-const STATIC_ASSETS = ['/', '/index.html', '/manifest.json'];
+const CACHE_NAME = "finanzas-pwa-v30";
+const STATIC_ASSETS = ["/", "/index.html", "/manifest.json"];
 
-self.addEventListener('install', (event) => {
+self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)),
   );
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
+self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((k) => k.startsWith('finanzas-pwa-') && k !== CACHE_NAME)
-          .map((k) => caches.delete(k))
-      )
-    )
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((k) => k.startsWith("finanzas-pwa-") && k !== CACHE_NAME)
+            .map((k) => caches.delete(k)),
+        ),
+      ),
   );
   self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
+self.addEventListener("fetch", (event) => {
   // 1. Ignorar cualquier petición que NO sea GET
-  if (event.request.method !== 'GET') {
+  if (event.request.method !== "GET") {
     return;
   }
 
@@ -32,10 +34,10 @@ self.addEventListener('fetch', (event) => {
   // 2. Ignorar peticiones a dominios externos o que contengan script.google.com / googleusercontent.com
   if (
     url.origin !== self.location.origin ||
-    url.hostname.includes('script.google.com') ||
-    url.hostname.includes('googleusercontent.com') ||
-    url.href.includes('script.google.com') ||
-    url.href.includes('googleusercontent.com')
+    url.hostname.includes("script.google.com") ||
+    url.hostname.includes("googleusercontent.com") ||
+    url.href.includes("script.google.com") ||
+    url.href.includes("googleusercontent.com")
   ) {
     return;
   }
@@ -49,7 +51,7 @@ self.addEventListener('fetch', (event) => {
           if (
             networkResponse &&
             networkResponse.status === 200 &&
-            networkResponse.type === 'basic'
+            networkResponse.type === "basic"
           ) {
             const responseToCache = networkResponse.clone();
             caches.open(CACHE_NAME).then((cache) => {
@@ -61,6 +63,6 @@ self.addEventListener('fetch', (event) => {
         .catch(() => cachedResponse);
 
       return cachedResponse || fetchPromise;
-    })
+    }),
   );
 });

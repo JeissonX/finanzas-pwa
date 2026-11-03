@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect } from "react";
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -13,28 +13,35 @@ import {
   Wallet,
   Download,
   Pencil,
-} from 'lucide-react';
-import type { Transaccion, TipoTransaccion, CatalogoItem } from '../types/finance';
+} from "lucide-react";
+import type {
+  Transaccion,
+  TipoTransaccion,
+  CatalogoItem,
+} from "../types/finance";
 import {
   formatCOP,
   formatDateSpanish,
   isDateInCurrentCycle,
   getCycleLabel,
   haptic,
-} from '../utils/format';
-import { exportTransactionsToCSV } from '../utils/exportCsv';
-import EditTransactionModal from './EditTransactionModal';
+} from "../utils/format";
+import { exportTransactionsToCSV } from "../utils/exportCsv";
+import EditTransactionModal from "./EditTransactionModal";
 
 interface TransactionsViewProps {
   onOpenRegister?: () => void;
   onNavigateToRegister?: () => void;
   transacciones: Transaccion[];
   onDeleteTransaction: (id: number | string) => Promise<boolean>;
-  onUpdateTransaction?: (id: number | string, updated: Partial<Transaccion>) => Promise<boolean | void>;
+  onUpdateTransaction?: (
+    id: number | string,
+    updated: Partial<Transaccion>,
+  ) => Promise<boolean | void>;
   catalogo?: CatalogoItem[];
 }
 
-type FiltroTipo = 'TODOS' | TipoTransaccion;
+type FiltroTipo = "TODOS" | TipoTransaccion;
 
 export default function TransactionsView({
   onOpenRegister,
@@ -53,10 +60,10 @@ export default function TransactionsView({
       onNavigateToRegister();
     }
   };
-  const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>('TODOS');
+  const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>("TODOS");
   const [soloCicloActivo, setSoloCicloActivo] = useState(true);
-  const [busqueda, setBusqueda] = useState('');
-  
+  const [busqueda, setBusqueda] = useState("");
+
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -74,23 +81,23 @@ export default function TransactionsView({
 
   // Filtrado de transacciones
   const filteredTxs = useMemo(() => {
-    return transacciones.filter(tx => {
+    return transacciones.filter((tx) => {
       // 1. Filtro por ciclo
       if (soloCicloActivo && !isDateInCurrentCycle(tx.fecha)) {
         return false;
       }
       // 2. Filtro por tipo
-      if (filtroTipo !== 'TODOS' && tx.tipo !== filtroTipo) {
+      if (filtroTipo !== "TODOS" && tx.tipo !== filtroTipo) {
         return false;
       }
       // 3. Filtro por búsqueda de texto
       if (busqueda.trim()) {
         const query = busqueda.toLowerCase().trim();
-        const sub = (tx.subcategoria || tx.sub || '').toLowerCase();
-        const macro = (tx.categoria || tx.macro || '').toLowerCase();
-        const cuenta = (tx.cuenta || tx.cuentaOrigen || '').toLowerCase();
-        const destino = (tx.cuentaDestino || '').toLowerCase();
-        const comment = (tx.comentario || tx.detalle || '').toLowerCase();
+        const sub = (tx.subcategoria || tx.sub || "").toLowerCase();
+        const macro = (tx.categoria || tx.macro || "").toLowerCase();
+        const cuenta = (tx.cuenta || tx.cuentaOrigen || "").toLowerCase();
+        const destino = (tx.cuentaDestino || "").toLowerCase();
+        const comment = (tx.comentario || tx.detalle || "").toLowerCase();
         if (
           !sub.includes(query) &&
           !macro.includes(query) &&
@@ -110,23 +117,25 @@ export default function TransactionsView({
     let gastos = 0;
     let ingresos = 0;
     for (const tx of filteredTxs) {
-      if (tx.tipo === 'GASTO') gastos += tx.monto;
-      if (tx.tipo === 'INGRESO') ingresos += tx.monto;
+      if (tx.tipo === "GASTO") gastos += tx.monto;
+      if (tx.tipo === "INGRESO") ingresos += tx.monto;
     }
     return { gastos, ingresos, count: filteredTxs.length };
   }, [filteredTxs]);
 
   // Eliminar transacción con confirmación nativa window.confirm
   const handleDelete = async (id: number | string) => {
-    if (window.confirm('¿Estás seguro de que deseas eliminar este movimiento?')) {
+    if (
+      window.confirm("¿Estás seguro de que deseas eliminar este movimiento?")
+    ) {
       haptic(50);
       try {
         const ok = await onDeleteTransaction(id);
         if (ok) {
-          showFeedback('Movimiento eliminado correctamente.');
+          showFeedback("Movimiento eliminado correctamente.");
         }
       } catch (err) {
-        console.error('Error al eliminar movimiento:', err);
+        console.error("Error al eliminar movimiento:", err);
       }
     }
   };
@@ -138,47 +147,54 @@ export default function TransactionsView({
     haptic(40);
     const toExport = filteredTxs.length > 0 ? filteredTxs : transacciones;
     if (toExport.length === 0) {
-      showFeedback('No hay movimientos para exportar.');
+      showFeedback("No hay movimientos para exportar.");
       return;
     }
-    exportTransactionsToCSV(toExport, soloCicloActivo ? cicloLabel : 'Todos_Los_Ciclos');
+    exportTransactionsToCSV(
+      toExport,
+      soloCicloActivo ? cicloLabel : "Todos_Los_Ciclos",
+    );
     showFeedback(`Se exportaron ${toExport.length} movimientos a CSV.`);
   };
 
   // Badges y estilos sobrios según el tipo de transacción
   const getBadgeConfig = (tipo: TipoTransaccion) => {
     switch (tipo) {
-      case 'GASTO':
+      case "GASTO":
         return {
-          label: 'Gasto',
+          label: "Gasto",
           Icon: ArrowDownRight,
-          classes: 'bg-rose-50 text-rose-700 border-rose-200/80 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800/60',
-          amountClass: 'text-rose-600 dark:text-rose-400',
-          prefix: '-',
+          classes:
+            "bg-rose-50 text-rose-700 border-rose-200/80 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800/60",
+          amountClass: "text-rose-600 dark:text-rose-400",
+          prefix: "-",
         };
-      case 'INGRESO':
+      case "INGRESO":
         return {
-          label: 'Ingreso',
+          label: "Ingreso",
           Icon: ArrowUpRight,
-          classes: 'bg-emerald-50 text-emerald-700 border-emerald-200/80 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60',
-          amountClass: 'text-emerald-600 dark:text-emerald-400',
-          prefix: '+',
+          classes:
+            "bg-emerald-50 text-emerald-700 border-emerald-200/80 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60",
+          amountClass: "text-emerald-600 dark:text-emerald-400",
+          prefix: "+",
         };
-      case 'TRANSFERENCIA':
+      case "TRANSFERENCIA":
         return {
-          label: 'Transferencia',
+          label: "Transferencia",
           Icon: ArrowLeftRight,
-          classes: 'bg-blue-50 text-blue-700 border-blue-200/80 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800/60',
-          amountClass: 'text-blue-600 dark:text-blue-400',
-          prefix: '',
+          classes:
+            "bg-blue-50 text-blue-700 border-blue-200/80 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800/60",
+          amountClass: "text-blue-600 dark:text-blue-400",
+          prefix: "",
         };
-      case 'AJUSTE':
+      case "AJUSTE":
         return {
-          label: 'Ajuste',
+          label: "Ajuste",
           Icon: SlidersHorizontal,
-          classes: 'bg-slate-100 text-slate-700 border-slate-300/80 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700',
-          amountClass: 'text-slate-700 dark:text-slate-300',
-          prefix: '',
+          classes:
+            "bg-slate-100 text-slate-700 border-slate-300/80 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700",
+          amountClass: "text-slate-700 dark:text-slate-300",
+          prefix: "",
         };
     }
   };
@@ -188,7 +204,10 @@ export default function TransactionsView({
       {/* Notificación de feedback */}
       {feedbackMsg && (
         <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200 text-xs font-semibold flex items-center gap-2 shadow-sm animate-slide-up">
-          <CheckCircle2 size={16} className="text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+          <CheckCircle2
+            size={16}
+            className="text-emerald-600 dark:text-emerald-400 flex-shrink-0"
+          />
           <span>{feedbackMsg}</span>
         </div>
       )}
@@ -206,7 +225,11 @@ export default function TransactionsView({
               </h2>
               <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                 <Calendar size={11} />
-                <span>{soloCicloActivo ? `Ciclo activo: ${cicloLabel}` : 'Todos los ciclos'}</span>
+                <span>
+                  {soloCicloActivo
+                    ? `Ciclo activo: ${cicloLabel}`
+                    : "Todos los ciclos"}
+                </span>
               </div>
             </div>
           </div>
@@ -225,16 +248,18 @@ export default function TransactionsView({
               type="button"
               onClick={() => {
                 haptic();
-                setSoloCicloActivo(prev => !prev);
+                setSoloCicloActivo((prev) => !prev);
               }}
               className={`
                 px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-colors cursor-pointer
-                ${soloCicloActivo
-                  ? 'bg-slate-900 text-white border-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100'
-                  : 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'}
+                ${
+                  soloCicloActivo
+                    ? "bg-slate-900 text-white border-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100"
+                    : "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700"
+                }
               `}
             >
-              {soloCicloActivo ? 'Solo este ciclo' : 'Ver todo'}
+              {soloCicloActivo ? "Solo este ciclo" : "Ver todo"}
             </button>
           </div>
         </div>
@@ -273,11 +298,14 @@ export default function TransactionsView({
         {/* Barra de búsqueda y exportación */}
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search
+              size={14}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
             <input
               type="text"
               value={busqueda}
-              onChange={e => setBusqueda(e.target.value)}
+              onChange={(e) => setBusqueda(e.target.value)}
               placeholder="Buscar por categoría, cuenta o comentario..."
               className="w-full pl-9 pr-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400 transition"
             />
@@ -295,7 +323,15 @@ export default function TransactionsView({
 
         {/* Tabs de tipo de transacción */}
         <div className="flex gap-1 overflow-x-auto pb-0.5 no-scrollbar">
-          {(['TODOS', 'GASTO', 'INGRESO', 'TRANSFERENCIA', 'AJUSTE'] as FiltroTipo[]).map(t => {
+          {(
+            [
+              "TODOS",
+              "GASTO",
+              "INGRESO",
+              "TRANSFERENCIA",
+              "AJUSTE",
+            ] as FiltroTipo[]
+          ).map((t) => {
             const active = filtroTipo === t;
             return (
               <button
@@ -307,12 +343,14 @@ export default function TransactionsView({
                 }}
                 className={`
                   px-3 py-1.5 rounded-xl text-[11px] font-bold whitespace-nowrap border transition-all duration-150
-                  ${active
-                    ? 'bg-slate-900 text-white border-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border-slate-200/90 dark:border-slate-700 hover:text-slate-900 dark:hover:text-slate-100'}
+                  ${
+                    active
+                      ? "bg-slate-900 text-white border-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100 shadow-sm"
+                      : "bg-white dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border-slate-200/90 dark:border-slate-700 hover:text-slate-900 dark:hover:text-slate-100"
+                  }
                 `}
               >
-                {t === 'TODOS' ? `Todos (${stats.count})` : t}
+                {t === "TODOS" ? `Todos (${stats.count})` : t}
               </button>
             );
           })}
@@ -330,7 +368,7 @@ export default function TransactionsView({
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs leading-relaxed">
             {busqueda
-              ? 'No hay movimientos que coincidan con el término de búsqueda.'
+              ? "No hay movimientos que coincidan con el término de búsqueda."
               : `No se han registrado transacciones dentro del ciclo activo (${cicloLabel}).`}
           </p>
           {(onOpenRegister || onNavigateToRegister) && !busqueda && (
@@ -346,11 +384,11 @@ export default function TransactionsView({
         </div>
       ) : (
         <div className="flex flex-col gap-2.5">
-          {filteredTxs.map(tx => {
+          {filteredTxs.map((tx) => {
             const badge = getBadgeConfig(tx.tipo);
             const { label, Icon, classes, amountClass, prefix } = badge;
-            const subcat = tx.subcategoria || tx.sub || 'General';
-            const macro = tx.categoria || tx.macro || '';
+            const subcat = tx.subcategoria || tx.sub || "General";
+            const macro = tx.categoria || tx.macro || "";
             const comentario = tx.comentario || tx.detalle;
             const cuenta = tx.cuenta || tx.cuentaOrigen;
             const destino = tx.cuentaDestino;
@@ -433,8 +471,11 @@ export default function TransactionsView({
                   </div>
 
                   <div className="text-right flex-shrink-0">
-                    <span className={`text-base font-black font-mono tracking-tight ${amountClass}`}>
-                      {prefix}{formatCOP(tx.monto)}
+                    <span
+                      className={`text-base font-black font-mono tracking-tight ${amountClass}`}
+                    >
+                      {prefix}
+                      {formatCOP(tx.monto)}
                     </span>
                   </div>
                 </div>
@@ -450,11 +491,19 @@ export default function TransactionsView({
                 <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-800/60">
                   <Wallet size={12} className="text-slate-400 flex-shrink-0" />
                   <span className="font-semibold text-slate-700 dark:text-slate-300 truncate">
-                    {tx.tipo === 'TRANSFERENCIA' && destino ? (
+                    {tx.tipo === "TRANSFERENCIA" && destino ? (
                       <>
                         <span>{cuenta}</span>
                         <span className="mx-1 text-blue-500 font-bold">➔</span>
                         <span>{destino}</span>
+                      </>
+                    ) : tx.tipo === "GASTO" && destino ? (
+                      <>
+                        <span>{cuenta}</span>
+                        <span className="mx-1 text-rose-500 font-bold">➔</span>
+                        <span className="text-slate-800 dark:text-slate-200">
+                          Abono: {destino}
+                        </span>
                       </>
                     ) : (
                       cuenta
@@ -476,7 +525,7 @@ export default function TransactionsView({
         onSave={async (id, updated) => {
           if (onUpdateTransaction) {
             await onUpdateTransaction(id, updated);
-            showFeedback('Movimiento actualizado correctamente.');
+            showFeedback("Movimiento actualizado correctamente.");
           }
         }}
       />

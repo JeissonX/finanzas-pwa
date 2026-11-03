@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, type FormEvent } from "react";
 import {
   X,
   Pencil,
@@ -11,11 +11,21 @@ import {
   Tag,
   DollarSign,
   FileText,
-} from 'lucide-react';
-import type { Transaccion, CarteraInfo, TipoTransaccion, CatalogoItem } from '../types/finance';
-import type { AppData } from '../services/api';
-import { CATALOG_GASTOS, CATALOG_INGRESOS, CATALOG_TRANSFERENCIAS, CARTERAS } from '../data/catalog';
-import { formatCOP, haptic } from '../utils/format';
+} from "lucide-react";
+import type {
+  Transaccion,
+  CarteraInfo,
+  TipoTransaccion,
+  CatalogoItem,
+} from "../types/finance";
+import type { AppData } from "../services/api";
+import {
+  CATALOG_GASTOS,
+  CATALOG_INGRESOS,
+  CATALOG_TRANSFERENCIAS,
+  CARTERAS,
+} from "../data/catalog";
+import { formatCOP, haptic } from "../utils/format";
 
 interface EditTransactionModalProps {
   isOpen: boolean;
@@ -26,32 +36,40 @@ interface EditTransactionModalProps {
 }
 
 const MACRO_ICONS: Record<string, string> = {
-  'Alimentación': '🛒',
-  'Transporte': '⛽',
-  'Vivienda / Hogar': '🏠',
-  'Vivienda': '🏠',
-  'Servicios Públicos': '💡',
-  'Servicios': '💡',
-  'Salud y Bienestar': '🏋️',
-  'Mascota': '🐾',
-  'Ocio y Viajes': '✈️',
-  'Suscripciones': '📱',
-  'Inversión y Ahorro': '📈',
-  'Pago Deuda': '🚗',
-  'Deudas Mazda 2': '🚗',
-  'Varios': '📦',
-  'Ingresos Laborales': '💼',
-  'Ingresos Agencia': '🚀',
-  'Rentas del Capital': '💰',
-  'Otros Ingresos': '📥',
-  'Movimientos Propios': '🔄',
+  Alimentación: "🛒",
+  Transporte: "⛽",
+  "Vivienda / Hogar": "🏠",
+  Vivienda: "🏠",
+  "Servicios Públicos": "💡",
+  Servicios: "💡",
+  "Salud y Bienestar": "🏋️",
+  Mascota: "🐾",
+  "Ocio y Viajes": "✈️",
+  Suscripciones: "📱",
+  "Inversión y Ahorro": "📈",
+  "Pago Deuda": "🚗",
+  "Deudas Mazda 2": "🚗",
+  Varios: "📦",
+  "Ingresos Laborales": "💼",
+  "Ingresos Agencia": "🚀",
+  "Rentas del Capital": "💰",
+  "Otros Ingresos": "📥",
+  "Movimientos Propios": "🔄",
 };
 
 function getMacroIcon(macro: string, fallbackTipo: TipoTransaccion): string {
   if (MACRO_ICONS[macro]) return MACRO_ICONS[macro];
-  const cat = [...CATALOG_GASTOS, ...CATALOG_INGRESOS, ...CATALOG_TRANSFERENCIAS].find(c => c.nombre === macro);
+  const cat = [
+    ...CATALOG_GASTOS,
+    ...CATALOG_INGRESOS,
+    ...CATALOG_TRANSFERENCIAS,
+  ].find((c) => c.nombre === macro);
   if (cat?.icono) return cat.icono;
-  return fallbackTipo === 'INGRESO' ? '💰' : fallbackTipo === 'TRANSFERENCIA' ? '🔄' : '📊';
+  return fallbackTipo === "INGRESO"
+    ? "💰"
+    : fallbackTipo === "TRANSFERENCIA"
+      ? "🔄"
+      : "📊";
 }
 
 export default function EditTransactionModal({
@@ -61,30 +79,32 @@ export default function EditTransactionModal({
   onSave,
   catalogo,
 }: EditTransactionModalProps) {
-  const [monto, setMonto] = useState<string>('');
-  const [macroCategoria, setMacroCategoria] = useState<string>('');
-  const [subcategoria, setSubcategoria] = useState<string>('');
-  const [cuenta, setCuenta] = useState<string>('');
-  const [cuentaDestino, setCuentaDestino] = useState<string>('');
-  const [comentario, setComentario] = useState<string>('');
+  const [monto, setMonto] = useState<string>("");
+  const [macroCategoria, setMacroCategoria] = useState<string>("");
+  const [subcategoria, setSubcategoria] = useState<string>("");
+  const [cuenta, setCuenta] = useState<string>("");
+  const [cuentaDestino, setCuentaDestino] = useState<string>("");
+  const [comentario, setComentario] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
   // Catálogo dinámico unificado con fallback a caché local
-  const [internalCatalogo, setInternalCatalogo] = useState<CatalogoItem[]>(() => {
-    if (catalogo && catalogo.length > 0) return catalogo;
-    try {
-      const raw = localStorage.getItem('finanzas_cached_appdata_v4');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.data?.catalogo && Array.isArray(parsed.data.catalogo)) {
-          return parsed.data.catalogo;
+  const [internalCatalogo, setInternalCatalogo] = useState<CatalogoItem[]>(
+    () => {
+      if (catalogo && catalogo.length > 0) return catalogo;
+      try {
+        const raw = localStorage.getItem("finanzas_cached_appdata_v4");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.data?.catalogo && Array.isArray(parsed.data.catalogo)) {
+            return parsed.data.catalogo;
+          }
         }
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
-    }
-    return [];
-  });
+      return [];
+    },
+  );
 
   useEffect(() => {
     if (catalogo && catalogo.length > 0) {
@@ -95,22 +115,28 @@ export default function EditTransactionModal({
   // Carteras disponibles (únicamente activas)
   const [carterasList, setCarterasList] = useState<CarteraInfo[]>(() => {
     try {
-      const raw = localStorage.getItem('finanzas_cached_appdata_v4');
+      const raw = localStorage.getItem("finanzas_cached_appdata_v4");
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed?.data?.carteras && parsed.data.carteras.length > 0) {
-          return (parsed.data.carteras as CarteraInfo[]).filter(c => c.activa !== false);
+          return (parsed.data.carteras as CarteraInfo[]).filter(
+            (c) => c.activa !== false,
+          );
         }
       }
     } catch {
       /* ignore */
     }
-    return CARTERAS.filter(c => c.activa !== false).map(c => ({
+    return CARTERAS.filter((c) => c.activa !== false).map((c) => ({
       id: c.id,
       nombre: c.nombre,
       tipo: c.tipo,
       icono: c.icono,
-      permite_gasto: !['Lulo Bolsillo - Ahorro', 'Lulo Bolsillo - Vacaciones', 'Crédito Mazda 2 (Lulo)'].includes(c.nombre),
+      permite_gasto: ![
+        "Lulo Bolsillo - Ahorro",
+        "Lulo Bolsillo - Vacaciones",
+        "Crédito Mazda 2 (Lulo)",
+      ].includes(c.nombre),
       activa: true,
     }));
   });
@@ -119,27 +145,36 @@ export default function EditTransactionModal({
     const handleUpdate = (e: Event) => {
       const custom = e as CustomEvent<AppData>;
       if (custom.detail?.carteras && custom.detail.carteras.length > 0) {
-        setCarterasList(custom.detail.carteras.filter(c => c.activa !== false));
+        setCarterasList(
+          custom.detail.carteras.filter((c) => c.activa !== false),
+        );
       }
       if (custom.detail?.catalogo && Array.isArray(custom.detail.catalogo)) {
         setInternalCatalogo(custom.detail.catalogo);
       }
     };
-    window.addEventListener('finanzas_appdata_updated', handleUpdate);
-    return () => window.removeEventListener('finanzas_appdata_updated', handleUpdate);
+    window.addEventListener("finanzas_appdata_updated", handleUpdate);
+    return () =>
+      window.removeEventListener("finanzas_appdata_updated", handleUpdate);
   }, []);
 
-  const activeCatalogo = (catalogo && catalogo.length > 0) ? catalogo : internalCatalogo;
+  const activeCatalogo =
+    catalogo && catalogo.length > 0 ? catalogo : internalCatalogo;
 
   // Pre-cargar valores cuando cambia la transacción o abre el modal
   useEffect(() => {
     if (transaccion && isOpen) {
-      setMonto(String(transaccion.monto ?? ''));
-      setMacroCategoria(transaccion.macroCategoria || transaccion.categoria || transaccion.macro || '');
-      setSubcategoria(transaccion.subcategoria || transaccion.sub || '');
-      setCuenta(transaccion.cuenta || transaccion.cuentaOrigen || '');
-      setCuentaDestino(transaccion.cuentaDestino || '');
-      setComentario(transaccion.comentario || transaccion.detalle || '');
+      setMonto(String(transaccion.monto ?? ""));
+      setMacroCategoria(
+        transaccion.macroCategoria ||
+          transaccion.categoria ||
+          transaccion.macro ||
+          "",
+      );
+      setSubcategoria(transaccion.subcategoria || transaccion.sub || "");
+      setCuenta(transaccion.cuenta || transaccion.cuentaOrigen || "");
+      setCuentaDestino(transaccion.cuentaDestino || "");
+      setComentario(transaccion.comentario || transaccion.detalle || "");
       setSaving(false);
     }
   }, [transaccion, isOpen]);
@@ -149,57 +184,71 @@ export default function EditTransactionModal({
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === "Escape") {
         haptic();
         onClose();
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
-  const tipo = transaccion?.tipo || 'GASTO';
+  const tipo = transaccion?.tipo || "GASTO";
 
   // Derivar las Macro-categorías disponibles dinámicamente unificando catálogo vivo con base
   const macrosDisponibles = useMemo(() => {
-    if (tipo === 'GASTO') {
+    if (tipo === "GASTO") {
       const fromLive = activeCatalogo
-        .filter(c => c.activo !== false && c.macro_categoria)
-        .map(c => c.macro_categoria.trim());
-      const fromBase = CATALOG_GASTOS.map(c => c.nombre);
+        .filter((c) => c.activo !== false && c.macro_categoria)
+        .map((c) => c.macro_categoria.trim());
+      const fromBase = CATALOG_GASTOS.map((c) => c.nombre);
       const unified = Array.from(new Set([...fromLive, ...fromBase]));
       if (macroCategoria && !unified.includes(macroCategoria)) {
         return [macroCategoria, ...unified];
       }
-      return unified.length > 0 ? unified : ['Alimentación'];
+      return unified.length > 0 ? unified : ["Alimentación"];
     }
-    if (tipo === 'INGRESO') {
-      const base = CATALOG_INGRESOS.map(c => c.nombre);
-      return macroCategoria && !base.includes(macroCategoria) ? [macroCategoria, ...base] : base;
+    if (tipo === "INGRESO") {
+      const base = CATALOG_INGRESOS.map((c) => c.nombre);
+      return macroCategoria && !base.includes(macroCategoria)
+        ? [macroCategoria, ...base]
+        : base;
     }
-    const base = CATALOG_TRANSFERENCIAS.map(c => c.nombre);
-    return macroCategoria && !base.includes(macroCategoria) ? [macroCategoria, ...base] : base;
+    const base = CATALOG_TRANSFERENCIAS.map((c) => c.nombre);
+    return macroCategoria && !base.includes(macroCategoria)
+      ? [macroCategoria, ...base]
+      : base;
   }, [activeCatalogo, tipo, macroCategoria]);
 
   // Derivar las Subcategorías disponibles en función de la Macro seleccionada
   const subcategoriasDisponibles = useMemo(() => {
     if (!macroCategoria) return [];
-    if (tipo === 'GASTO') {
+    if (tipo === "GASTO") {
       const fromLive = activeCatalogo
-        .filter(c => c.macro_categoria.trim().toLowerCase() === macroCategoria.trim().toLowerCase() && c.activo !== false)
-        .map(c => c.subcategoria.trim());
-      const baseCat = CATALOG_GASTOS.find(c => c.nombre.trim().toLowerCase() === macroCategoria.trim().toLowerCase());
-      const fromBase = baseCat ? baseCat.subcategorias.map(s => s.nombre.trim()) : [];
+        .filter(
+          (c) =>
+            c.macro_categoria.trim().toLowerCase() ===
+              macroCategoria.trim().toLowerCase() && c.activo !== false,
+        )
+        .map((c) => c.subcategoria.trim());
+      const baseCat = CATALOG_GASTOS.find(
+        (c) =>
+          c.nombre.trim().toLowerCase() === macroCategoria.trim().toLowerCase(),
+      );
+      const fromBase = baseCat
+        ? baseCat.subcategorias.map((s) => s.nombre.trim())
+        : [];
       const unified = Array.from(new Set([...fromLive, ...fromBase]));
       if (subcategoria && !unified.includes(subcategoria)) {
         return [subcategoria, ...unified];
       }
       return unified;
     }
-    const currentList = tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
-    const found = currentList.find(c => c.nombre === macroCategoria);
-    const base = found ? found.subcategorias.map(s => s.nombre) : [];
+    const currentList =
+      tipo === "INGRESO" ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+    const found = currentList.find((c) => c.nombre === macroCategoria);
+    const base = found ? found.subcategorias.map((s) => s.nombre) : [];
     if (subcategoria && !base.includes(subcategoria)) {
       return [subcategoria, ...base];
     }
@@ -210,32 +259,121 @@ export default function EditTransactionModal({
   const handleMacroChange = (newMacro: string) => {
     setMacroCategoria(newMacro);
     let nextSubs: string[] = [];
-    if (tipo === 'GASTO') {
+    if (tipo === "GASTO") {
       const fromLive = activeCatalogo
-        .filter(c => c.macro_categoria.trim().toLowerCase() === newMacro.trim().toLowerCase() && c.activo !== false)
-        .map(c => c.subcategoria.trim());
-      const baseCat = CATALOG_GASTOS.find(c => c.nombre.trim().toLowerCase() === newMacro.trim().toLowerCase());
-      const fromBase = baseCat ? baseCat.subcategorias.map(s => s.nombre.trim()) : [];
+        .filter(
+          (c) =>
+            c.macro_categoria.trim().toLowerCase() ===
+              newMacro.trim().toLowerCase() && c.activo !== false,
+        )
+        .map((c) => c.subcategoria.trim());
+      const baseCat = CATALOG_GASTOS.find(
+        (c) => c.nombre.trim().toLowerCase() === newMacro.trim().toLowerCase(),
+      );
+      const fromBase = baseCat
+        ? baseCat.subcategorias.map((s) => s.nombre.trim())
+        : [];
       nextSubs = Array.from(new Set([...fromLive, ...fromBase]));
     } else {
-      const currentList = tipo === 'INGRESO' ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
-      const found = currentList.find(c => c.nombre === newMacro);
-      nextSubs = found ? found.subcategorias.map(s => s.nombre) : [];
+      const currentList =
+        tipo === "INGRESO" ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
+      const found = currentList.find((c) => c.nombre === newMacro);
+      nextSubs = found ? found.subcategorias.map((s) => s.nombre) : [];
     }
     if (nextSubs.length > 0) {
       setSubcategoria(nextSubs[0]);
     } else {
-      setSubcategoria('');
+      setSubcategoria("");
     }
   };
 
+  const isPagoDeuda =
+    tipo === "GASTO" &&
+    (macroCategoria === "Pago Deuda" ||
+      macroCategoria?.toLowerCase().includes("deuda") ||
+      Boolean(transaccion?.cuentaDestino));
+
   // Filtrado de carteras según tipo
   const carterasDisponibles = useMemo(() => {
-    if (transaccion?.tipo === 'GASTO') {
-      return carterasList.filter(c => c.permite_gasto !== false);
+    if (transaccion?.tipo === "GASTO") {
+      return carterasList.filter((c) => c.permite_gasto !== false);
     }
     return carterasList;
   }, [transaccion?.tipo, carterasList]);
+
+  // Carteras de pasivo / deuda para amortización
+  const carterasDeuda = useMemo(() => {
+    const list = carterasList.filter((c) => {
+      if (c.activa === false) return false;
+      const t = (c.tipo || "").toUpperCase();
+      const n = (c.nombre || "").toLowerCase();
+      return (
+        t === "PRESTAMO" ||
+        t === "CREDITO" ||
+        t === "DEUDA" ||
+        n.includes("crédito") ||
+        n.includes("credito") ||
+        n.includes("mazda") ||
+        n.includes("tc") ||
+        n.includes("rappicard") ||
+        n.includes("rappi")
+      );
+    });
+    if (list.length > 0) return list;
+    return [
+      {
+        id: "c-mazda",
+        nombre: "Crédito Mazda 2 (Lulo)",
+        tipo: "deuda",
+        icono: "🚗",
+        activa: true,
+      },
+      {
+        id: "c-tc-lulo",
+        nombre: "TC Lulo Bank",
+        tipo: "credito",
+        icono: "💳",
+        activa: true,
+      },
+      {
+        id: "c-rappicard",
+        nombre: "RappiCard",
+        tipo: "credito",
+        icono: "💳",
+        activa: true,
+      },
+    ] as CarteraInfo[];
+  }, [carterasList]);
+
+  // Pre-selección de cartera destino si es Pago Deuda y no viene con destino
+  useEffect(() => {
+    if (isPagoDeuda && !cuentaDestino) {
+      if (subcategoria) {
+        const subLower = subcategoria.toLowerCase();
+        let target = "";
+        if (subLower.includes("mazda") || subLower.includes("carro")) {
+          target = "Crédito Mazda 2 (Lulo)";
+        } else if (subLower.includes("lulo")) {
+          target = "TC Lulo Bank";
+        } else if (subLower.includes("rappi")) {
+          target = "RappiCard";
+        }
+
+        if (target) {
+          const found = carterasDeuda.find(
+            (c) =>
+              c.nombre.toLowerCase() === target.toLowerCase() ||
+              c.nombre
+                .toLowerCase()
+                .includes(target.toLowerCase().split(" ")[0]),
+          );
+          setCuentaDestino(found ? found.nombre : target);
+          return;
+        }
+      }
+      setCuentaDestino(carterasDeuda[0]?.nombre || "Crédito Mazda 2 (Lulo)");
+    }
+  }, [isPagoDeuda, cuentaDestino, subcategoria, carterasDeuda]);
 
   if (!isOpen || !transaccion) return null;
 
@@ -243,7 +381,7 @@ export default function EditTransactionModal({
     e.preventDefault();
     const parsedMonto = parseFloat(monto);
     if (isNaN(parsedMonto) || parsedMonto <= 0) {
-      alert('Ingresa un monto válido mayor a 0');
+      alert("Ingresa un monto válido mayor a 0");
       return;
     }
 
@@ -259,12 +397,18 @@ export default function EditTransactionModal({
         subcategoria,
         sub: subcategoria,
         cuenta,
-        cuentaOrigen: transaccion.tipo === 'GASTO' ? cuenta : (transaccion.cuentaOrigen || cuenta),
-        cuentaDestino: transaccion.tipo === 'INGRESO'
-          ? cuenta
-          : transaccion.tipo === 'TRANSFERENCIA'
-            ? cuentaDestino
-            : undefined,
+        cuentaOrigen:
+          transaccion.tipo === "GASTO"
+            ? cuenta
+            : transaccion.cuentaOrigen || cuenta,
+        cuentaDestino:
+          transaccion.tipo === "INGRESO"
+            ? cuenta
+            : transaccion.tipo === "TRANSFERENCIA"
+              ? cuentaDestino
+              : isPagoDeuda
+                ? cuentaDestino || undefined
+                : undefined,
         comentario: comentario.trim(),
         detalle: comentario.trim(),
       };
@@ -273,7 +417,7 @@ export default function EditTransactionModal({
       haptic(40);
       onClose();
     } catch (err) {
-      console.error('Error al guardar cambios de transacción:', err);
+      console.error("Error al guardar cambios de transacción:", err);
     } finally {
       setSaving(false);
     }
@@ -282,29 +426,33 @@ export default function EditTransactionModal({
   // Configuración de visualización del tipo
   const getTipoBadge = (tipo: TipoTransaccion) => {
     switch (tipo) {
-      case 'GASTO':
+      case "GASTO":
         return {
-          label: 'Gasto',
+          label: "Gasto",
           Icon: ArrowDownRight,
-          classes: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800',
+          classes:
+            "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800",
         };
-      case 'INGRESO':
+      case "INGRESO":
         return {
-          label: 'Ingreso',
+          label: "Ingreso",
           Icon: ArrowUpRight,
-          classes: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',
+          classes:
+            "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800",
         };
-      case 'TRANSFERENCIA':
+      case "TRANSFERENCIA":
         return {
-          label: 'Transferencia',
+          label: "Transferencia",
           Icon: ArrowLeftRight,
-          classes: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800',
+          classes:
+            "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800",
         };
-      case 'AJUSTE':
+      case "AJUSTE":
         return {
-          label: 'Ajuste',
+          label: "Ajuste",
           Icon: SlidersHorizontal,
-          classes: 'bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700',
+          classes:
+            "bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700",
         };
     }
   };
@@ -316,7 +464,7 @@ export default function EditTransactionModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4"
-      onClick={e => {
+      onClick={(e) => {
         if (e.target === e.currentTarget) {
           haptic();
           onClose();
@@ -338,7 +486,7 @@ export default function EditTransactionModal({
           overflow-hidden
           animate-slide-up
         "
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Cabecera del modal */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 flex-shrink-0">
@@ -354,7 +502,9 @@ export default function EditTransactionModal({
           </div>
 
           <div className="flex items-center gap-2">
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold border uppercase tracking-wide ${badge.classes}`}>
+            <span
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold border uppercase tracking-wide ${badge.classes}`}
+            >
               <BadgeIcon size={11} strokeWidth={2.5} />
               <span>{badge.label}</span>
             </span>
@@ -374,10 +524,16 @@ export default function EditTransactionModal({
         </div>
 
         {/* Formulario scrolleable */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto overscroll-y-contain px-5 py-4 flex flex-col gap-4">
+        <form
+          onSubmit={handleSubmit}
+          className="flex-1 overflow-y-auto overscroll-y-contain px-5 py-4 flex flex-col gap-4"
+        >
           {/* Monto */}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="edit-tx-monto" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+            <label
+              htmlFor="edit-tx-monto"
+              className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+            >
               <DollarSign size={13} className="text-slate-400" />
               <span>Monto (COP)</span>
             </label>
@@ -393,7 +549,7 @@ export default function EditTransactionModal({
                 step="any"
                 required
                 value={monto}
-                onChange={e => setMonto(e.target.value)}
+                onChange={(e) => setMonto(e.target.value)}
                 placeholder="0"
                 className="
                   w-full pl-8 pr-3.5 py-2.5 rounded-xl
@@ -416,14 +572,17 @@ export default function EditTransactionModal({
           {/* Macro-categoría y Subcategoría */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="edit-tx-macro" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+              <label
+                htmlFor="edit-tx-macro"
+                className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+              >
                 <Tag size={13} className="text-slate-400" />
                 <span>Macro-categoría</span>
               </label>
               <select
                 id="edit-tx-macro"
                 value={macroCategoria}
-                onChange={e => handleMacroChange(e.target.value)}
+                onChange={(e) => handleMacroChange(e.target.value)}
                 className="
                   w-full px-3 py-2 rounded-xl
                   bg-slate-50 dark:bg-slate-950/60
@@ -434,7 +593,7 @@ export default function EditTransactionModal({
                   transition cursor-pointer
                 "
               >
-                {macrosDisponibles.map(macro => (
+                {macrosDisponibles.map((macro) => (
                   <option key={macro} value={macro}>
                     {getMacroIcon(macro, tipo)} {macro}
                   </option>
@@ -443,14 +602,17 @@ export default function EditTransactionModal({
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="edit-tx-sub" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+              <label
+                htmlFor="edit-tx-sub"
+                className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+              >
                 <Tag size={13} className="text-slate-400" />
                 <span>Subcategoría</span>
               </label>
               <select
                 id="edit-tx-sub"
                 value={subcategoria}
-                onChange={e => setSubcategoria(e.target.value)}
+                onChange={(e) => setSubcategoria(e.target.value)}
                 className="
                   w-full px-3 py-2 rounded-xl
                   bg-slate-50 dark:bg-slate-950/60
@@ -461,7 +623,7 @@ export default function EditTransactionModal({
                   transition cursor-pointer
                 "
               >
-                {subcategoriasDisponibles.map(sub => (
+                {subcategoriasDisponibles.map((sub) => (
                   <option key={sub} value={sub}>
                     {sub}
                   </option>
@@ -471,17 +633,20 @@ export default function EditTransactionModal({
           </div>
 
           {/* Carteras / Medios de pago */}
-          {transaccion.tipo === 'TRANSFERENCIA' ? (
+          {transaccion.tipo === "TRANSFERENCIA" ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="edit-tx-cuenta-origen" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                <label
+                  htmlFor="edit-tx-cuenta-origen"
+                  className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+                >
                   <Wallet size={13} className="text-slate-400" />
                   <span>Cuenta Origen</span>
                 </label>
                 <select
                   id="edit-tx-cuenta-origen"
                   value={cuenta}
-                  onChange={e => setCuenta(e.target.value)}
+                  onChange={(e) => setCuenta(e.target.value)}
                   className="
                     w-full px-3 py-2 rounded-xl
                     bg-slate-50 dark:bg-slate-950/60
@@ -492,23 +657,26 @@ export default function EditTransactionModal({
                     transition cursor-pointer
                   "
                 >
-                  {carterasList.map(c => (
+                  {carterasList.map((c) => (
                     <option key={c.id || c.nombre} value={c.nombre}>
-                      {c.icono || '💳'} {c.nombre}
+                      {c.icono || "💳"} {c.nombre}
                     </option>
                   ))}
                 </select>
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="edit-tx-cuenta-destino" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                <label
+                  htmlFor="edit-tx-cuenta-destino"
+                  className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+                >
                   <Wallet size={13} className="text-slate-400" />
                   <span>Cuenta Destino</span>
                 </label>
                 <select
                   id="edit-tx-cuenta-destino"
                   value={cuentaDestino}
-                  onChange={e => setCuentaDestino(e.target.value)}
+                  onChange={(e) => setCuentaDestino(e.target.value)}
                   className="
                     w-full px-3 py-2 rounded-xl
                     bg-slate-50 dark:bg-slate-950/60
@@ -519,26 +687,99 @@ export default function EditTransactionModal({
                     transition cursor-pointer
                   "
                 >
-                  {carterasList.map(c => (
+                  {carterasList.map((c) => (
                     <option key={c.id || c.nombre} value={c.nombre}>
-                      {c.icono || '💳'} {c.nombre}
+                      {c.icono || "💳"} {c.nombre}
                     </option>
                   ))}
                 </select>
               </div>
             </div>
+          ) : isPagoDeuda ? (
+            <div className="flex flex-col gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label
+                    htmlFor="edit-tx-cuenta-origen-deuda"
+                    className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+                  >
+                    <Wallet size={13} className="text-slate-400" />
+                    <span>Pagar desde (Salida)</span>
+                  </label>
+                  <select
+                    id="edit-tx-cuenta-origen-deuda"
+                    value={cuenta}
+                    onChange={(e) => setCuenta(e.target.value)}
+                    className="
+                      w-full px-3 py-2 rounded-xl
+                      bg-slate-50 dark:bg-slate-950/60
+                      border border-slate-200 dark:border-slate-800
+                      text-slate-900 dark:text-slate-100
+                      text-xs font-medium
+                      focus:outline-none focus:ring-2 focus:ring-slate-400 dark:focus:ring-slate-600
+                      transition cursor-pointer
+                    "
+                  >
+                    {carterasDisponibles.map((c) => (
+                      <option key={c.id || c.nombre} value={c.nombre}>
+                        {c.icono || "💳"} {c.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label
+                    htmlFor="edit-tx-cuenta-destino-deuda"
+                    className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+                  >
+                    <Wallet size={13} className="text-slate-400" />
+                    <span>Cartera de Deuda (Abono)</span>
+                  </label>
+                  <select
+                    id="edit-tx-cuenta-destino-deuda"
+                    value={cuentaDestino}
+                    onChange={(e) => setCuentaDestino(e.target.value)}
+                    className="
+                      w-full px-3 py-2 rounded-xl
+                      bg-slate-50 dark:bg-slate-950/60
+                      border border-slate-200 dark:border-slate-800
+                      text-slate-900 dark:text-slate-100
+                      text-xs font-medium
+                      focus:outline-none focus:ring-2 focus:ring-slate-400 dark:focus:ring-slate-600
+                      transition cursor-pointer
+                    "
+                  >
+                    {carterasDeuda.map((c) => (
+                      <option key={c.id || c.nombre} value={c.nombre}>
+                        {c.icono || "💳"} {c.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="text-[11px] text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 rounded-xl px-3 py-2 flex items-center gap-1.5 leading-snug">
+                <span>💡 Este movimiento ejecutará el presupuesto de deuda y amortizará el saldo vivo de la cartera seleccionada</span>
+              </div>
+            </div>
           ) : (
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="edit-tx-cuenta" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+              <label
+                htmlFor="edit-tx-cuenta"
+                className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+              >
                 <Wallet size={13} className="text-slate-400" />
                 <span>
-                  {transaccion.tipo === 'INGRESO' ? 'Cuenta de Depósito' : 'Medio de Pago / Cartera'}
+                  {transaccion.tipo === "INGRESO"
+                    ? "Cuenta de Depósito"
+                    : "Medio de Pago / Cartera"}
                 </span>
               </label>
               <select
                 id="edit-tx-cuenta"
                 value={cuenta}
-                onChange={e => setCuenta(e.target.value)}
+                onChange={(e) => setCuenta(e.target.value)}
                 className="
                   w-full px-3 py-2 rounded-xl
                   bg-slate-50 dark:bg-slate-950/60
@@ -549,9 +790,9 @@ export default function EditTransactionModal({
                   transition cursor-pointer
                 "
               >
-                {carterasDisponibles.map(c => (
+                {carterasDisponibles.map((c) => (
                   <option key={c.id || c.nombre} value={c.nombre}>
-                    {c.icono || '💳'} {c.nombre}
+                    {c.icono || "💳"} {c.nombre}
                   </option>
                 ))}
               </select>
@@ -560,7 +801,10 @@ export default function EditTransactionModal({
 
           {/* Comentario / Detalle */}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="edit-tx-detalle" className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+            <label
+              htmlFor="edit-tx-detalle"
+              className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+            >
               <FileText size={13} className="text-slate-400" />
               <span>Comentario o Detalle</span>
             </label>
@@ -568,7 +812,7 @@ export default function EditTransactionModal({
               id="edit-tx-detalle"
               type="text"
               value={comentario}
-              onChange={e => setComentario(e.target.value)}
+              onChange={(e) => setComentario(e.target.value)}
               placeholder="Opcional..."
               className="
                 w-full px-3.5 py-2 rounded-xl
