@@ -105,6 +105,34 @@ export interface CatalogoItem {
   orden?: number;
 }
 
+export interface Prestamo {
+  id: string;
+  deudor: string;
+  monto: number;
+  fecha_prestamo: string;
+  cuenta_origen: string;
+  cuenta_destino?: string | null;
+  nota?: string | null;
+  estado: 'PENDIENTE' | 'PAGADO';
+  fecha_pago?: string | null;
+}
+
+export type VehiculoGasolina = 'MAZDA_2' | 'MOTOCICLETA';
+
+export interface Tanqueada {
+  id: string;
+  transaccion_id?: string | null;
+  vehiculo: VehiculoGasolina;
+  fecha: string;
+  monto: number;
+  kilometraje?: number | null;
+  galones?: number | null;
+  precio_galon?: number | null;
+  tanque_lleno: boolean;
+  estacion?: string | null;
+  nota?: string | null;
+}
+
 export interface AppDataResponse {
   saldos: Record<string, number>;
   gastadoPorSubcat: Record<string, number>;
@@ -129,4 +157,6 @@ export interface AppDataResponse {
   carteras?: CarteraInfo[];
   gastosRecurrentes?: GastoRecurrente[];
   catalogo?: CatalogoItem[];
+  prestamos?: Prestamo[];
+  tanqueadas?: Tanqueada[];
 }

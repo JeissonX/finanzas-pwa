@@ -4,6 +4,8 @@ import type {
   TipoTransaccion,
   CarteraInfo,
   CatalogoItem,
+  VehiculoGasolina,
+  Tanqueada,
 } from "../types/finance";
 import type { AppData } from "../services/api";
 import {
@@ -17,6 +19,7 @@ import { formatDisplay, parseAmount, formatCOP, haptic } from "../utils/format";
 
 interface QuickRegisterProps {
   onSave: (payload: {
+    id?: string;
     tipo: TipoTransaccion;
     monto: number;
     categoria: string;
@@ -29,6 +32,15 @@ interface QuickRegisterProps {
     sub?: string;
     comentario?: string;
     detalle?: string;
+    tanqueada?: {
+      vehiculo: VehiculoGasolina;
+      kilometraje?: number | null;
+      galones?: number | null;
+      precio_galon?: number | null;
+      tanque_lleno: boolean;
+      estacion?: string | null;
+      nota?: string | null;
+    };
   }) => Promise<void>;
   saving: boolean;
   onSuccess?: () => void;
@@ -109,6 +121,29 @@ export default function QuickRegister({
   );
   const [comentario, setComentario] = useState("");
 
+  // Estado para captura opcional de tanqueada de gasolina
+  const [gasolinaVehiculo, setGasolinaVehiculo] = useState<VehiculoGasolina>("MAZDA_2");
+  const [gasolinaKm, setGasolinaKm] = useState("");
+  const [gasolinaGalones, setGasolinaGalones] = useState("");
+  const [gasolinaTanqueLleno, setGasolinaTanqueLleno] = useState(true);
+  const [gasolinaEstacion, setGasolinaEstacion] = useState("");
+
+  // Histórico de tanqueadas para referencia del último odómetro
+  const [tanqueadasList, setTanqueadasList] = useState<Tanqueada[]>(() => {
+    try {
+      const raw = localStorage.getItem("finanzas_cached_appdata_v4");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.data?.tanqueadas && Array.isArray(parsed.data.tanqueadas)) {
+          return parsed.data.tanqueadas;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
+
   // Catálogo dinámico unificado con fallback a caché local
   const [internalCatalogo, setInternalCatalogo] = useState<CatalogoItem[]>(
     () => {
@@ -174,6 +209,9 @@ export default function QuickRegister({
       if (custom.detail?.catalogo && Array.isArray(custom.detail.catalogo)) {
         setInternalCatalogo(custom.detail.catalogo);
       }
+      if (custom.detail?.tanqueadas && Array.isArray(custom.detail.tanqueadas)) {
+        setTanqueadasList(custom.detail.tanqueadas);
+      }
     };
     window.addEventListener("finanzas_appdata_updated", handleUpdate);
     return () =>
@@ -186,6 +224,38 @@ export default function QuickRegister({
   const isPagoDeuda =
     tipo === "GASTO" &&
     (categoria === "Pago Deuda" || categoria?.toLowerCase().includes("deuda"));
+
+  // Detección de gasto en combustible
+  const isGasolina = useMemo(() => {
+    if (tipo !== "GASTO") return false;
+    const sub = (subcategoria || "").toLowerCase();
+    const cat = (categoria || "").toLowerCase();
+    return sub.includes("gasolina") || cat.includes("gasolina");
+  }, [tipo, subcategoria, categoria]);
+
+  // Inferir vehículo automáticamente según la subcategoría seleccionada
+  useEffect(() => {
+    if (isGasolina) {
+      const sub = (subcategoria || "").toLowerCase();
+      if (sub.includes("moto")) {
+        setGasolinaVehiculo("MOTOCICLETA");
+      } else {
+        setGasolinaVehiculo("MAZDA_2");
+      }
+    }
+  }, [isGasolina, subcategoria]);
+
+  // Último odómetro registrado para el vehículo seleccionado
+  const ultimoOdometro = useMemo(() => {
+    const list = tanqueadasList.filter(
+      (t) =>
+        t.vehiculo === gasolinaVehiculo &&
+        t.kilometraje != null &&
+        !isNaN(Number(t.kilometraje)),
+    );
+    if (list.length === 0) return null;
+    return Math.max(...list.map((t) => Number(t.kilometraje)));
+  }, [tanqueadasList, gasolinaVehiculo]);
 
   // Filtrar carteras disponibles para el selector de origen/pago (únicamente activas)
   const carterasDisponibles = useMemo(() => {
@@ -381,7 +451,10 @@ export default function QuickRegister({
             macroName.trim().toLowerCase() &&
           c.subcategoria.trim().toLowerCase() === subName.trim().toLowerCase(),
       );
-      return item?.medio_pago_sugerido || PAYMENT_RULES[subName];
+      if (item?.medio_pago_sugerido) return item.medio_pago_sugerido;
+      if (PAYMENT_RULES[subName]) return PAYMENT_RULES[subName];
+      if (subName.toLowerCase().includes("gasolina")) return "RappiCard";
+      return undefined;
     },
     [activeCatalogo],
   );
@@ -581,7 +654,29 @@ export default function QuickRegister({
     if (amount <= 0) return;
     haptic(50);
     const trimmedComentario = comentario.trim();
+    const txId = crypto.randomUUID();
+
+    const cleanGalones = gasolinaGalones
+      ? parseFloat(gasolinaGalones.replace(",", "."))
+      : null;
+    const cleanKm = gasolinaKm ? parseInt(gasolinaKm.replace(/\D/g, ""), 10) : null;
+    const cleanPrecioGalon =
+      cleanGalones && cleanGalones > 0 ? Math.trunc(amount / cleanGalones) : null;
+
+    const tanqueadaPayload = isGasolina
+      ? {
+          vehiculo: gasolinaVehiculo,
+          kilometraje: cleanKm && !isNaN(cleanKm) ? cleanKm : null,
+          galones: cleanGalones && !isNaN(cleanGalones) ? Number(cleanGalones.toFixed(3)) : null,
+          precio_galon: cleanPrecioGalon,
+          tanque_lleno: gasolinaTanqueLleno,
+          estacion: gasolinaEstacion.trim() || null,
+          nota: trimmedComentario || null,
+        }
+      : undefined;
+
     await onSave({
+      id: txId,
       tipo,
       monto: amount,
       // Categorías (ambas variantes)
@@ -605,9 +700,14 @@ export default function QuickRegister({
       // Comentario (ambas variantes)
       detalle: trimmedComentario,
       comentario: trimmedComentario,
+      tanqueada: tanqueadaPayload,
     });
     setDisplay("0");
     setComentario("");
+    setGasolinaKm("");
+    setGasolinaGalones("");
+    setGasolinaEstacion("");
+    setGasolinaTanqueLleno(true);
     onSuccess?.();
   };
 
@@ -871,6 +971,143 @@ export default function QuickRegister({
             </select>
             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3.5 text-slate-400 dark:text-slate-500">
               <ChevronDown size={18} />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Bloque integrado de Tanqueada de Gasolina (Opcional) */}
+      {isGasolina && (
+        <section className="animate-slide-up rounded-2xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-800/60 p-3.5 space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-amber-200/50 dark:border-amber-800/40">
+            <div className="flex items-center gap-2">
+              <span className="text-base">⛽</span>
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                  Detalle de tanqueada (Opcional)
+                </h4>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                  {ultimoOdometro ? `Último odómetro: ${ultimoOdometro.toLocaleString('es-CO')} km` : 'Sin odómetro previo registrado'}
+                </p>
+              </div>
+            </div>
+
+            {/* Selector de vehículo rápido */}
+            <div className="flex gap-1 bg-amber-100/70 dark:bg-amber-900/40 p-0.5 rounded-xl border border-amber-200/60 dark:border-amber-800/50">
+              <button
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setGasolinaVehiculo("MAZDA_2");
+                }}
+                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+                  gasolinaVehiculo === "MAZDA_2"
+                    ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                🚗 Mazda 2
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setGasolinaVehiculo("MOTOCICLETA");
+                }}
+                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+                  gasolinaVehiculo === "MOTOCICLETA"
+                    ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                🏍️ Moto
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <div>
+              <label
+                htmlFor="input-gasolina-km"
+                className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1"
+              >
+                Kilometraje actual (km)
+              </label>
+              <input
+                id="input-gasolina-km"
+                type="text"
+                inputMode="numeric"
+                value={gasolinaKm}
+                onChange={(e) => setGasolinaKm(formatDisplay(e.target.value))}
+                placeholder={ultimoOdometro ? String(ultimoOdometro + 400) : "Ej: 48750"}
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono font-bold text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-500 shadow-xs"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label
+                  htmlFor="input-gasolina-gal"
+                  className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider"
+                >
+                  Galones
+                </label>
+                {amount > 0 && gasolinaGalones && parseFloat(gasolinaGalones.replace(",", ".")) > 0 && (
+                  <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300 font-mono">
+                    ≈ {formatCOP(Math.trunc(amount / parseFloat(gasolinaGalones.replace(",", "."))))} / gal
+                  </span>
+                )}
+              </div>
+              <input
+                id="input-gasolina-gal"
+                type="text"
+                inputMode="decimal"
+                value={gasolinaGalones}
+                onChange={(e) => setGasolinaGalones(e.target.value)}
+                placeholder="Ej: 8.45"
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono font-bold text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-500 shadow-xs"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-0.5">
+            <div>
+              <label
+                htmlFor="input-gasolina-estacion"
+                className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1"
+              >
+                Estación de servicio
+              </label>
+              <input
+                id="input-gasolina-estacion"
+                type="text"
+                maxLength={40}
+                value={gasolinaEstacion}
+                onChange={(e) => setGasolinaEstacion(e.target.value)}
+                placeholder="Ej: Terpel, Primax, Texaco"
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-500 shadow-xs"
+              />
+            </div>
+
+            <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-4">
+              <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                ¿Tanque lleno (Full)?
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setGasolinaTanqueLleno((prev) => !prev);
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 cursor-pointer active:scale-95 ${
+                  gasolinaTanqueLleno
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800"
+                    : "bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700"
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${gasolinaTanqueLleno ? "bg-emerald-500" : "bg-slate-400"}`} />
+                <span>{gasolinaTanqueLleno ? "Full (Lleno)" : "Carga Parcial"}</span>
+              </button>
             </div>
           </div>
         </section>

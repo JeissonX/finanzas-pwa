@@ -25,6 +25,9 @@ import {
   Scale,
   TrendingUp,
   Layers,
+  Fuel,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 import { CATALOG_GASTOS } from '../data/catalog';
 import {
@@ -34,8 +37,17 @@ import {
   formatDisplay,
   parseAmount,
   isDateInCurrentCycle,
+  getBogotaDateParts,
 } from '../utils/format';
-import { fetchAppData, DEFAULT_APPDATA, type AppData } from '../services/api';
+import {
+  fetchAppData,
+  DEFAULT_APPDATA,
+  type AppData,
+  createTanqueada,
+  updateTanqueada,
+  deleteTanqueada,
+} from '../services/api';
+import type { Tanqueada, VehiculoGasolina } from '../types/finance';
 
 const PALETTE = [
   '#E11D48', '#2563EB', '#059669', '#D97706',
@@ -205,6 +217,38 @@ export default function AnalyticsView() {
   const [abonoSimulado, setAbonoSimulado] = useState<number>(1_000_000);
   const [abonoInput, setAbonoInput] = useState<string>('1.000.000');
   const [escenarioSimulador, setEscenarioSimulador] = useState<'plazo' | 'cuota'>('plazo');
+
+  // ── Módulo de Control de Gasolina ───────────────────────────
+  const [vehiculoGasolina, setVehiculoGasolina] = useState<VehiculoGasolina>('MAZDA_2');
+
+  // Modal Nueva Tanqueada
+  const [modalTanqueadaOpen, setModalTanqueadaOpen] = useState(false);
+  const [tVehiculo, setTVehiculo] = useState<VehiculoGasolina>('MAZDA_2');
+  const [tFecha, setTFecha] = useState(() => {
+    const { year, month, day } = getBogotaDateParts();
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  });
+  const [tMonto, setTMonto] = useState('');
+  const [tKm, setTKm] = useState('');
+  const [tGalones, setTGalones] = useState('');
+  const [tTanqueLleno, setTTanqueLleno] = useState(true);
+  const [tEstacion, setTEstacion] = useState('');
+  const [tNota, setTNota] = useState('');
+  const [savingTanqueada, setSavingTanqueada] = useState(false);
+  const [errorTanqueada, setErrorTanqueada] = useState<string | null>(null);
+
+  // Modal Editar Tanqueada
+  const [tanqueadaToEdit, setTanqueadaToEdit] = useState<Tanqueada | null>(null);
+  const [editVehiculo, setEditVehiculo] = useState<VehiculoGasolina>('MAZDA_2');
+  const [editFecha, setEditFecha] = useState('');
+  const [editMonto, setEditMonto] = useState('');
+  const [editKm, setEditKm] = useState('');
+  const [editGalones, setEditGalones] = useState('');
+  const [editTanqueLleno, setEditTanqueLleno] = useState(true);
+  const [editEstacion, setEditEstacion] = useState('');
+  const [editNota, setEditNota] = useState('');
+  const [isUpdatingTanqueada, setIsUpdatingTanqueada] = useState(false);
+  const [errorEditTanqueada, setErrorEditTanqueada] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAppData().then(data => setAppData(data)).catch(() => {});
@@ -421,6 +465,242 @@ export default function AnalyticsView() {
   };
 
   const previewMazdaRates = calcEquivalentesEA(parseFloat(inputMazda) || tasaMazda);
+
+  // ── Cálculos de Rendimiento de Gasolina ─────────────────────
+  const datosGasolina = useMemo(() => {
+    const list = (appData.tanqueadas || []).filter(
+      (t) => t.vehiculo === vehiculoGasolina
+    );
+
+    // Orden ascendente para cálculo de tramos
+    const ascList = [...list].sort((a, b) => {
+      const timeA = new Date(a.fecha).getTime();
+      const timeB = new Date(b.fecha).getTime();
+      if (timeA !== timeB) return timeA - timeB;
+      return (Number(a.kilometraje) || 0) - (Number(b.kilometraje) || 0);
+    });
+
+    const tramosMap = new Map<
+      string,
+      { deltaKm: number | null; kmPorGalon: number | null; costoPorKm: number | null }
+    >();
+
+    let prevLleno: Tanqueada | null = null;
+    let galonesAcumuladosParciales = 0;
+    let montoAcumuladoParciales = 0;
+
+    let sumaTotalKm = 0;
+    let sumaTotalGalones = 0;
+    let sumaTotalMonto = 0;
+
+    for (let i = 0; i < ascList.length; i++) {
+      const curr = ascList[i];
+      const currKm = curr.kilometraje != null ? Number(curr.kilometraje) : null;
+      const currGal = curr.galones != null ? Number(curr.galones) : null;
+      const currMonto = Number(curr.monto) || 0;
+
+      if (curr.tanque_lleno) {
+        if (
+          prevLleno &&
+          prevLleno.kilometraje != null &&
+          currKm != null &&
+          currKm > prevLleno.kilometraje &&
+          currGal != null &&
+          currGal > 0
+        ) {
+          const deltaKm = currKm - prevLleno.kilometraje;
+          const galonesTotalesTramo = currGal + galonesAcumuladosParciales;
+          const montoTotalTramo = currMonto + montoAcumuladoParciales;
+
+          if (deltaKm > 0 && galonesTotalesTramo > 0) {
+            const kmPorGalon = Number((deltaKm / galonesTotalesTramo).toFixed(1));
+            const costoPorKm = Math.round(montoTotalTramo / deltaKm);
+
+            tramosMap.set(curr.id, { deltaKm, kmPorGalon, costoPorKm });
+
+            sumaTotalKm += deltaKm;
+            sumaTotalGalones += galonesTotalesTramo;
+            sumaTotalMonto += montoTotalTramo;
+          } else {
+            tramosMap.set(curr.id, { deltaKm: null, kmPorGalon: null, costoPorKm: null });
+          }
+        } else {
+          tramosMap.set(curr.id, { deltaKm: null, kmPorGalon: null, costoPorKm: null });
+        }
+
+        prevLleno = curr;
+        galonesAcumuladosParciales = 0;
+        montoAcumuladoParciales = 0;
+      } else {
+        if (currGal != null && currGal > 0) {
+          galonesAcumuladosParciales += currGal;
+        }
+        montoAcumuladoParciales += currMonto;
+        tramosMap.set(curr.id, { deltaKm: null, kmPorGalon: null, costoPorKm: null });
+      }
+    }
+
+    const rendimientoPromedio =
+      sumaTotalGalones > 0 && sumaTotalKm > 0
+        ? `${(sumaTotalKm / sumaTotalGalones).toFixed(1)} km/gal`
+        : 'Requiere 2 tanqueadas llenas';
+
+    const costoPromedioKm =
+      sumaTotalKm > 0 && sumaTotalMonto > 0
+        ? `${formatCOP(Math.round(sumaTotalMonto / sumaTotalKm))}/km`
+        : '—';
+
+    // Gasto del ciclo actual
+    const tanqueadasCiclo = list.filter((t) => isDateInCurrentCycle(t.fecha));
+    const gastoCicloCOP = tanqueadasCiclo.reduce((sum, t) => sum + (Number(t.monto) || 0), 0);
+    const galonesCiclo = tanqueadasCiclo.reduce((sum, t) => sum + (Number(t.galones) || 0), 0);
+
+    // Último odómetro
+    const kmList = list
+      .filter((t) => t.kilometraje != null && !isNaN(Number(t.kilometraje)))
+      .map((t) => Number(t.kilometraje));
+    const ultimoOdometro = kmList.length > 0 ? Math.max(...kmList) : null;
+
+    // Lista descendente
+    const listDesc = [...list].sort(
+      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+    );
+
+    return {
+      listDesc,
+      tramosMap,
+      rendimientoPromedio,
+      costoPromedioKm,
+      gastoCicloCOP,
+      galonesCiclo,
+      ultimoOdometro,
+      totalTanqueadas: list.length,
+    };
+  }, [appData.tanqueadas, vehiculoGasolina]);
+
+  // Handlers para tanqueadas
+  const handleOpenNewTanqueada = () => {
+    haptic();
+    setTVehiculo(vehiculoGasolina);
+    const { year, month, day } = getBogotaDateParts();
+    setTFecha(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+    setTMonto('');
+    setTKm('');
+    setTGalones('');
+    setTTanqueLleno(true);
+    setTEstacion('');
+    setTNota('');
+    setErrorTanqueada(null);
+    setModalTanqueadaOpen(true);
+  };
+
+  const handleSaveNewTanqueada = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanMonto = parseAmount(tMonto);
+    if (cleanMonto <= 0) {
+      setErrorTanqueada('El monto de la tanqueada debe ser mayor a 0');
+      return;
+    }
+
+    setSavingTanqueada(true);
+    setErrorTanqueada(null);
+    haptic(50);
+    try {
+      const cleanKm = tKm ? parseInt(tKm.replace(/\D/g, ''), 10) : null;
+      const cleanGal = tGalones ? parseFloat(tGalones.replace(',', '.')) : null;
+
+      await createTanqueada({
+        vehiculo: tVehiculo,
+        fecha: new Date(tFecha + 'T12:00:00-05:00').toISOString(),
+        monto: cleanMonto,
+        kilometraje: cleanKm && !isNaN(cleanKm) ? cleanKm : null,
+        galones: cleanGal && !isNaN(cleanGal) ? Number(cleanGal.toFixed(3)) : null,
+        precio_galon: cleanGal && cleanGal > 0 ? Math.trunc(cleanMonto / cleanGal) : null,
+        tanque_lleno: tTanqueLleno,
+        estacion: tEstacion.trim() || null,
+        nota: tNota.trim() || null,
+      });
+
+      const updated = await fetchAppData(true);
+      setAppData(updated);
+      setModalTanqueadaOpen(false);
+    } catch (err: any) {
+      console.error('Error guardando tanqueada:', err);
+      setErrorTanqueada(err?.message || 'Error al guardar la tanqueada');
+    } finally {
+      setSavingTanqueada(false);
+    }
+  };
+
+  const handleOpenEditTanqueada = (t: Tanqueada) => {
+    haptic();
+    setTanqueadaToEdit(t);
+    setEditVehiculo(t.vehiculo);
+    setEditFecha(t.fecha.slice(0, 10));
+    setEditMonto(formatDisplay(String(t.monto)));
+    setEditKm(t.kilometraje != null ? String(t.kilometraje) : '');
+    setEditGalones(t.galones != null ? String(t.galones) : '');
+    setEditTanqueLleno(t.tanque_lleno);
+    setEditEstacion(t.estacion || '');
+    setEditNota(t.nota || '');
+    setErrorEditTanqueada(null);
+  };
+
+  const handleUpdateTanqueada = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tanqueadaToEdit) return;
+    const cleanMonto = parseAmount(editMonto);
+    if (cleanMonto <= 0) {
+      setErrorEditTanqueada('El monto debe ser mayor a 0');
+      return;
+    }
+
+    setIsUpdatingTanqueada(true);
+    setErrorEditTanqueada(null);
+    haptic(50);
+    try {
+      const cleanKm = editKm ? parseInt(editKm.replace(/\D/g, ''), 10) : null;
+      const cleanGal = editGalones ? parseFloat(editGalones.replace(',', '.')) : null;
+
+      await updateTanqueada(tanqueadaToEdit.id, {
+        vehiculo: editVehiculo,
+        fecha: new Date(editFecha + 'T12:00:00-05:00').toISOString(),
+        monto: cleanMonto,
+        kilometraje: cleanKm && !isNaN(cleanKm) ? cleanKm : null,
+        galones: cleanGal && !isNaN(cleanGal) ? Number(cleanGal.toFixed(3)) : null,
+        precio_galon: cleanGal && cleanGal > 0 ? Math.trunc(cleanMonto / cleanGal) : null,
+        tanque_lleno: editTanqueLleno,
+        estacion: editEstacion.trim() || null,
+        nota: editNota.trim() || null,
+      });
+
+      const updated = await fetchAppData(true);
+      setAppData(updated);
+      setTanqueadaToEdit(null);
+    } catch (err: any) {
+      console.error('Error actualizando tanqueada:', err);
+      setErrorEditTanqueada(err?.message || 'Error al actualizar la tanqueada');
+    } finally {
+      setIsUpdatingTanqueada(false);
+    }
+  };
+
+  const handleDeleteTanqueada = async (t: Tanqueada) => {
+    haptic(50);
+    const confirmed = window.confirm(
+      `¿Deseas eliminar la tanqueada de ${formatCOP(t.monto)} del ${new Date(t.fecha).toLocaleDateString('es-CO')}?`
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteTanqueada(t.id);
+      const updated = await fetchAppData(true);
+      setAppData(updated);
+    } catch (err: any) {
+      console.error('Error eliminando tanqueada:', err);
+      alert(err?.message || 'Error al eliminar tanqueada');
+    }
+  };
 
   const pieData = CATALOG_GASTOS.map((cat, i) => ({
     name: cat.nombre,
@@ -887,6 +1167,237 @@ export default function AnalyticsView() {
         </div>
       </section>
 
+      {/* ── WIDGET: CONTROL Y RENDIMIENTO DE GASOLINA ── */}
+      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
+        {/* Encabezado con selector de vehículo y botón + Tanqueada */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex items-center justify-center text-amber-600 dark:text-amber-400">
+              <Fuel className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                Control y Rendimiento de Gasolina
+              </h2>
+              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                Histórico de odómetro y eficiencia por combustible
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 self-end sm:self-auto">
+            {/* Selector de vehículo */}
+            <div className="flex p-0.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700/80">
+              <button
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setVehiculoGasolina('MAZDA_2');
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                  vehiculoGasolina === 'MAZDA_2'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                🚗 Mazda 2
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setVehiculoGasolina('MOTOCICLETA');
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                  vehiculoGasolina === 'MOTOCICLETA'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                🏍️ Motocicleta
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleOpenNewTanqueada}
+              className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-xs transition flex items-center gap-1 cursor-pointer active:scale-95"
+            >
+              <Plus size={13} />
+              <span>Tanqueada</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 4 KPIs calculados del vehículo */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {/* KPI 1: Rendimiento */}
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+              Rendimiento Prom.
+            </span>
+            <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-slate-100 font-mono block">
+              {datosGasolina.rendimientoPromedio}
+            </span>
+            <span className="text-[9px] text-slate-400 dark:text-slate-500 block mt-0.5">
+              Método full to full
+            </span>
+          </div>
+
+          {/* KPI 2: Costo / km */}
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+              Costo por km
+            </span>
+            <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-slate-100 font-mono block">
+              {datosGasolina.costoPromedioKm}
+            </span>
+            <span className="text-[9px] text-slate-400 dark:text-slate-500 block mt-0.5">
+              Gasto real combustible
+            </span>
+          </div>
+
+          {/* KPI 3: Ciclo actual */}
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+              Gasto Ciclo Activo
+            </span>
+            <span className="text-xs sm:text-sm font-black text-rose-600 dark:text-rose-400 font-mono block">
+              {formatCOP(datosGasolina.gastoCicloCOP)}
+            </span>
+            <span className="text-[9px] text-slate-400 dark:text-slate-500 block mt-0.5">
+              {datosGasolina.galonesCiclo > 0 ? `${datosGasolina.galonesCiclo.toFixed(2)} gal` : 'Sin cargas este ciclo'}
+            </span>
+          </div>
+
+          {/* KPI 4: Último odómetro */}
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+              Último Odómetro
+            </span>
+            <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-slate-100 font-mono block">
+              {datosGasolina.ultimoOdometro ? `${datosGasolina.ultimoOdometro.toLocaleString('es-CO')} km` : '—'}
+            </span>
+            <span className="text-[9px] text-slate-400 dark:text-slate-500 block mt-0.5">
+              Lectura odómetro
+            </span>
+          </div>
+        </div>
+
+        {/* Histórico de tanqueadas del vehículo */}
+        <div className="border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden bg-white dark:bg-slate-900/60">
+          <div className="px-3.5 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 flex items-center justify-between">
+            <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+              Histórico ({datosGasolina.totalTanqueadas} registros)
+            </span>
+            <span className="text-[10px] text-slate-500 dark:text-slate-400">
+              {vehiculoGasolina === 'MAZDA_2' ? 'Mazda 2' : 'Motocicleta'}
+            </span>
+          </div>
+
+          {datosGasolina.listDesc.length === 0 ? (
+            <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">
+              No hay tanqueadas registradas aún para este vehículo.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-slate-800/70 max-h-80 overflow-y-auto">
+              {datosGasolina.listDesc.map((t) => {
+                const tramo = datosGasolina.tramosMap.get(t.id);
+                const fechaFormat = new Date(t.fecha).toLocaleDateString('es-CO', {
+                  day: '2-digit',
+                  month: 'short',
+                  year: 'numeric',
+                });
+
+                return (
+                  <div
+                    key={t.id}
+                    className="p-3 flex items-center justify-between gap-2.5 hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition text-xs"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">
+                          {fechaFormat}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+                            t.tanque_lleno
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                              : 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                          }`}
+                        >
+                          {t.tanque_lleno ? 'Full' : 'Parcial'}
+                        </span>
+                        {t.estacion && (
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 truncate max-w-[120px]">
+                            · {t.estacion}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                        {t.kilometraje != null ? (
+                          <span>
+                            {t.kilometraje.toLocaleString('es-CO')} km
+                            {tramo?.deltaKm ? (
+                              <strong className="text-emerald-600 dark:text-emerald-400 ml-1">
+                                (+{tramo.deltaKm} km)
+                              </strong>
+                            ) : null}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 dark:text-slate-500">Sin km</span>
+                        )}
+                        <span>·</span>
+                        <span>{t.galones != null ? `${t.galones} gal` : '—'}</span>
+                        {t.precio_galon ? <span>· {formatCOP(t.precio_galon)}/gal</span> : null}
+                      </div>
+
+                      {t.nota && (
+                        <p className="text-[10px] italic text-slate-400 dark:text-slate-500 mt-0.5 truncate">
+                          {t.nota}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <div className="text-right">
+                        <span className="font-mono font-bold text-slate-900 dark:text-slate-100 block">
+                          {formatCOP(t.monto)}
+                        </span>
+                        {tramo?.kmPorGalon ? (
+                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 font-mono block">
+                            {tramo.kmPorGalon} km/gal
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditTanqueada(t)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                        title="Editar datos de tanqueada"
+                      >
+                        <Pencil size={13} />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTanqueada(t)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                        title="Eliminar tanqueada"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+
       {/* ── WIDGET 4: EVOLUCIÓN DE PATRIMONIO NETO ── */}
       <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -1199,6 +1710,412 @@ export default function AnalyticsView() {
                 <span>Guardar tasa</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL NUEVA TANQUEADA ────────────────────────────── */}
+      {modalTanqueadaOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-3.5 animate-scale-up">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                  <Fuel size={16} />
+                </div>
+                <div>
+                  <h3 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                    Registrar Tanqueada
+                  </h3>
+                  <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                    Control de odómetro e histórico
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalTanqueadaOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {errorTanqueada && (
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300 text-xs font-semibold">
+                {errorTanqueada}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveNewTanqueada} className="flex flex-col gap-3">
+              {/* Selector de vehículo */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                  Vehículo
+                </label>
+                <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      haptic();
+                      setTVehiculo('MAZDA_2');
+                    }}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      tVehiculo === 'MAZDA_2'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    🚗 Mazda 2
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      haptic();
+                      setTVehiculo('MOTOCICLETA');
+                    }}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      tVehiculo === 'MOTOCICLETA'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    🏍️ Motocicleta
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Monto (COP) *
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    value={tMonto}
+                    onChange={(e) => setTMonto(formatDisplay(e.target.value))}
+                    placeholder="$ 0"
+                    className="w-full px-3 py-2 rounded-xl text-xs font-mono font-bold bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Fecha *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={tFecha}
+                    onChange={(e) => setTFecha(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Odómetro actual (km)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={tKm}
+                    onChange={(e) => setTKm(formatDisplay(e.target.value))}
+                    placeholder="Ej. 48750"
+                    className="w-full px-3 py-2 rounded-xl text-xs font-mono font-bold bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Galones
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={tGalones}
+                    onChange={(e) => setTGalones(e.target.value)}
+                    placeholder="Ej. 8.45"
+                    className="w-full px-3 py-2 rounded-xl text-xs font-mono font-bold bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-800">
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  ¿Tanque Lleno (Full)?
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    haptic();
+                    setTTanqueLleno((prev) => !prev);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                    tTanqueLleno
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                      : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                  }`}
+                >
+                  {tTanqueLleno ? 'Full (Lleno)' : 'Carga Parcial'}
+                </button>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                  Estación de servicio
+                </label>
+                <input
+                  type="text"
+                  maxLength={40}
+                  value={tEstacion}
+                  onChange={(e) => setTEstacion(e.target.value)}
+                  placeholder="Ej. Terpel, Primax"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                  Nota / Observación
+                </label>
+                <input
+                  type="text"
+                  value={tNota}
+                  onChange={(e) => setTNota(e.target.value)}
+                  placeholder="Ej. Viaje carretera, trancones…"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setModalTanqueadaOpen(false)}
+                  disabled={savingTanqueada}
+                  className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingTanqueada || parseAmount(tMonto) <= 0}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {savingTanqueada ? 'Guardando…' : 'Guardar Tanqueada'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL EDITAR TANQUEADA ───────────────────────────── */}
+      {tanqueadaToEdit && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-3.5 animate-scale-up">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                  <Pencil size={16} />
+                </div>
+                <div>
+                  <h3 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                    Editar Tanqueada
+                  </h3>
+                  <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                    Ajustar kilometraje, galones o estado
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTanqueadaToEdit(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {errorEditTanqueada && (
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300 text-xs font-semibold">
+                {errorEditTanqueada}
+              </div>
+            )}
+
+            <form onSubmit={handleUpdateTanqueada} className="flex flex-col gap-3">
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                  Vehículo
+                </label>
+                <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      haptic();
+                      setEditVehiculo('MAZDA_2');
+                    }}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      editVehiculo === 'MAZDA_2'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    🚗 Mazda 2
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      haptic();
+                      setEditVehiculo('MOTOCICLETA');
+                    }}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      editVehiculo === 'MOTOCICLETA'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    🏍️ Motocicleta
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Monto (COP) *
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    value={editMonto}
+                    onChange={(e) => setEditMonto(formatDisplay(e.target.value))}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-mono font-bold bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Fecha *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editFecha}
+                    onChange={(e) => setEditFecha(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Odómetro actual (km)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={editKm}
+                    onChange={(e) => setEditKm(formatDisplay(e.target.value))}
+                    placeholder="Ej. 48750"
+                    className="w-full px-3 py-2 rounded-xl text-xs font-mono font-bold bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                    Galones
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={editGalones}
+                    onChange={(e) => setEditGalones(e.target.value)}
+                    placeholder="Ej. 8.45"
+                    className="w-full px-3 py-2 rounded-xl text-xs font-mono font-bold bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-800">
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  ¿Tanque Lleno (Full)?
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    haptic();
+                    setEditTanqueLleno((prev) => !prev);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                    editTanqueLleno
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                      : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                  }`}
+                >
+                  {editTanqueLleno ? 'Full (Lleno)' : 'Carga Parcial'}
+                </button>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                  Estación de servicio
+                </label>
+                <input
+                  type="text"
+                  maxLength={40}
+                  value={editEstacion}
+                  onChange={(e) => setEditEstacion(e.target.value)}
+                  placeholder="Ej. Terpel, Primax"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                  Nota / Observación
+                </label>
+                <input
+                  type="text"
+                  value={editNota}
+                  onChange={(e) => setEditNota(e.target.value)}
+                  placeholder="Ej. Viaje carretera, trancones…"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setTanqueadaToEdit(null)}
+                  disabled={isUpdatingTanqueada}
+                  className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUpdatingTanqueada || parseAmount(editMonto) <= 0}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {isUpdatingTanqueada ? 'Actualizando…' : 'Guardar Cambios'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

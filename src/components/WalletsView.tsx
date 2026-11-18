@@ -17,9 +17,10 @@ import {
   CreditCard,
   Archive,
   RotateCcw,
+  Handshake,
+  CheckCircle2,
 } from 'lucide-react';
 import {
-  getSaldos,
   DEFAULT_SALDOS,
   getQueuedMutations,
   syncOfflineQueue,
@@ -32,13 +33,16 @@ import {
   updateCartera,
   archiveOrDeleteCartera,
   checkCarteraHasTransactions,
+  createPrestamo,
+  cobrarPrestamo,
+  deletePrestamo,
 } from '../services/api';
 import WalletModal from './WalletModal';
 import CreditCardCycleModal from './CreditCardCycleModal';
 import { supabase } from '../services/supabase';
-import { formatCOP, haptic, getCycleLabel } from '../utils/format';
+import { formatCOP, haptic, getCycleLabel, getBogotaDateParts, formatDisplay, parseAmount } from '../utils/format';
 import { CARTERAS_DEFAULT, CATALOG_GASTOS } from '../data/catalog';
-import type { CarteraInfo, Transaccion, GastoRecurrente } from '../types/finance';
+import type { CarteraInfo, Transaccion, GastoRecurrente, Prestamo } from '../types/finance';
 
 const ACCOUNT_ICONS: Record<string, string> = {
   'Lulo Principal (Cuenta)': '🏦',
@@ -63,6 +67,32 @@ const ACCOUNT_TYPES: Record<string, string> = {
   'RappiCard': 'Tarjeta de Crédito',
   'Crédito Mazda 2 (Lulo)': 'Crédito de Consumo',
 };
+
+function getTodayBogotaStr(): string {
+  const { year, month, day } = getBogotaDateParts();
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function getDiasTranscurridos(fechaStr: string): string {
+  if (!fechaStr) return '';
+  try {
+    const raw = fechaStr.slice(0, 10);
+    const [y, m, d] = raw.split('-').map(Number);
+    if (!y || !m || !d) return raw;
+    const fechaP = new Date(y, m - 1, d);
+    const { year, month, day } = getBogotaDateParts();
+    const hoy = new Date(year, month - 1, day);
+    const diffTime = hoy.getTime() - fechaP.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'Hoy';
+    if (diffDays === 1) return 'Hace 1 día';
+    if (diffDays > 1) return `Hace ${diffDays} días`;
+    if (diffDays < 0) return 'Fecha futura';
+    return raw;
+  } catch {
+    return fechaStr;
+  }
+}
 
 export default function WalletsView() {
   const [saldos, setSaldos] = useState<Record<string, number>>(DEFAULT_SALDOS);
@@ -128,20 +158,43 @@ export default function WalletsView() {
   const [recDia, setRecDia] = useState(1);
   const [isSavingRec, setIsSavingRec] = useState(false);
 
+  // Estado del gestor de préstamos
+  const [prestamos, setPrestamos] = useState<Prestamo[]>([]);
+  const [isPrestamosCollapsed, setIsPrestamosCollapsed] = useState(false);
+  const [isHistorialCobradosCollapsed, setIsHistorialCobradosCollapsed] = useState(true);
+
+  // Modal nuevo préstamo
+  const [isModalNewPrestamoOpen, setIsModalNewPrestamoOpen] = useState(false);
+  const [prestamoDeudor, setPrestamoDeudor] = useState('');
+  const [prestamoMonto, setPrestamoMonto] = useState('');
+  const [prestamoFecha, setPrestamoFecha] = useState(getTodayBogotaStr);
+  const [prestamoCuentaOrigen, setPrestamoCuentaOrigen] = useState('');
+  const [prestamoNota, setPrestamoNota] = useState('');
+  const [isSavingPrestamo, setIsSavingPrestamo] = useState(false);
+  const [errorPrestamo, setErrorPrestamo] = useState<string | null>(null);
+
+  // Modal cobro de préstamo
+  const [prestamoToCobrar, setPrestamoToCobrar] = useState<Prestamo | null>(null);
+  const [cobrarCuentaDestino, setCobrarCuentaDestino] = useState('');
+  const [cobrarFechaPago, setCobrarFechaPago] = useState(getTodayBogotaStr);
+  const [isCobrandoPrestamo, setIsCobrandoPrestamo] = useState(false);
+  const [errorCobro, setErrorCobro] = useState<string | null>(null);
+
   const cicloActivo = getCycleLabel();
 
   const fetchSaldos = async (force = false) => {
     setLoading(true);
     try {
-      const [result, carterasRes, recList] = await Promise.all([
-        getSaldos(force),
+      const [appData, carterasRes, recList] = await Promise.all([
+        fetchAppData(force),
         supabase.from('carteras').select('*').order('orden', { ascending: true, nullsFirst: false }),
         getGastosRecurrentes(),
       ]);
-      setSaldos(result.saldos);
-      setFromCache(result.fromCache);
-      setLastUpdated(result.timestamp);
+      setSaldos(appData.saldos);
+      setFromCache(appData.fromCache);
+      setLastUpdated(appData.timestamp);
       setRecurrentes(recList);
+      setPrestamos(appData.prestamos || []);
       if (carterasRes.data && carterasRes.data.length > 0) {
         setCarterasDb(carterasRes.data.map((c: any, idx: number) => ({
           id: c.id,
@@ -180,6 +233,17 @@ export default function WalletsView() {
     };
     window.addEventListener('finanzas_saldos_updated', handleSaldosUpdated);
     return () => window.removeEventListener('finanzas_saldos_updated', handleSaldosUpdated);
+  }, []);
+
+  useEffect(() => {
+    const handleAppDataUpdated = (e: Event) => {
+      const custom = e as CustomEvent<any>;
+      if (custom.detail?.prestamos) {
+        setPrestamos(custom.detail.prestamos);
+      }
+    };
+    window.addEventListener('finanzas_appdata_updated', handleAppDataUpdated);
+    return () => window.removeEventListener('finanzas_appdata_updated', handleAppDataUpdated);
   }, []);
 
   useEffect(() => {
@@ -529,6 +593,142 @@ export default function WalletsView() {
       console.error('Error guardando gasto recurrente:', err);
     } finally {
       setIsSavingRec(false);
+    }
+  };
+
+  // Carteras líquidas activas para origen y cobro de préstamos
+  const carterasLiquidas = useMemo(() => {
+    return carterasDb.filter(c => {
+      if (c.activa === false) return false;
+      if (c.permite_gasto === false) return false;
+      const t = (c.tipo || '').toLowerCase();
+      const n = (c.nombre || '').toLowerCase();
+      if (t.includes('credito') || t.includes('crédito') || t.includes('prestamo') || t.includes('deuda')) return false;
+      if (n.includes('mazda') || n.includes('tc ')) return false;
+      return true;
+    });
+  }, [carterasDb]);
+
+  // Cálculos de préstamos
+  const { prestamosPendientes, prestamosPagados, totalPrestamosPendiente } = useMemo(() => {
+    const pendientes = prestamos.filter(p => p.estado === 'PENDIENTE');
+    const pagados = prestamos.filter(p => p.estado === 'PAGADO');
+    const total = pendientes.reduce((sum, p) => sum + (Number(p.monto) || 0), 0);
+    return {
+      prestamosPendientes: pendientes,
+      prestamosPagados: pagados,
+      totalPrestamosPendiente: total,
+    };
+  }, [prestamos]);
+
+  // Handlers para gestión de préstamos
+  const handleOpenNewPrestamo = () => {
+    haptic();
+    setPrestamoDeudor('');
+    setPrestamoMonto('');
+    setPrestamoFecha(getTodayBogotaStr());
+    setPrestamoNota('');
+    setErrorPrestamo(null);
+    const defaultOrigen = carterasLiquidas.length > 0 ? carterasLiquidas[0].nombre : (carterasDb[0]?.nombre || '');
+    setPrestamoCuentaOrigen(defaultOrigen);
+    setIsModalNewPrestamoOpen(true);
+  };
+
+  const handleSavePrestamo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanMonto = parseAmount(prestamoMonto);
+    if (!prestamoDeudor.trim()) {
+      setErrorPrestamo('El nombre del deudor es requerido');
+      return;
+    }
+    if (cleanMonto <= 0) {
+      setErrorPrestamo('El monto a prestar debe ser mayor a 0');
+      return;
+    }
+    if (!prestamoCuentaOrigen.trim()) {
+      setErrorPrestamo('Debes seleccionar la cuenta de origen');
+      return;
+    }
+
+    setIsSavingPrestamo(true);
+    setErrorPrestamo(null);
+    haptic(50);
+    try {
+      await createPrestamo({
+        deudor: prestamoDeudor.trim(),
+        monto: cleanMonto,
+        fecha_prestamo: prestamoFecha || getTodayBogotaStr(),
+        cuenta_origen: prestamoCuentaOrigen.trim(),
+        nota: prestamoNota.trim() || undefined,
+      });
+
+      setIsModalNewPrestamoOpen(false);
+      setAdjustSuccessMsg(`Préstamo a ${prestamoDeudor.trim()} registrado exitosamente.`);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      await fetchSaldos(true);
+    } catch (err: any) {
+      console.error('Error registrando préstamo:', err);
+      setErrorPrestamo(err?.message || 'Error al registrar el préstamo');
+    } finally {
+      setIsSavingPrestamo(false);
+    }
+  };
+
+  const handleOpenCobrar = (p: Prestamo) => {
+    haptic();
+    setPrestamoToCobrar(p);
+    setErrorCobro(null);
+    setCobrarFechaPago(getTodayBogotaStr());
+    const origenValido = carterasLiquidas.some(c => c.nombre === p.cuenta_origen);
+    setCobrarCuentaDestino(origenValido ? p.cuenta_origen : (carterasLiquidas[0]?.nombre || carterasDb[0]?.nombre || ''));
+  };
+
+  const handleConfirmCobrar = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!prestamoToCobrar) return;
+    if (!cobrarCuentaDestino.trim()) {
+      setErrorCobro('Debes seleccionar la cuenta donde ingresó el dinero');
+      return;
+    }
+
+    setIsCobrandoPrestamo(true);
+    setErrorCobro(null);
+    haptic(50);
+    try {
+      await cobrarPrestamo(prestamoToCobrar.id, cobrarCuentaDestino.trim(), cobrarFechaPago || getTodayBogotaStr());
+      const deudor = prestamoToCobrar.deudor;
+      setPrestamoToCobrar(null);
+      setAdjustSuccessMsg(`Préstamo de ${deudor} marcado como cobrado exitosamente.`);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      await fetchSaldos(true);
+    } catch (err: any) {
+      console.error('Error cobrando préstamo:', err);
+      setErrorCobro(err?.message || 'Error al cobrar el préstamo');
+    } finally {
+      setIsCobrandoPrestamo(false);
+    }
+  };
+
+  const handleDeletePrestamo = async (p: Prestamo) => {
+    haptic(50);
+    const confirmed = window.confirm(
+      `¿Deseas eliminar el registro del préstamo a "${p.deudor}" por ${formatCOP(p.monto)}?\n\nEsta acción revertirá las transacciones contables vinculadas.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await deletePrestamo(p.id);
+      setAdjustSuccessMsg(`Préstamo de ${p.deudor} eliminado.`);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
+      await fetchSaldos(true);
+    } catch (err: any) {
+      console.error('Error eliminando préstamo:', err);
+      setAdjustSuccessMsg(`Error: ${err?.message || 'No se pudo eliminar el préstamo'}`);
+      if (adjustMsgTimerRef.current) clearTimeout(adjustMsgTimerRef.current);
+      adjustMsgTimerRef.current = setTimeout(() => setAdjustSuccessMsg(null), 3000);
     }
   };
 
@@ -956,6 +1156,200 @@ export default function WalletsView() {
         )}
       </div>
 
+      {/* SECCIÓN: 🤝 Préstamos por Cobrar */}
+      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all duration-200">
+        <div className="p-4 flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80">
+          <div
+            className="flex items-center gap-2.5 cursor-pointer select-none"
+            onClick={() => {
+              haptic();
+              setIsPrestamosCollapsed(prev => !prev);
+            }}
+          >
+            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 flex items-center justify-center text-blue-600 dark:text-blue-400 shadow-sm">
+              <Handshake size={16} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
+                  Préstamos por Cobrar
+                </h2>
+                {prestamosPendientes.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200/80 dark:border-amber-800">
+                    {prestamosPendientes.length}
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                {totalPrestamosPendiente > 0 ? (
+                  <>Pendiente: <strong className="font-mono text-slate-700 dark:text-slate-300">{formatCOP(totalPrestamosPendiente)}</strong></>
+                ) : (
+                  'Cuentas al día · Sin saldos pendientes'
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleOpenNewPrestamo}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-sm transition flex items-center gap-1 cursor-pointer active:scale-95"
+            >
+              <Plus size={13} />
+              <span className="hidden sm:inline">Prestar Dinero</span>
+              <span className="sm:hidden">Prestar</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                haptic();
+                setIsPrestamosCollapsed(prev => !prev);
+              }}
+              className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer"
+              aria-label="Colapsar sección de préstamos"
+            >
+              <ChevronDown
+                size={16}
+                className={`transition-transform duration-200 ${isPrestamosCollapsed ? '-rotate-90' : 'rotate-0'}`}
+              />
+            </button>
+          </div>
+        </div>
+
+        {!isPrestamosCollapsed && (
+          <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
+            {prestamosPendientes.length === 0 ? (
+              <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">
+                No tienes préstamos pendientes por cobrar.
+              </div>
+            ) : (
+              prestamosPendientes.map(p => {
+                const diasTexto = getDiasTranscurridos(p.fecha_prestamo);
+                return (
+                  <div
+                    key={p.id}
+                    className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
+                          {p.deudor}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                          {diasTexto}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                        <span>Origen: {p.cuenta_origen}</span>
+                        {p.nota && (
+                          <>
+                            <span>·</span>
+                            <span className="italic truncate max-w-[180px] sm:max-w-[260px]">{p.nota}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-xs sm:text-sm font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                        {formatCOP(p.monto)}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenCobrar(p)}
+                        className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 transition flex items-center gap-1 cursor-pointer active:scale-95 shadow-xs"
+                        title="Marcar como pagado / registrar cobro"
+                      >
+                        <Check size={12} />
+                        <span className="hidden sm:inline">Marcar Pagado</span>
+                        <span className="sm:hidden">Cobrar</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePrestamo(p)}
+                        className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 dark:hover:text-rose-400 border border-transparent hover:border-rose-200 dark:hover:border-rose-900 transition cursor-pointer"
+                        title="Eliminar préstamo"
+                        aria-label={`Eliminar préstamo de ${p.deudor}`}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+
+            {/* Subsección colapsable: Préstamos Cobrados (X) */}
+            {prestamosPagados.length > 0 && (
+              <div className="bg-slate-50/50 dark:bg-slate-950/30">
+                <button
+                  type="button"
+                  onClick={() => {
+                    haptic();
+                    setIsHistorialCobradosCollapsed(prev => !prev);
+                  }}
+                  className="w-full px-4 py-2.5 flex items-center justify-between text-left text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-400" />
+                    <span>Préstamos Cobrados ({prestamosPagados.length})</span>
+                  </div>
+                  <ChevronDown
+                    size={14}
+                    className={`transition-transform duration-200 ${isHistorialCobradosCollapsed ? '-rotate-90' : 'rotate-0'}`}
+                  />
+                </button>
+
+                {!isHistorialCobradosCollapsed && (
+                  <div className="border-t border-slate-100 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
+                    {prestamosPagados.map(p => (
+                      <div
+                        key={p.id}
+                        className="p-3.5 flex items-center justify-between gap-3 text-xs opacity-75 hover:opacity-100 transition"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-800 dark:text-slate-200 line-through">
+                              {p.deudor}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                              Pagado
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            Destino: {p.cuenta_destino || p.cuenta_origen}
+                            {p.fecha_pago ? ` · ${p.fecha_pago}` : ''}
+                            {p.nota ? ` · ${p.nota}` : ''}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                            {formatCOP(p.monto)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeletePrestamo(p)}
+                            className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 dark:hover:text-rose-400 transition cursor-pointer"
+                            title="Eliminar historial de préstamo"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Lista de 9 carteras en orden numérico establecido */}
       <div className="space-y-3">
         {walletItems.map((wallet, index) => {
@@ -1322,6 +1716,285 @@ export default function WalletsView() {
           wallet={selectedCreditCardWallet}
           onUpdated={() => fetchSaldos(true)}
         />
+      )}
+
+      {/* Modal: Registrar Nuevo Préstamo */}
+      {isModalNewPrestamoOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          onClick={e => {
+            if (e.target === e.currentTarget && !isSavingPrestamo) {
+              haptic();
+              setIsModalNewPrestamoOpen(false);
+            }
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800/60 flex items-center justify-center text-blue-600 dark:text-blue-400 shadow-sm">
+                  <Handshake size={20} />
+                </div>
+                <div>
+                  <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100">
+                    Prestar Dinero
+                  </h2>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Registra una cuenta por cobrar y su débito contable
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setIsModalNewPrestamoOpen(false);
+                }}
+                disabled={isSavingPrestamo}
+                className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {errorPrestamo && (
+              <div className="mx-4 sm:mx-5 mt-4 p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300 text-xs font-semibold">
+                {errorPrestamo}
+              </div>
+            )}
+
+            <form onSubmit={handleSavePrestamo} className="p-4 sm:p-5 space-y-3.5">
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Nombre del Deudor *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={prestamoDeudor}
+                  onChange={e => setPrestamoDeudor(e.target.value)}
+                  placeholder="Ej: Andrés, Mamá, Carlos Gómez…"
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                    Monto a Prestar *
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    value={prestamoMonto}
+                    onChange={e => setPrestamoMonto(formatDisplay(e.target.value))}
+                    placeholder="$ 0"
+                    className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                    Fecha del Préstamo *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={prestamoFecha}
+                    onChange={e => setPrestamoFecha(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Cuenta de Origen (de dónde sale el dinero) *
+                </label>
+                <select
+                  required
+                  value={prestamoCuentaOrigen}
+                  onChange={e => setPrestamoCuentaOrigen(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
+                >
+                  {carterasLiquidas.map(c => (
+                    <option key={c.id || c.nombre} value={c.nombre}>
+                      {c.icono || '💳'} {c.nombre} (Saldo: {formatCOP(saldos[c.nombre] ?? 0)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Concepto / Nota (Opcional)
+                </label>
+                <input
+                  type="text"
+                  value={prestamoNota}
+                  onChange={e => setPrestamoNota(e.target.value)}
+                  placeholder="Ej: Almuerzo compartido, Uber fin de semana…"
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-medium text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsModalNewPrestamoOpen(false)}
+                  disabled={isSavingPrestamo}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingPrestamo || !prestamoDeudor.trim() || parseAmount(prestamoMonto) <= 0}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 disabled:opacity-40 transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  {isSavingPrestamo ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Registrando…</span>
+                    </>
+                  ) : (
+                    <span>Registrar Préstamo</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Confirmar Cobro de Préstamo */}
+      {prestamoToCobrar && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          onClick={e => {
+            if (e.target === e.currentTarget && !isCobrandoPrestamo) {
+              haptic();
+              setPrestamoToCobrar(null);
+            }
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shadow-sm">
+                  <CheckCircle2 size={20} />
+                </div>
+                <div>
+                  <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100">
+                    Marcar como Pagado
+                  </h2>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Registra la entrada del dinero devuelto
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setPrestamoToCobrar(null);
+                }}
+                disabled={isCobrandoPrestamo}
+                className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {errorCobro && (
+              <div className="mx-4 sm:mx-5 mt-4 p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300 text-xs font-semibold">
+                {errorCobro}
+              </div>
+            )}
+
+            <form onSubmit={handleConfirmCobrar} className="p-4 sm:p-5 space-y-3.5">
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800 text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-slate-400">Deudor:</span>
+                  <span className="font-bold text-slate-900 dark:text-slate-100">{prestamoToCobrar.deudor}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 dark:text-slate-400">Monto a recibir:</span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">{formatCOP(prestamoToCobrar.monto)}</span>
+                </div>
+                {prestamoToCobrar.nota && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 dark:text-slate-400">Concepto:</span>
+                    <span className="italic text-slate-700 dark:text-slate-300">{prestamoToCobrar.nota}</span>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Cuenta de Destino (dónde recibes la plata) *
+                </label>
+                <select
+                  required
+                  value={cobrarCuentaDestino}
+                  onChange={e => setCobrarCuentaDestino(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
+                >
+                  {carterasLiquidas.map(c => (
+                    <option key={c.id || c.nombre} value={c.nombre}>
+                      {c.icono || '💳'} {c.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+                  Fecha del Pago *
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={cobrarFechaPago}
+                  onChange={e => setCobrarFechaPago(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-100 transition shadow-sm"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPrestamoToCobrar(null)}
+                  disabled={isCobrandoPrestamo}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCobrandoPrestamo || !cobrarCuentaDestino.trim()}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600 disabled:opacity-40 transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  {isCobrandoPrestamo ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Procesando…</span>
+                    </>
+                  ) : (
+                    <span>Confirmar Cobro</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

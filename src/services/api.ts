@@ -7,6 +7,8 @@ import type {
   CarteraInfo,
   GastoRecurrente,
   CatalogoItem,
+  Prestamo,
+  Tanqueada,
 } from "../types/finance";
 import {
   isDateInCurrentCycle,
@@ -99,6 +101,8 @@ export const DEFAULT_APPDATA: AppData = {
   carteras: [],
   gastosRecurrentes: [],
   catalogo: [],
+  prestamos: [],
+  tanqueadas: [],
 };
 
 /** Sanitiza montos garantizando enteros seguros en COP */
@@ -1585,7 +1589,7 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
   try {
     await processRecurringExpenses().catch(() => {});
 
-    const [carterasRes, catalogoRes, txsRes, recurrentesRes] =
+    const [carterasRes, catalogoRes, txsRes, recurrentesRes, prestamosRes, tanqueadasRes] =
       await Promise.all([
         supabase
           .from("carteras")
@@ -1605,6 +1609,14 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
           .from("gastos_recurrentes")
           .select("*")
           .order("dia_pago", { ascending: true }),
+        supabase
+          .from("prestamos")
+          .select("*")
+          .order("fecha_prestamo", { ascending: true }),
+        supabase
+          .from("tanqueadas")
+          .select("*")
+          .order("fecha", { ascending: false }),
       ]);
 
     // Validación estricta de respuestas: Si alguna falla, lanzar y caer a caché
@@ -1612,6 +1624,8 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     if (catalogoRes.error) throw catalogoRes.error;
     if (txsRes.error) throw txsRes.error;
     if (recurrentesRes.error) throw recurrentesRes.error;
+    if (prestamosRes.error) throw prestamosRes.error;
+    if (tanqueadasRes.error) throw tanqueadasRes.error;
 
     // Si otra petición inició después de esta, descartar la actual para evitar condiciones de carrera
     if (thisGen !== currentFetchGeneration) {
@@ -1627,6 +1641,8 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
     const catalogoData = catalogoRes.data || [];
     const transaccionesData = txsRes.data || [];
     const recurrentesData = recurrentesRes.data || [];
+    const prestamosData = prestamosRes.data || [];
+    const tanqueadasData = tanqueadasRes.data || [];
 
     // CORRECCIÓN D: Si carterasData.length === 0, lanzar error para impedir sobrescribir caché con ceros
     if (carterasData.length === 0) {
@@ -1657,6 +1673,43 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       presupuesto_base: sanitizeAmount(c.presupuesto_base),
       orden_macro: Number(c.orden_macro ?? 99),
       orden: Number(c.orden ?? 99),
+    }));
+
+    const prestamos: Prestamo[] = prestamosData.map((p: any) => ({
+      id: String(p.id),
+      deudor: String(p.deudor || "").trim(),
+      monto: sanitizeAmount(p.monto),
+      fecha_prestamo: p.fecha_prestamo
+        ? String(p.fecha_prestamo).slice(0, 10)
+        : new Date().toISOString().slice(0, 10),
+      cuenta_origen: String(p.cuenta_origen || "").trim(),
+      cuenta_destino: p.cuenta_destino ? String(p.cuenta_destino).trim() : null,
+      nota: p.nota ? String(p.nota).trim() : null,
+      estado: p.estado === "PAGADO" ? "PAGADO" : "PENDIENTE",
+      fecha_pago: p.fecha_pago ? String(p.fecha_pago).slice(0, 10) : null,
+    }));
+
+    const tanqueadas: Tanqueada[] = tanqueadasData.map((t: any) => ({
+      id: String(t.id),
+      transaccion_id: t.transaccion_id ? String(t.transaccion_id) : null,
+      vehiculo: t.vehiculo === "MOTOCICLETA" ? "MOTOCICLETA" : "MAZDA_2",
+      fecha: t.fecha || new Date().toISOString(),
+      monto: sanitizeAmount(t.monto),
+      kilometraje:
+        t.kilometraje != null && !isNaN(Number(t.kilometraje))
+          ? Math.trunc(Number(t.kilometraje))
+          : null,
+      galones:
+        t.galones != null && !isNaN(Number(t.galones))
+          ? Number(Number(t.galones).toFixed(3))
+          : null,
+      precio_galon:
+        t.precio_galon != null && !isNaN(Number(t.precio_galon))
+          ? sanitizeAmount(t.precio_galon)
+          : null,
+      tanque_lleno: t.tanque_lleno !== false,
+      estacion: t.estacion ? String(t.estacion).trim() : null,
+      nota: t.nota ? String(t.nota).trim() : null,
     }));
 
     const updatedSaldos: Record<string, number> = { ...DEFAULT_SALDOS };
@@ -1897,6 +1950,8 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       carteras: carterasMapped,
       gastosRecurrentes,
       catalogo,
+      prestamos,
+      tanqueadas,
     };
 
     // Almacenar en caché solo si la generación sigue siendo la más reciente
@@ -2529,6 +2584,195 @@ export async function swapSubcategoriaOrden(
     p_id_b: String(idB),
     p_orden_b: Math.round(Number(ordenB)),
   });
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function createPrestamo(input: {
+  deudor: string;
+  monto: number;
+  fecha_prestamo: string;
+  cuenta_origen: string;
+  nota?: string;
+}): Promise<string> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const montoLimpio = Math.trunc(Math.max(1, Number(input.monto) || 0));
+
+  const { data, error } = await supabase.rpc('crear_prestamo_rpc', {
+    p_deudor: input.deudor.trim(),
+    p_monto: montoLimpio,
+    p_fecha_prestamo: input.fecha_prestamo,
+    p_cuenta_origen: input.cuenta_origen.trim(),
+    p_nota: input.nota?.trim() || null,
+  });
+
+  if (error) throw error;
+  await fetchAppData(true);
+  return String(data);
+}
+
+export async function cobrarPrestamo(
+  id: string,
+  cuentaDestino: string,
+  fechaPago?: string,
+): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const { error } = await supabase.rpc('cobrar_prestamo_rpc', {
+    p_prestamo_id: id,
+    p_cuenta_destino: cuentaDestino.trim(),
+    p_fecha_pago: fechaPago || null,
+  });
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function deletePrestamo(id: string): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const { error } = await supabase.rpc('eliminar_prestamo_rpc', {
+    p_prestamo_id: id,
+  });
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function createTanqueada(input: Omit<Tanqueada, 'id'>): Promise<string> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData?.session?.user?.id;
+  if (!userId) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const monto = Math.trunc(Math.max(1, Number(input.monto) || 0));
+  const kilometraje =
+    input.kilometraje != null && !isNaN(Number(input.kilometraje))
+      ? Math.trunc(Number(input.kilometraje))
+      : null;
+  const galones =
+    input.galones != null && !isNaN(Number(input.galones)) && Number(input.galones) > 0
+      ? Number(Number(input.galones).toFixed(3))
+      : null;
+  const precioGalon =
+    input.precio_galon != null && !isNaN(Number(input.precio_galon))
+      ? Math.trunc(Number(input.precio_galon))
+      : monto > 0 && galones != null && galones > 0
+        ? Math.trunc(monto / galones)
+        : null;
+
+  const payload: any = {
+    user_id: userId,
+    vehiculo: input.vehiculo === 'MOTOCICLETA' ? 'MOTOCICLETA' : 'MAZDA_2',
+    fecha: input.fecha || new Date().toISOString(),
+    monto,
+    kilometraje,
+    galones,
+    precio_galon: precioGalon,
+    tanque_lleno: input.tanque_lleno !== false,
+    transaccion_id: input.transaccion_id ? String(input.transaccion_id) : null,
+    estacion: input.estacion?.trim() || null,
+    nota: input.nota?.trim() || null,
+  };
+
+  const { data, error } = await supabase
+    .from('tanqueadas')
+    .insert([payload])
+    .select('id')
+    .single();
+
+  if (error) throw error;
+  await fetchAppData(true);
+  return String(data.id);
+}
+
+export async function updateTanqueada(id: string, patch: Partial<Tanqueada>): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData?.session?.user?.id;
+  if (!userId) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const payload: any = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (patch.vehiculo !== undefined) {
+    payload.vehiculo = patch.vehiculo === 'MOTOCICLETA' ? 'MOTOCICLETA' : 'MAZDA_2';
+  }
+  if (patch.fecha !== undefined) {
+    payload.fecha = patch.fecha;
+  }
+  if (patch.monto !== undefined) {
+    payload.monto = Math.trunc(Math.max(1, Number(patch.monto) || 0));
+  }
+  if (patch.kilometraje !== undefined) {
+    payload.kilometraje =
+      patch.kilometraje != null && !isNaN(Number(patch.kilometraje))
+        ? Math.trunc(Number(patch.kilometraje))
+        : null;
+  }
+  if (patch.galones !== undefined) {
+    payload.galones =
+      patch.galones != null && !isNaN(Number(patch.galones)) && Number(patch.galones) > 0
+        ? Number(Number(patch.galones).toFixed(3))
+        : null;
+  }
+  if (patch.precio_galon !== undefined) {
+    payload.precio_galon =
+      patch.precio_galon != null && !isNaN(Number(patch.precio_galon))
+        ? Math.trunc(Number(patch.precio_galon))
+        : null;
+  } else if (payload.monto && payload.galones) {
+    payload.precio_galon = Math.trunc(payload.monto / payload.galones);
+  }
+  if (patch.tanque_lleno !== undefined) {
+    payload.tanque_lleno = Boolean(patch.tanque_lleno);
+  }
+  if (patch.transaccion_id !== undefined) {
+    payload.transaccion_id = patch.transaccion_id ? String(patch.transaccion_id) : null;
+  }
+  if (patch.estacion !== undefined) {
+    payload.estacion = patch.estacion?.trim() || null;
+  }
+  if (patch.nota !== undefined) {
+    payload.nota = patch.nota?.trim() || null;
+  }
+
+  const { error } = await supabase
+    .from('tanqueadas')
+    .update(payload)
+    .eq('id', id)
+    .eq('user_id', userId);
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function deleteTanqueada(id: string): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData?.session?.user?.id;
+  if (!userId) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const { error } = await supabase
+    .from('tanqueadas')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId);
 
   if (error) throw error;
   await fetchAppData(true);

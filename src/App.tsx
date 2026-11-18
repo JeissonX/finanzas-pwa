@@ -14,10 +14,11 @@ import {
   fetchAppData,
   updateTransaction,
   deleteTransaction,
+  createTanqueada,
 } from './services/api';
 import { supabase } from './services/supabase';
 import { haptic } from './utils/format';
-import type { TabNavegacion, TipoTransaccion, Transaccion, CatalogoItem } from './types/finance';
+import type { TabNavegacion, TipoTransaccion, Transaccion, CatalogoItem, VehiculoGasolina } from './types/finance';
 
 // Lazy loading del módulo analítico pesado para code splitting (~97.5 kB gzip ahorrados)
 const AnalyticsView = lazy(() => import('./components/AnalyticsView'));
@@ -405,6 +406,7 @@ function MainDashboard() {
   const [saving, setSaving] = useState(false);
 
   const handleSave = useCallback(async (payload: {
+    id?: string;
     tipo: TipoTransaccion;
     monto: number;
     categoria: string;
@@ -417,6 +419,15 @@ function MainDashboard() {
     sub?: string;
     comentario?: string;
     detalle?: string;
+    tanqueada?: {
+      vehiculo: VehiculoGasolina;
+      kilometraje?: number | null;
+      galones?: number | null;
+      precio_galon?: number | null;
+      tanque_lleno: boolean;
+      estacion?: string | null;
+      nota?: string | null;
+    };
   }) => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session || !session.user?.id) {
@@ -425,18 +436,28 @@ function MainDashboard() {
     }
 
     setSaving(true);
+    const txId = payload.id || crypto.randomUUID();
+    const { tanqueada: tanqueadaData, ...cleanPayload } = payload;
     const tx: Transaccion = {
-      id: crypto.randomUUID(),
+      id: txId,
       user_id: session.user.id,
       fecha: new Date().toISOString(),
       sincronizado: false,
-      ...payload,
+      ...cleanPayload,
     };
 
     setTransacciones(prev => [tx, ...prev.filter(t => String(t.id) !== String(tx.id))]);
 
     try {
       await saveTransaction(tx);
+      if (tanqueadaData) {
+        await createTanqueada({
+          ...tanqueadaData,
+          monto: payload.monto,
+          fecha: tx.fecha,
+          transaccion_id: String(tx.id),
+        }).catch(err => console.warn('Error vinculando tanqueada:', err));
+      }
       showToast(`${payload.tipo} guardado — $${payload.monto.toLocaleString('es-CO')}`, 'ok');
       refreshData(true);
     } catch (err: any) {

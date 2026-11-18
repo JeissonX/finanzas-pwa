@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { X, PlusCircle } from 'lucide-react';
 import QuickRegister from './QuickRegister';
-import type { TipoTransaccion, CatalogoItem } from '../types/finance';
+import type { TipoTransaccion, CatalogoItem, VehiculoGasolina } from '../types/finance';
 import { haptic } from '../utils/format';
 
 interface QuickRegisterModalProps {
   open: boolean;
   onClose: () => void;
   onSave: (payload: {
+    id?: string;
     tipo: TipoTransaccion;
     monto: number;
     categoria: string;
@@ -20,6 +21,15 @@ interface QuickRegisterModalProps {
     sub?: string;
     comentario?: string;
     detalle?: string;
+    tanqueada?: {
+      vehiculo: VehiculoGasolina;
+      kilometraje?: number | null;
+      galones?: number | null;
+      precio_galon?: number | null;
+      tanque_lleno: boolean;
+      estacion?: string | null;
+      nota?: string | null;
+    };
   }) => Promise<void>;
   saving: boolean;
   catalogo?: CatalogoItem[];
