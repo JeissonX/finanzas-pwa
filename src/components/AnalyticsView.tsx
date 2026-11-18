@@ -472,43 +472,68 @@ export default function AnalyticsView() {
       (t) => t.vehiculo === vehiculoGasolina
     );
 
-    // Orden ascendente para cálculo de tramos
+    // Orden ascendente cronológico (desempata por odómetro)
     const ascList = [...list].sort((a, b) => {
       const timeA = new Date(a.fecha).getTime();
       const timeB = new Date(b.fecha).getTime();
       if (timeA !== timeB) return timeA - timeB;
-      return (Number(a.kilometraje) || 0) - (Number(b.kilometraje) || 0);
+      const kmA = a.kilometraje != null ? Number(a.kilometraje) : 0;
+      const kmB = b.kilometraje != null ? Number(b.kilometraje) : 0;
+      return kmA - kmB;
     });
 
     const tramosMap = new Map<
       string,
-      { deltaKm: number | null; kmPorGalon: number | null; costoPorKm: number | null }
+      {
+        deltaKm: number | null;
+        kmPorGalon: number | null;
+        costoPorKm: number | null;
+        galonesTramo?: number;
+        montoTramo?: number;
+        isBase?: boolean;
+      }
     >();
 
-    let prevLleno: Tanqueada | null = null;
+    let kmAncla: number | null = null;
     let galonesAcumuladosParciales = 0;
     let montoAcumuladoParciales = 0;
 
     let sumaTotalKm = 0;
     let sumaTotalGalones = 0;
     let sumaTotalMonto = 0;
+    let tramosCompletados = 0;
 
     for (let i = 0; i < ascList.length; i++) {
       const curr = ascList[i];
-      const currKm = curr.kilometraje != null ? Number(curr.kilometraje) : null;
-      const currGal = curr.galones != null ? Number(curr.galones) : null;
+      const currKm =
+        curr.kilometraje != null &&
+        !isNaN(Number(curr.kilometraje)) &&
+        Number(curr.kilometraje) > 0
+          ? Number(curr.kilometraje)
+          : null;
+      const currGal =
+        curr.galones != null &&
+        !isNaN(Number(curr.galones)) &&
+        Number(curr.galones) > 0
+          ? Number(curr.galones)
+          : 0;
       const currMonto = Number(curr.monto) || 0;
 
-      if (curr.tanque_lleno) {
-        if (
-          prevLleno &&
-          prevLleno.kilometraje != null &&
-          currKm != null &&
-          currKm > prevLleno.kilometraje &&
-          currGal != null &&
-          currGal > 0
-        ) {
-          const deltaKm = currKm - prevLleno.kilometraje;
+      if (curr.tanque_lleno && currKm != null) {
+        if (kmAncla === null) {
+          // Tanqueada base/ancla inicial: fija el odómetro de partida pero sus galones y costo no computan al tramo
+          kmAncla = currKm;
+          galonesAcumuladosParciales = 0;
+          montoAcumuladoParciales = 0;
+          tramosMap.set(curr.id, {
+            deltaKm: null,
+            kmPorGalon: null,
+            costoPorKm: null,
+            isBase: true,
+          });
+        } else if (currKm > kmAncla) {
+          // Cierre de tramo entre dos tanqueadas llenas con avance positivo de kilometraje
+          const deltaKm = currKm - kmAncla;
           const galonesTotalesTramo = currGal + galonesAcumuladosParciales;
           const montoTotalTramo = currMonto + montoAcumuladoParciales;
 
@@ -516,37 +541,63 @@ export default function AnalyticsView() {
             const kmPorGalon = Number((deltaKm / galonesTotalesTramo).toFixed(1));
             const costoPorKm = Math.round(montoTotalTramo / deltaKm);
 
-            tramosMap.set(curr.id, { deltaKm, kmPorGalon, costoPorKm });
+            tramosMap.set(curr.id, {
+              deltaKm,
+              kmPorGalon,
+              costoPorKm,
+              galonesTramo: galonesTotalesTramo,
+              montoTramo: montoTotalTramo,
+              isBase: false,
+            });
 
             sumaTotalKm += deltaKm;
             sumaTotalGalones += galonesTotalesTramo;
             sumaTotalMonto += montoTotalTramo;
+            tramosCompletados += 1;
           } else {
-            tramosMap.set(curr.id, { deltaKm: null, kmPorGalon: null, costoPorKm: null });
+            tramosMap.set(curr.id, {
+              deltaKm: null,
+              kmPorGalon: null,
+              costoPorKm: null,
+              isBase: false,
+            });
           }
-        } else {
-          tramosMap.set(curr.id, { deltaKm: null, kmPorGalon: null, costoPorKm: null });
-        }
 
-        prevLleno = curr;
-        galonesAcumuladosParciales = 0;
-        montoAcumuladoParciales = 0;
-      } else {
-        if (currGal != null && currGal > 0) {
-          galonesAcumuladosParciales += currGal;
+          // La actual se convierte en la nueva ancla para el siguiente tramo
+          kmAncla = currKm;
+          galonesAcumuladosParciales = 0;
+          montoAcumuladoParciales = 0;
+        } else {
+          // Odómetro no avanzó o es inconsistente
+          tramosMap.set(curr.id, {
+            deltaKm: null,
+            kmPorGalon: null,
+            costoPorKm: null,
+            isBase: false,
+          });
         }
-        montoAcumuladoParciales += currMonto;
-        tramosMap.set(curr.id, { deltaKm: null, kmPorGalon: null, costoPorKm: null });
+      } else {
+        // Carga parcial o tanqueada sin odómetro válido: acumular si ya hay un ancla de inicio
+        if (kmAncla !== null) {
+          galonesAcumuladosParciales += currGal;
+          montoAcumuladoParciales += currMonto;
+        }
+        tramosMap.set(curr.id, {
+          deltaKm: null,
+          kmPorGalon: null,
+          costoPorKm: null,
+          isBase: false,
+        });
       }
     }
 
     const rendimientoPromedio =
-      sumaTotalGalones > 0 && sumaTotalKm > 0
+      tramosCompletados > 0 && sumaTotalGalones > 0 && sumaTotalKm > 0
         ? `${(sumaTotalKm / sumaTotalGalones).toFixed(1)} km/gal`
-        : 'Requiere 2 tanqueadas llenas';
+        : 'Requiere 2 tanqueadas full';
 
     const costoPromedioKm =
-      sumaTotalKm > 0 && sumaTotalMonto > 0
+      tramosCompletados > 0 && sumaTotalKm > 0 && sumaTotalMonto > 0
         ? `${formatCOP(Math.round(sumaTotalMonto / sumaTotalKm))}/km`
         : '—';
 
@@ -1343,6 +1394,10 @@ export default function AnalyticsView() {
                               <strong className="text-emerald-600 dark:text-emerald-400 ml-1">
                                 (+{tramo.deltaKm} km)
                               </strong>
+                            ) : tramo?.isBase ? (
+                              <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 ml-1">
+                                (ancla)
+                              </span>
                             ) : null}
                           </span>
                         ) : (
@@ -1366,8 +1421,19 @@ export default function AnalyticsView() {
                           {formatCOP(t.monto)}
                         </span>
                         {tramo?.kmPorGalon ? (
-                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 font-mono block">
-                            {tramo.kmPorGalon} km/gal
+                          <>
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 font-mono block">
+                              {tramo.kmPorGalon} km/gal
+                            </span>
+                            {tramo.costoPorKm ? (
+                              <span className="text-[9px] text-slate-400 dark:text-slate-500 font-mono block">
+                                {formatCOP(tramo.costoPorKm)}/km
+                              </span>
+                            ) : null}
+                          </>
+                        ) : tramo?.isBase ? (
+                          <span className="text-[9px] font-bold text-amber-600 dark:text-amber-400 font-mono block">
+                            Base inicial
                           </span>
                         ) : null}
                       </div>
@@ -2098,22 +2164,39 @@ export default function AnalyticsView() {
                 />
               </div>
 
-              <div className="flex gap-2 pt-1">
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setTanqueadaToEdit(null)}
+                  onClick={async () => {
+                    if (!tanqueadaToEdit) return;
+                    await handleDeleteTanqueada(tanqueadaToEdit);
+                    setTanqueadaToEdit(null);
+                  }}
                   disabled={isUpdatingTanqueada}
-                  className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                  className="py-2 px-2.5 rounded-xl text-xs font-bold text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition flex items-center gap-1 cursor-pointer"
+                  title="Eliminar esta tanqueada"
                 >
-                  Cancelar
+                  <Trash2 size={13} />
+                  <span>Eliminar</span>
                 </button>
-                <button
-                  type="submit"
-                  disabled={isUpdatingTanqueada || parseAmount(editMonto) <= 0}
-                  className="flex-1 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {isUpdatingTanqueada ? 'Actualizando…' : 'Guardar Cambios'}
-                </button>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTanqueadaToEdit(null)}
+                    disabled={isUpdatingTanqueada}
+                    className="py-2 px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isUpdatingTanqueada || parseAmount(editMonto) <= 0}
+                    className="py-2 px-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {isUpdatingTanqueada ? 'Actualizando…' : 'Guardar Cambios'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

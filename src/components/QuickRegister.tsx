@@ -122,7 +122,7 @@ export default function QuickRegister({
   const [comentario, setComentario] = useState("");
 
   // Estado para captura opcional de tanqueada de gasolina
-  const [gasolinaVehiculo, setGasolinaVehiculo] = useState<VehiculoGasolina>("MAZDA_2");
+  const [gasolinaVehiculoOverride, setGasolinaVehiculoOverride] = useState<VehiculoGasolina | null>(null);
   const [gasolinaKm, setGasolinaKm] = useState("");
   const [gasolinaGalones, setGasolinaGalones] = useState("");
   const [gasolinaTanqueLleno, setGasolinaTanqueLleno] = useState(true);
@@ -233,29 +233,29 @@ export default function QuickRegister({
     return sub.includes("gasolina") || cat.includes("gasolina");
   }, [tipo, subcategoria, categoria]);
 
-  // Inferir vehículo automáticamente según la subcategoría seleccionada
+  // Resetear override si el usuario cambia manualmente la subcategoría
   useEffect(() => {
-    if (isGasolina) {
-      const sub = (subcategoria || "").toLowerCase();
-      if (sub.includes("moto")) {
-        setGasolinaVehiculo("MOTOCICLETA");
-      } else {
-        setGasolinaVehiculo("MAZDA_2");
-      }
-    }
-  }, [isGasolina, subcategoria]);
+    setGasolinaVehiculoOverride(null);
+  }, [subcategoria]);
+
+  // Vehículo derivado de forma determinista: override manual o inferido de la subcategoría
+  const vehiculoGasolina: VehiculoGasolina = useMemo(() => {
+    if (gasolinaVehiculoOverride) return gasolinaVehiculoOverride;
+    return /moto/i.test(subcategoria) ? "MOTOCICLETA" : "MAZDA_2";
+  }, [gasolinaVehiculoOverride, subcategoria]);
 
   // Último odómetro registrado para el vehículo seleccionado
   const ultimoOdometro = useMemo(() => {
     const list = tanqueadasList.filter(
       (t) =>
-        t.vehiculo === gasolinaVehiculo &&
+        t.vehiculo === vehiculoGasolina &&
         t.kilometraje != null &&
-        !isNaN(Number(t.kilometraje)),
+        !isNaN(Number(t.kilometraje)) &&
+        Number(t.kilometraje) > 0,
     );
     if (list.length === 0) return null;
     return Math.max(...list.map((t) => Number(t.kilometraje)));
-  }, [tanqueadasList, gasolinaVehiculo]);
+  }, [tanqueadasList, vehiculoGasolina]);
 
   // Filtrar carteras disponibles para el selector de origen/pago (únicamente activas)
   const carterasDisponibles = useMemo(() => {
@@ -665,7 +665,7 @@ export default function QuickRegister({
 
     const tanqueadaPayload = isGasolina
       ? {
-          vehiculo: gasolinaVehiculo,
+          vehiculo: vehiculoGasolina,
           kilometraje: cleanKm && !isNaN(cleanKm) ? cleanKm : null,
           galones: cleanGalones && !isNaN(cleanGalones) ? Number(cleanGalones.toFixed(3)) : null,
           precio_galon: cleanPrecioGalon,
@@ -992,16 +992,20 @@ export default function QuickRegister({
               </div>
             </div>
 
-            {/* Selector de vehículo rápido */}
+            {/* Selector de vehículo rápido sincronizado */}
             <div className="flex gap-1 bg-amber-100/70 dark:bg-amber-900/40 p-0.5 rounded-xl border border-amber-200/60 dark:border-amber-800/50">
               <button
                 type="button"
                 onClick={() => {
                   haptic();
-                  setGasolinaVehiculo("MAZDA_2");
+                  setGasolinaVehiculoOverride("MAZDA_2");
+                  const mazdaSub = subcategoriasDisponibles.find(
+                    (s) => /mazda/i.test(s) || (/gasolina/i.test(s) && !/moto/i.test(s))
+                  );
+                  if (mazdaSub) setSubcategoria(mazdaSub);
                 }}
-                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
-                  gasolinaVehiculo === "MAZDA_2"
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                  vehiculoGasolina === "MAZDA_2"
                     ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
                     : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
                 }`}
@@ -1012,10 +1016,12 @@ export default function QuickRegister({
                 type="button"
                 onClick={() => {
                   haptic();
-                  setGasolinaVehiculo("MOTOCICLETA");
+                  setGasolinaVehiculoOverride("MOTOCICLETA");
+                  const motoSub = subcategoriasDisponibles.find((s) => /moto/i.test(s));
+                  if (motoSub) setSubcategoria(motoSub);
                 }}
-                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
-                  gasolinaVehiculo === "MOTOCICLETA"
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                  vehiculoGasolina === "MOTOCICLETA"
                     ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs"
                     : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
                 }`}
