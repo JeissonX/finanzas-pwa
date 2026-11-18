@@ -1593,8 +1593,9 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
           .order("orden", { ascending: true, nullsFirst: false }),
         supabase
           .from("catalogo_categorias")
-          .select("id, tipo, macro_categoria, subcategoria, presupuesto_base, medio_pago_sugerido, activo")
-          .order("macro_categoria", { ascending: true })
+          .select("id, tipo, macro_categoria, subcategoria, presupuesto_base, medio_pago_sugerido, activo, orden_macro, orden")
+          .order("orden_macro", { ascending: true })
+          .order("orden", { ascending: true })
           .order("subcategoria", { ascending: true }),
         supabase
           .from("transacciones")
@@ -1654,6 +1655,8 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       activo: c.activo !== false,
       medio_pago_sugerido: c.medio_pago_sugerido || null,
       presupuesto_base: sanitizeAmount(c.presupuesto_base),
+      orden_macro: Number(c.orden_macro ?? 99),
+      orden: Number(c.orden ?? 99),
     }));
 
     const updatedSaldos: Record<string, number> = { ...DEFAULT_SALDOS };
@@ -1796,6 +1799,8 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
         gastado,
         disponible,
         pct,
+        orden_macro: Number(catRow.orden_macro ?? 99),
+        orden: Number(catRow.orden ?? 99),
       };
     });
 
@@ -2355,14 +2360,50 @@ export async function createCategoria(input: {
     ? 0
     : Math.trunc(Math.max(0, Number(input.presupuesto_base) || 0));
 
+  const trimmedMacro = input.macro_categoria.trim();
+  const trimmedSub = input.subcategoria.trim();
+
+  // Consultar categorías existentes para calcular orden_macro y orden
+  const { data: existingCats } = await supabase
+    .from('catalogo_categorias')
+    .select('macro_categoria, orden_macro, orden')
+    .eq('user_id', user_id)
+    .eq('tipo', input.tipo);
+
+  let ordenMacro = 99;
+  let ordenSub = 1;
+
+  if (existingCats && existingCats.length > 0) {
+    const sameMacroRows = existingCats.filter(
+      (c) => (c.macro_categoria || '').trim().toLowerCase() === trimmedMacro.toLowerCase(),
+    );
+    if (sameMacroRows.length > 0) {
+      ordenMacro = Number(sameMacroRows[0].orden_macro ?? 99);
+      const maxSub = sameMacroRows.reduce(
+        (max, c) => Math.max(max, Number(c.orden ?? 0)),
+        0,
+      );
+      ordenSub = maxSub + 1;
+    } else {
+      const maxMacro = existingCats.reduce(
+        (max, c) => Math.max(max, Number(c.orden_macro ?? 0)),
+        0,
+      );
+      ordenMacro = maxMacro + 1;
+      ordenSub = 1;
+    }
+  }
+
   const { error } = await supabase.from('catalogo_categorias').insert([{
     user_id,
     tipo: input.tipo,
-    macro_categoria: input.macro_categoria.trim(),
-    subcategoria: input.subcategoria.trim(),
+    macro_categoria: trimmedMacro,
+    subcategoria: trimmedSub,
     presupuesto_base: presupuesto,
     medio_pago_sugerido: input.medio_pago_sugerido ?? null,
     activo: true,
+    orden_macro: ordenMacro,
+    orden: ordenSub,
   }]);
 
   if (error) {
@@ -2441,6 +2482,52 @@ export async function renameMacroCascade(
     p_tipo: tipo,
     p_old_macro: oldMacro,
     p_new_macro: newMacro,
+  });
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function swapMacroOrden(
+  tipo: 'GASTO' | 'INGRESO',
+  macroA: string,
+  ordenA: number,
+  macroB: string,
+  ordenB: number,
+): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const { error } = await supabase.rpc('swap_macro_orden', {
+    p_tipo: tipo,
+    p_macro_a: macroA,
+    p_orden_a: Math.round(Number(ordenA)),
+    p_macro_b: macroB,
+    p_orden_b: Math.round(Number(ordenB)),
+  });
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function swapSubcategoriaOrden(
+  idA: string | number,
+  ordenA: number,
+  idB: string | number,
+  ordenB: number,
+): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const { error } = await supabase.rpc('swap_subcategoria_orden', {
+    p_id_a: String(idA),
+    p_orden_a: Math.round(Number(ordenA)),
+    p_id_b: String(idB),
+    p_orden_b: Math.round(Number(ordenB)),
   });
 
   if (error) throw error;

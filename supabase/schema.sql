@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS public.catalogo_categorias (
     subcategoria TEXT NOT NULL,
     presupuesto_base NUMERIC NOT NULL DEFAULT 0,
     activo BOOLEAN NOT NULL DEFAULT true,
+    orden_macro INTEGER NOT NULL DEFAULT 99,
+    orden INTEGER NOT NULL DEFAULT 99,
     medio_pago_sugerido TEXT,
     cuenta_defecto TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -486,5 +488,52 @@ BEGIN
      SET macro_categoria = p_new_macro
    WHERE user_id = auth.uid()
      AND macro_categoria = p_old_macro;
+END;
+$$;
+
+
+-- RPCs de reordenamiento manual de macrocategorías y subcategorías
+CREATE OR REPLACE FUNCTION public.swap_macro_orden(
+  p_tipo TEXT,
+  p_macro_a TEXT,
+  p_orden_a INTEGER,
+  p_macro_b TEXT,
+  p_orden_b INTEGER
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  UPDATE public.catalogo_categorias
+     SET orden_macro = p_orden_b,
+         updated_at = NOW()
+   WHERE user_id = auth.uid()
+     AND tipo = p_tipo
+     AND macro_categoria = p_macro_a;
+
+  UPDATE public.catalogo_categorias
+     SET orden_macro = p_orden_a,
+         updated_at = NOW()
+   WHERE user_id = auth.uid()
+     AND tipo = p_tipo
+     AND macro_categoria = p_macro_b;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.swap_subcategoria_orden(
+  p_id_a TEXT,
+  p_orden_a INTEGER,
+  p_id_b TEXT,
+  p_orden_b INTEGER
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  UPDATE public.catalogo_categorias
+     SET orden = p_orden_b,
+         updated_at = NOW()
+   WHERE user_id = auth.uid()
+     AND id = p_id_a;
+
+  UPDATE public.catalogo_categorias
+     SET orden = p_orden_a,
+         updated_at = NOW()
+   WHERE user_id = auth.uid()
+     AND id = p_id_b;
 END;
 $$;

@@ -60,6 +60,8 @@ export interface PresupuestoItem {
   gastado?: number;
   disponible?: number;
   pct?: number;
+  orden_macro?: number;
+  orden?: number;
 }
 
 export interface CarteraInfo {
@@ -99,6 +101,8 @@ export interface CatalogoItem {
   presupuesto_base?: number;
   medio_pago_sugerido?: string | null;
   activo?: boolean;
+  orden_macro?: number;
+  orden?: number;
 }
 
 export interface AppDataResponse {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   Pencil,
   Plus,
@@ -28,6 +29,8 @@ import {
   updateCategoria,
   renameCategoriaCascade,
   renameMacroCascade,
+  swapMacroOrden,
+  swapSubcategoriaOrden,
   type AppData,
 } from '../services/api';
 
@@ -60,6 +63,7 @@ interface DynamicSubcategoria {
   nombre: string;
   presupuesto: number;
   gastado: number;
+  orden: number;
   medio_pago_sugerido?: string | null;
   activo?: boolean;
 }
@@ -67,6 +71,7 @@ interface DynamicSubcategoria {
 interface DynamicMacroCategoria {
   nombre: string;
   icono: string;
+  orden_macro: number;
   presupuesto: number;
   gastado: number;
   subcategorias: DynamicSubcategoria[];
@@ -150,6 +155,9 @@ export default function BudgetAccordion() {
   const [newMedioPago, setNewMedioPago] = useState<string>('TC Lulo Bank');
   const [isCreating, setIsCreating] = useState(false);
 
+  // Estado de reordenamiento en progreso
+  const [isReordering, setIsReordering] = useState(false);
+
   // Estados de acordeón colapsable por macro
   const [openMacros, setOpenMacros] = useState<Record<string, boolean>>({});
 
@@ -205,7 +213,7 @@ export default function BudgetAccordion() {
     return MEDIOS_PAGO_DEFAULT;
   }, [appData?.carteras]);
 
-  // ── 1. Construcción de Macrocategorías de GASTO ─────────────────────────────
+  // ── 1. Construcción de Macrocategorías de GASTO ordenadas por orden_macro ───
   const categoriesGasto: DynamicMacroCategoria[] = useMemo(() => {
     const itemsCatalogoGasto = catalogo.filter(
       (c) => (c.tipo ?? 'GASTO') === 'GASTO',
@@ -221,7 +229,7 @@ export default function BudgetAccordion() {
       ]),
     ).filter(Boolean);
 
-    return allGastoMacroNames.map((macroName) => {
+    const mapped = allGastoMacroNames.map((macroName) => {
       const icono = MACRO_ICONS[macroName] || '📊';
 
       // Filtrar subcategorías en catálogo
@@ -240,37 +248,54 @@ export default function BudgetAccordion() {
           macro_categoria: macroName,
           subcategoria: p.sub,
           presupuesto_base: p.presupuesto,
+          orden_macro: p.orden_macro ?? 99,
+          orden: p.orden ?? 99,
           activo: true,
         }));
       }
 
-      // Si mostrarArchivadas es false, filtrar inactivas
+      // Determinar orden_macro para la macro
+      const ordenMacroFromItems = subs.map((s) => Number(s.orden_macro ?? 99))[0];
+      const defaultIdx = DEFAULT_MACROS_GASTO.findIndex(
+        (m) => m.nombre.toLowerCase() === macroName.toLowerCase(),
+      );
+      const orden_macro =
+        ordenMacroFromItems != null && ordenMacroFromItems !== 99
+          ? ordenMacroFromItems
+          : defaultIdx >= 0
+            ? (defaultIdx + 1) * 10
+            : 99;
+
+      // Filtrar archivadas si mostrarArchivadas es false
       const subsFiltradas = mostrarArchivadas
         ? subs
         : subs.filter((s) => s.activo !== false);
 
-      const subcategorias: DynamicSubcategoria[] = subsFiltradas.map((s) => {
-        const presItem = rawPresupuestos.find(
-          (p) =>
-            p.macro.trim().toLowerCase() === macroName.toLowerCase() &&
-            p.sub.trim().toLowerCase() === s.subcategoria.trim().toLowerCase(),
-        );
-        const gastado =
-          typeof presItem?.gastado === 'number' && presItem.gastado > 0
-            ? presItem.gastado
-            : spentSubMap[s.subcategoria] ?? 0;
+      const subcategorias: DynamicSubcategoria[] = subsFiltradas
+        .map((s): DynamicSubcategoria => {
+          const presItem = rawPresupuestos.find(
+            (p) =>
+              p.macro.trim().toLowerCase() === macroName.toLowerCase() &&
+              p.sub.trim().toLowerCase() === s.subcategoria.trim().toLowerCase(),
+          );
+          const gastado =
+            typeof presItem?.gastado === 'number' && presItem.gastado > 0
+              ? presItem.gastado
+              : spentSubMap[s.subcategoria] ?? 0;
 
-        return {
-          id: s.id,
-          tipo: 'GASTO',
-          macro: macroName,
-          nombre: s.subcategoria,
-          presupuesto: Number(s.presupuesto_base) || 0,
-          gastado,
-          medio_pago_sugerido: s.medio_pago_sugerido,
-          activo: s.activo !== false,
-        };
-      });
+          return {
+            id: s.id,
+            tipo: 'GASTO',
+            macro: macroName,
+            nombre: s.subcategoria,
+            presupuesto: Number(s.presupuesto_base) || 0,
+            gastado,
+            orden: Number(s.orden ?? 99),
+            medio_pago_sugerido: s.medio_pago_sugerido,
+            activo: s.activo !== false,
+          };
+        })
+        .sort((a, b) => a.orden - b.orden || a.nombre.localeCompare(b.nombre));
 
       const sumPresupuesto = subcategorias
         .filter((s) => s.activo !== false)
@@ -283,15 +308,18 @@ export default function BudgetAccordion() {
       return {
         nombre: macroName,
         icono,
+        orden_macro,
         presupuesto: sumPresupuesto,
         gastado: macroGastado,
         subcategorias,
       };
     });
+
+    return mapped.sort((a, b) => a.orden_macro - b.orden_macro || a.nombre.localeCompare(b.nombre));
   }, [catalogo, rawPresupuestos, spentSubMap, spentMacroMap, mostrarArchivadas]);
 
-  // ── 2. Construcción de Macrocategorías de INGRESO ───────────────────────────
-  const categoriesIngreso = useMemo(() => {
+  // ── 2. Construcción de Macrocategorías de INGRESO ordenadas por orden_macro ─
+  const categoriesIngreso: DynamicMacroCategoria[] = useMemo(() => {
     const itemsCatalogoIngreso = catalogo.filter((c) => c.tipo === 'INGRESO');
     const macroNamesFromCatalogo = itemsCatalogoIngreso.map((c) => c.macro_categoria.trim());
     const allIngresoMacroNames = Array.from(
@@ -301,35 +329,52 @@ export default function BudgetAccordion() {
       ]),
     ).filter(Boolean);
 
-    return allIngresoMacroNames.map((macroName) => {
+    const mapped = allIngresoMacroNames.map((macroName) => {
       const icono = MACRO_ICONS[macroName] || '💰';
       const subs = itemsCatalogoIngreso.filter(
         (c) => c.macro_categoria.trim().toLowerCase() === macroName.toLowerCase(),
       );
 
+      const ordenMacroFromItems = subs.map((s) => Number(s.orden_macro ?? 99))[0];
+      const defaultIdx = DEFAULT_MACROS_INGRESO.findIndex(
+        (m) => m.nombre.toLowerCase() === macroName.toLowerCase(),
+      );
+      const orden_macro =
+        ordenMacroFromItems != null && ordenMacroFromItems !== 99
+          ? ordenMacroFromItems
+          : defaultIdx >= 0
+            ? (defaultIdx + 1) * 10
+            : 99;
+
       const subsFiltradas = mostrarArchivadas
         ? subs
         : subs.filter((s) => s.activo !== false);
 
-      const subcategorias: DynamicSubcategoria[] = subsFiltradas.map((s) => ({
-        id: s.id,
-        tipo: 'INGRESO',
-        macro: macroName,
-        nombre: s.subcategoria,
-        presupuesto: 0,
-        gastado: 0,
-        medio_pago_sugerido: null,
-        activo: s.activo !== false,
-      }));
+      const subcategorias: DynamicSubcategoria[] = subsFiltradas
+        .map((s): DynamicSubcategoria => ({
+          id: s.id,
+          tipo: 'INGRESO',
+          macro: macroName,
+          nombre: s.subcategoria,
+          presupuesto: 0,
+          gastado: 0,
+          orden: Number(s.orden ?? 99),
+          medio_pago_sugerido: null,
+          activo: s.activo !== false,
+        }))
+        .sort((a, b) => a.orden - b.orden || a.nombre.localeCompare(b.nombre));
 
       return {
         nombre: macroName,
         icono,
+        orden_macro,
         presupuesto: 0,
         gastado: 0,
         subcategorias,
       };
     });
+
+    return mapped.sort((a, b) => a.orden_macro - b.orden_macro || a.nombre.localeCompare(b.nombre));
   }, [catalogo, mostrarArchivadas]);
 
   // Totales globales para Gastos
@@ -344,6 +389,106 @@ export default function BudgetAccordion() {
       0,
     ) || (appData?.kpis.gastos ?? 0);
   const globalPct = totalPresupuesto > 0 ? (totalGastado / totalPresupuesto) * 100 : 0;
+
+  // ── Reordenamiento de Macrocategorías (Optimista) ───────────────────────────
+  const handleMoveMacro = async (macroIndex: number, direction: -1 | 1) => {
+    const list = tipoFiltro === 'GASTO' ? categoriesGasto : categoriesIngreso;
+    const targetIndex = macroIndex + direction;
+    if (targetIndex < 0 || targetIndex >= list.length) return;
+
+    const macroA = list[macroIndex];
+    const macroB = list[targetIndex];
+
+    let ordenParaA = macroB.orden_macro;
+    let ordenParaB = macroA.orden_macro;
+
+    if (ordenParaA === ordenParaB) {
+      ordenParaA = (targetIndex + 1) * 10;
+      ordenParaB = (macroIndex + 1) * 10;
+    }
+
+    // Actualización optimista local en memoria
+    const prevAppData = appData;
+    if (appData?.catalogo) {
+      const updatedCatalogo = appData.catalogo.map((c) => {
+        const isMatch =
+          c.tipo === tipoFiltro || (tipoFiltro === 'GASTO' && c.tipo === undefined);
+        if (isMatch) {
+          if (c.macro_categoria.trim().toLowerCase() === macroA.nombre.toLowerCase()) {
+            return { ...c, orden_macro: ordenParaA };
+          }
+          if (c.macro_categoria.trim().toLowerCase() === macroB.nombre.toLowerCase()) {
+            return { ...c, orden_macro: ordenParaB };
+          }
+        }
+        return c;
+      });
+      setAppData({ ...appData, catalogo: updatedCatalogo });
+    }
+
+    setIsReordering(true);
+    haptic(40);
+    try {
+      await swapMacroOrden(tipoFiltro, macroA.nombre, ordenParaA, macroB.nombre, ordenParaB);
+    } catch (err: any) {
+      if (prevAppData) setAppData(prevAppData);
+      showFeedback(err?.message || 'Error al reordenar macrocategoría', true);
+    } finally {
+      setIsReordering(false);
+    }
+  };
+
+  // ── Reordenamiento de Subcategorías (Optimista) ─────────────────────────────
+  const handleMoveSub = async (
+    sub: DynamicSubcategoria,
+    subList: DynamicSubcategoria[],
+    direction: -1 | 1,
+  ) => {
+    const subIdx = subList.findIndex((s) => s.id === sub.id || s.nombre === sub.nombre);
+    const targetIdx = subIdx + direction;
+    if (subIdx < 0 || targetIdx < 0 || targetIdx >= subList.length) return;
+
+    const subA = subList[subIdx];
+    const subB = subList[targetIdx];
+
+    if (!subA.id || !subB.id) {
+      showFeedback('No se puede reordenar un ítem no persistido', true);
+      return;
+    }
+
+    let ordenParaA = subB.orden;
+    let ordenParaB = subA.orden;
+
+    if (ordenParaA === ordenParaB) {
+      ordenParaA = (targetIdx + 1) * 10;
+      ordenParaB = (subIdx + 1) * 10;
+    }
+
+    const prevAppData = appData;
+    if (appData?.catalogo) {
+      const updatedCatalogo = appData.catalogo.map((c) => {
+        if (String(c.id) === String(subA.id)) {
+          return { ...c, orden: ordenParaA };
+        }
+        if (String(c.id) === String(subB.id)) {
+          return { ...c, orden: ordenParaB };
+        }
+        return c;
+      });
+      setAppData({ ...appData, catalogo: updatedCatalogo });
+    }
+
+    setIsReordering(true);
+    haptic(40);
+    try {
+      await swapSubcategoriaOrden(subA.id, ordenParaA, subB.id, ordenParaB);
+    } catch (err: any) {
+      if (prevAppData) setAppData(prevAppData);
+      showFeedback(err?.message || 'Error al reordenar subcategoría', true);
+    } finally {
+      setIsReordering(false);
+    }
+  };
 
   // ── Handlers de Edición y Renombrado ────────────────────────────────────────
 
@@ -393,7 +538,6 @@ export default function BudgetAccordion() {
       const nuevoPresupuesto = parseAmount(editAmountDisplay);
       const nuevoMedioPago = editMedioPago ? editMedioPago.trim() : null;
 
-      // 1. Si cambió el nombre de la subcategoría, ejecutar renombrado en cascada
       if (nuevoNombre !== editingSub.nombre) {
         await renameCategoriaCascade(
           editingSub.tipo,
@@ -404,7 +548,6 @@ export default function BudgetAccordion() {
         );
       }
 
-      // 2. Si es GASTO y tiene ID, actualizar presupuesto y medio de pago
       if (editingSub.tipo === 'GASTO' && editingSub.id) {
         await updateCategoria(editingSub.id, {
           presupuesto_base: nuevoPresupuesto,
@@ -616,7 +759,7 @@ export default function BudgetAccordion() {
           </div>
 
           {/* Acordeón de Macrocategorías de Gasto */}
-          {categoriesGasto.map((cat) => {
+          {categoriesGasto.map((cat, idx) => {
             const isOpen = openMacros[cat.nombre] ?? false;
             const totalSubGastado =
               cat.subcategorias.length > 0
@@ -674,21 +817,49 @@ export default function BudgetAccordion() {
                     </div>
                   </button>
 
-                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                  <div className="flex items-center gap-0.5 ml-2 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        haptic();
+                        handleMoveMacro(idx, -1);
+                      }}
+                      disabled={idx === 0 || isReordering}
+                      className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                      title="Subir macrocategoría"
+                      aria-label="Subir macrocategoría"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        haptic();
+                        handleMoveMacro(idx, 1);
+                      }}
+                      disabled={idx === categoriesGasto.length - 1 || isReordering}
+                      className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                      title="Bajar macrocategoría"
+                      aria-label="Bajar macrocategoría"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleOpenRenameMacro(cat.nombre, 'GASTO')}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
                       title={`Renombrar macrocategoría "${cat.nombre}"`}
                     >
-                      <Pencil size={13} />
+                      <Pencil size={12} />
                     </button>
                     <button
                       type="button"
                       onClick={() => toggleMacro(cat.nombre)}
-                      className="p-1.5 text-slate-400 dark:text-slate-500 cursor-pointer"
+                      className="p-1 text-slate-400 dark:text-slate-500 cursor-pointer"
                     >
-                      {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                     </button>
                   </div>
                 </div>
@@ -701,7 +872,7 @@ export default function BudgetAccordion() {
                         Sin subcategorías en este ciclo
                       </div>
                     ) : (
-                      cat.subcategorias.map((sub) => {
+                      cat.subcategorias.map((sub, subIdx) => {
                         const subGastado = sub.gastado || 0;
                         const subPct =
                           sub.presupuesto > 0 ? (subGastado / sub.presupuesto) * 100 : 0;
@@ -745,14 +916,36 @@ export default function BudgetAccordion() {
                                 <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
                                   {formatCOP(subGastado)} / {formatCOP(sub.presupuesto)}
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEditSub(sub)}
-                                  className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors cursor-pointer"
-                                  title={`Editar subcategoría ${sub.nombre}`}
-                                >
-                                  <Pencil size={12} />
-                                </button>
+                                <div className="flex items-center gap-0.5 ml-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveSub(sub, cat.subcategorias, -1)}
+                                    disabled={subIdx === 0 || isReordering}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                                    title="Subir subcategoría"
+                                    aria-label="Subir subcategoría"
+                                  >
+                                    <ChevronUp size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveSub(sub, cat.subcategorias, 1)}
+                                    disabled={subIdx === cat.subcategorias.length - 1 || isReordering}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                                    title="Bajar subcategoría"
+                                    aria-label="Bajar subcategoría"
+                                  >
+                                    <ChevronDown size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditSub(sub)}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition cursor-pointer"
+                                    title={`Editar subcategoría ${sub.nombre}`}
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
+                                </div>
                               </div>
                             </div>
                             <ProgressBar
@@ -785,7 +978,7 @@ export default function BudgetAccordion() {
       {/* VISTA 2: CATEGORÍAS DE INGRESO */}
       {tipoFiltro === 'INGRESO' && (
         <div className="flex flex-col gap-3">
-          {categoriesIngreso.map((macro) => {
+          {categoriesIngreso.map((macro, idx) => {
             const isOpen = openMacros[macro.nombre] ?? true;
             return (
               <div
@@ -809,21 +1002,49 @@ export default function BudgetAccordion() {
                       </p>
                     </div>
                   </button>
-                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                  <div className="flex items-center gap-0.5 ml-2 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        haptic();
+                        handleMoveMacro(idx, -1);
+                      }}
+                      disabled={idx === 0 || isReordering}
+                      className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                      title="Subir macrocategoría"
+                      aria-label="Subir macrocategoría"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        haptic();
+                        handleMoveMacro(idx, 1);
+                      }}
+                      disabled={idx === categoriesIngreso.length - 1 || isReordering}
+                      className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                      title="Bajar macrocategoría"
+                      aria-label="Bajar macrocategoría"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleOpenRenameMacro(macro.nombre, 'INGRESO')}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
                       title={`Renombrar macrocategoría "${macro.nombre}"`}
                     >
-                      <Pencil size={13} />
+                      <Pencil size={12} />
                     </button>
                     <button
                       type="button"
                       onClick={() => toggleMacro(macro.nombre)}
-                      className="p-1.5 text-slate-400 dark:text-slate-500 cursor-pointer"
+                      className="p-1 text-slate-400 dark:text-slate-500 cursor-pointer"
                     >
-                      {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                     </button>
                   </div>
                 </div>
@@ -835,7 +1056,7 @@ export default function BudgetAccordion() {
                         Sin subcategorías registradas
                       </div>
                     ) : (
-                      macro.subcategorias.map((sub) => (
+                      macro.subcategorias.map((sub, subIdx) => (
                         <div
                           key={sub.nombre}
                           className="px-4 py-2.5 pl-14 flex items-center justify-between"
@@ -856,14 +1077,36 @@ export default function BudgetAccordion() {
                               </span>
                             )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEditSub(sub)}
-                            className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors cursor-pointer"
-                            title={`Editar ${sub.nombre}`}
-                          >
-                            <Pencil size={12} />
-                          </button>
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={() => handleMoveSub(sub, macro.subcategorias, -1)}
+                              disabled={subIdx === 0 || isReordering}
+                              className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                              title="Subir subcategoría"
+                              aria-label="Subir subcategoría"
+                            >
+                              <ChevronUp size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveSub(sub, macro.subcategorias, 1)}
+                              disabled={subIdx === macro.subcategorias.length - 1 || isReordering}
+                              className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-slate-400 transition cursor-pointer"
+                              title="Bajar subcategoría"
+                              aria-label="Bajar subcategoría"
+                            >
+                              <ChevronDown size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditSub(sub)}
+                              className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors cursor-pointer"
+                              title={`Editar ${sub.nombre}`}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                          </div>
                         </div>
                       ))
                     )}

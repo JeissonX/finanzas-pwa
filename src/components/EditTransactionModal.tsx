@@ -199,28 +199,59 @@ export default function EditTransactionModal({
 
   const tipo = transaccion?.tipo || "GASTO";
 
-  // Derivar las Macro-categorías disponibles dinámicamente unificando catálogo vivo con base
+  // Derivar las Macro-categorías disponibles dinámicamente ordenadas por orden_macro
   const macrosDisponibles = useMemo(() => {
     if (tipo === "GASTO") {
-      const fromLive = activeCatalogo
-        .filter((c) => (c.tipo === undefined || c.tipo === "GASTO") && c.activo !== false && c.macro_categoria)
-        .map((c) => c.macro_categoria.trim());
+      const liveItems = activeCatalogo.filter(
+        (c) =>
+          (c.tipo === undefined || c.tipo === "GASTO") &&
+          c.activo !== false &&
+          c.macro_categoria,
+      );
+      const liveMap = new Map<string, number>();
+      for (const item of liveItems) {
+        const m = item.macro_categoria.trim();
+        const ord = Number(item.orden_macro ?? 99);
+        if (!liveMap.has(m) || ord < liveMap.get(m)!) {
+          liveMap.set(m, ord);
+        }
+      }
+      const sortedLive = Array.from(liveMap.entries())
+        .sort((a, b) => a[1] - b[1])
+        .map(([name]) => name);
+
       const fromBase = CATALOG_GASTOS.map((c) => c.nombre);
-      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      const remainingBase = fromBase.filter((b) => !liveMap.has(b));
+      const unified = [...sortedLive, ...remainingBase];
       if (macroCategoria && !unified.includes(macroCategoria)) {
         return [macroCategoria, ...unified];
       }
       return unified.length > 0 ? unified : ["Alimentación"];
     }
     if (tipo === "INGRESO") {
-      const fromLive = activeCatalogo
-        .filter((c) => c.tipo === "INGRESO" && c.activo !== false && c.macro_categoria)
-        .map((c) => c.macro_categoria.trim());
-      const base = CATALOG_INGRESOS.map((c) => c.nombre);
-      const unified = Array.from(new Set([...fromLive, ...base]));
+      const liveItems = activeCatalogo.filter(
+        (c) => c.tipo === "INGRESO" && c.activo !== false && c.macro_categoria,
+      );
+      const liveMap = new Map<string, number>();
+      for (const item of liveItems) {
+        const m = item.macro_categoria.trim();
+        const ord = Number(item.orden_macro ?? 99);
+        if (!liveMap.has(m) || ord < liveMap.get(m)!) {
+          liveMap.set(m, ord);
+        }
+      }
+      const sortedLive = Array.from(liveMap.entries())
+        .sort((a, b) => a[1] - b[1])
+        .map(([name]) => name);
+
+      const fromBase = CATALOG_INGRESOS.map((c) => c.nombre);
+      const remainingBase = fromBase.filter((b) => !liveMap.has(b));
+      const unified = [...sortedLive, ...remainingBase];
       return macroCategoria && !unified.includes(macroCategoria)
         ? [macroCategoria, ...unified]
-        : unified.length > 0 ? unified : base;
+        : unified.length > 0
+          ? unified
+          : fromBase;
     }
     const base = CATALOG_TRANSFERENCIAS.map((c) => c.nombre);
     return macroCategoria && !base.includes(macroCategoria)
@@ -228,18 +259,21 @@ export default function EditTransactionModal({
       : base;
   }, [activeCatalogo, tipo, macroCategoria]);
 
-  // Derivar las Subcategorías disponibles en función de la Macro seleccionada
+  // Derivar las Subcategorías disponibles en función de la Macro seleccionada ordenadas por orden
   const subcategoriasDisponibles = useMemo(() => {
     if (!macroCategoria) return [];
     if (tipo === "GASTO") {
-      const fromLive = activeCatalogo
-        .filter(
-          (c) =>
-            (c.tipo === undefined || c.tipo === "GASTO") &&
-            c.macro_categoria.trim().toLowerCase() ===
-              macroCategoria.trim().toLowerCase() && c.activo !== false,
-        )
+      const liveItems = activeCatalogo.filter(
+        (c) =>
+          (c.tipo === undefined || c.tipo === "GASTO") &&
+          c.macro_categoria.trim().toLowerCase() ===
+            macroCategoria.trim().toLowerCase() &&
+          c.activo !== false,
+      );
+      const sortedLive = [...liveItems]
+        .sort((a, b) => Number(a.orden ?? 99) - Number(b.orden ?? 99))
         .map((c) => c.subcategoria.trim());
+
       const baseCat = CATALOG_GASTOS.find(
         (c) =>
           c.nombre.trim().toLowerCase() === macroCategoria.trim().toLowerCase(),
@@ -247,24 +281,29 @@ export default function EditTransactionModal({
       const fromBase = baseCat
         ? baseCat.subcategorias.map((s) => s.nombre.trim())
         : [];
-      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      const remainingBase = fromBase.filter((s) => !sortedLive.includes(s));
+      const unified = [...sortedLive, ...remainingBase];
       if (subcategoria && !unified.includes(subcategoria)) {
         return [subcategoria, ...unified];
       }
       return unified;
     }
     if (tipo === "INGRESO") {
-      const fromLive = activeCatalogo
-        .filter(
-          (c) =>
-            c.tipo === "INGRESO" &&
-            c.macro_categoria.trim().toLowerCase() ===
-              macroCategoria.trim().toLowerCase() && c.activo !== false,
-        )
+      const liveItems = activeCatalogo.filter(
+        (c) =>
+          c.tipo === "INGRESO" &&
+          c.macro_categoria.trim().toLowerCase() ===
+            macroCategoria.trim().toLowerCase() &&
+          c.activo !== false,
+      );
+      const sortedLive = [...liveItems]
+        .sort((a, b) => Number(a.orden ?? 99) - Number(b.orden ?? 99))
         .map((c) => c.subcategoria.trim());
+
       const baseCat = CATALOG_INGRESOS.find((c) => c.nombre === macroCategoria);
       const fromBase = baseCat ? baseCat.subcategorias.map((s) => s.nombre) : [];
-      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      const remainingBase = fromBase.filter((s) => !sortedLive.includes(s));
+      const unified = [...sortedLive, ...remainingBase];
       if (subcategoria && !unified.includes(subcategoria)) {
         return [subcategoria, ...unified];
       }
