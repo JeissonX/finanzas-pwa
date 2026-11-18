@@ -1,9 +1,35 @@
-import { useState, useEffect, useRef } from 'react';
-import { ChevronDown, ChevronRight, Pencil, Plus, X, Check, Loader2, AlertCircle } from 'lucide-react';
-import { formatCOP, formatDisplay, parseAmount, progressColor, progressTextColor, haptic } from '../utils/format';
-import type { PresupuestoItem } from '../types/finance';
-import { fetchAppData, type AppData } from '../services/api';
-import { supabase } from '../services/supabase';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  Plus,
+  X,
+  Check,
+  Loader2,
+  AlertCircle,
+  Archive,
+  RotateCcw,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
+import {
+  formatCOP,
+  formatDisplay,
+  parseAmount,
+  progressColor,
+  progressTextColor,
+  haptic,
+} from '../utils/format';
+import type { PresupuestoItem, CatalogoItem } from '../types/finance';
+import {
+  fetchAppData,
+  createCategoria,
+  updateCategoria,
+  renameCategoriaCascade,
+  renameMacroCascade,
+  type AppData,
+} from '../services/api';
 
 interface ProgressBarProps {
   pct: number;
@@ -28,11 +54,14 @@ function ProgressBar({ pct, label }: ProgressBarProps) {
 }
 
 interface DynamicSubcategoria {
-  id?: string;
+  id?: string | number;
+  tipo: 'GASTO' | 'INGRESO';
   macro: string;
   nombre: string;
   presupuesto: number;
   gastado: number;
+  medio_pago_sugerido?: string | null;
+  activo?: boolean;
 }
 
 interface DynamicMacroCategoria {
@@ -43,141 +72,47 @@ interface DynamicMacroCategoria {
   subcategorias: DynamicSubcategoria[];
 }
 
-interface AccordionRowProps {
-  cat: DynamicMacroCategoria;
-  onEditSub: (sub: DynamicSubcategoria) => void;
-}
-
-function AccordionRow({ cat, onEditSub }: AccordionRowProps) {
-  const [open, setOpen] = useState(false);
-
-  const totalGastado = cat.subcategorias.length > 0
-    ? cat.subcategorias.reduce((s, sub) => s + (sub.gastado || 0), 0)
-    : cat.gastado;
-  const effectivePresupuesto = cat.presupuesto;
-  const pct = effectivePresupuesto > 0 ? (totalGastado / effectivePresupuesto) * 100 : 0;
-  const remaining = effectivePresupuesto - totalGastado;
-
-  return (
-    <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all">
-      {/* Header */}
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
-        aria-expanded={open}
-      >
-        <span className="text-xl flex-shrink-0">{cat.icono}</span>
-        <div className="flex-1 min-w-0 text-left">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{cat.nombre}</span>
-            <div className="flex items-center gap-2">
-              <span className={`text-xs font-black ${progressTextColor(pct)}`}>
-                {pct.toFixed(0)}%
-              </span>
-              <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
-                {formatCOP(totalGastado)} / {formatCOP(effectivePresupuesto)}
-              </span>
-            </div>
-          </div>
-          <ProgressBar pct={pct} label={`${cat.nombre}: ${pct.toFixed(0)}% del presupuesto`} />
-          <div className="mt-1 flex items-center justify-between">
-            <span className={`text-[10px] font-semibold ${remaining >= 0 ? 'text-slate-600 dark:text-slate-400' : 'text-rose-600 dark:text-rose-400 font-bold'}`}>
-              {remaining >= 0 ? `Disponible: ${formatCOP(remaining)}` : `⚠ Excedido: ${formatCOP(Math.abs(remaining))}`}
-            </span>
-          </div>
-        </div>
-        {open ? (
-          <ChevronDown size={16} className="text-slate-400 dark:text-slate-500 flex-shrink-0 ml-1" />
-        ) : (
-          <ChevronRight size={16} className="text-slate-400 dark:text-slate-500 flex-shrink-0 ml-1" />
-        )}
-      </button>
-
-      {/* Subcategory detail */}
-      {open && (
-        <div className="border-t border-slate-100 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 bg-slate-50/70 dark:bg-slate-950/40 animate-slide-up">
-          {cat.subcategorias.length === 0 ? (
-            <div className="px-4 py-3 text-xs text-slate-400 dark:text-slate-500 italic text-center">
-              Sin subcategorías en este ciclo
-            </div>
-          ) : (
-            cat.subcategorias.map(sub => {
-              const subGastado = sub.gastado || 0;
-              const subPct = sub.presupuesto > 0 ? (subGastado / sub.presupuesto) * 100 : 0;
-              const subRemaining = sub.presupuesto - subGastado;
-              return (
-                <div key={sub.nombre} className="px-4 py-2.5 pl-14 flex flex-col gap-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 truncate mr-2">{sub.nombre}</span>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className={`text-[11px] font-black ${progressTextColor(subPct)}`}>
-                        {subPct.toFixed(0)}%
-                      </span>
-                      <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
-                        {formatCOP(subGastado)} / {formatCOP(sub.presupuesto)}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          haptic();
-                          onEditSub(sub);
-                        }}
-                        className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
-                        title={`Editar presupuesto de ${sub.nombre}`}
-                        aria-label={`Editar presupuesto de ${sub.nombre}`}
-                      >
-                        <Pencil size={12} />
-                      </button>
-                    </div>
-                  </div>
-                  <ProgressBar pct={subPct} label={`${sub.nombre}: ${subPct.toFixed(0)}%`} />
-                  <p className={`text-[10px] mt-0.5 font-medium ${subRemaining >= 0 ? 'text-slate-600 dark:text-slate-400' : 'text-rose-600 dark:text-rose-400 font-bold'}`}>
-                    {subRemaining >= 0 ? `Disponible: ${formatCOP(subRemaining)}` : `⚠ Excedido: ${formatCOP(Math.abs(subRemaining))}`}
-                  </p>
-                </div>
-              );
-            })
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const DEFAULT_MACROS = [
+const DEFAULT_MACROS_GASTO = [
   { nombre: 'Alimentación', icono: '🛒' },
   { nombre: 'Transporte', icono: '⛽' },
-  { nombre: 'Vivienda / Hogar', icono: '🏠' },
-  { nombre: 'Servicios Públicos', icono: '💡' },
+  { nombre: 'Vivienda y Servicios', icono: '🏠' },
   { nombre: 'Salud y Bienestar', icono: '🏋️' },
   { nombre: 'Mascota', icono: '🐾' },
-  { nombre: 'Ocio y Viajes', icono: '✈️' },
-  { nombre: 'Suscripciones', icono: '📱' },
+  { nombre: 'Ocio y Suscripciones', icono: '🎉' },
   { nombre: 'Inversión y Ahorro', icono: '📈' },
   { nombre: 'Pago Deuda', icono: '🚗' },
   { nombre: 'Varios', icono: '📦' },
 ];
 
+const DEFAULT_MACROS_INGRESO = [
+  { nombre: 'Ingresos Laborales', icono: '💼' },
+  { nombre: 'Otros Ingresos', icono: '💰' },
+];
+
 const MACRO_ICONS: Record<string, string> = {
   'Alimentación': '🛒',
   'Transporte': '⛽',
+  'Vivienda y Servicios': '🏠',
   'Vivienda / Hogar': '🏠',
   'Vivienda': '🏠',
   'Servicios Públicos': '💡',
   'Servicios': '💡',
   'Salud y Bienestar': '🏋️',
   'Mascota': '🐾',
+  'Ocio y Suscripciones': '🎉',
   'Ocio y Viajes': '✈️',
   'Suscripciones': '📱',
   'Inversión y Ahorro': '📈',
   'Pago Deuda': '🚗',
   'Deudas Mazda 2': '🚗',
   'Varios': '📦',
+  'Ingresos Laborales': '💼',
+  'Otros Ingresos': '💰',
+  'Ingresos Agencia': '🚀',
+  'Rentas del Capital': '💰',
 };
 
-const MEDIOS_PAGO = [
+const MEDIOS_PAGO_DEFAULT = [
   'TC Lulo Bank',
   'RappiCard',
   'Lulo Principal (Cuenta)',
@@ -188,18 +123,39 @@ const MEDIOS_PAGO = [
 
 export default function BudgetAccordion() {
   const [appData, setAppData] = useState<AppData | null>(null);
+  const [tipoFiltro, setTipoFiltro] = useState<'GASTO' | 'INGRESO'>('GASTO');
+  const [mostrarArchivadas, setMostrarArchivadas] = useState(false);
 
   // Estados de modales
-  const [editingSub, setEditingSub] = useState<{ id?: string; macro: string; nombre: string; presupuesto: number } | null>(null);
+  const [editingSub, setEditingSub] = useState<DynamicSubcategoria | null>(null);
+  const [editSubNombre, setEditSubNombre] = useState('');
   const [editAmountDisplay, setEditAmountDisplay] = useState('0');
+  const [editMedioPago, setEditMedioPago] = useState<string>('');
   const [isUpdating, setIsUpdating] = useState(false);
 
-  const [modalNewSub, setModalNewSub] = useState(false);
+  const [renamingMacro, setRenamingMacro] = useState<{
+    tipo: 'GASTO' | 'INGRESO';
+    oldName: string;
+    newName: string;
+  } | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+
+  const [modalNewCat, setModalNewCat] = useState(false);
+  const [newTipo, setNewTipo] = useState<'GASTO' | 'INGRESO'>('GASTO');
   const [newMacro, setNewMacro] = useState('Alimentación');
+  const [newMacroCustom, setNewMacroCustom] = useState('');
+  const [isCustomMacro, setIsCustomMacro] = useState(false);
   const [newSubNombre, setNewSubNombre] = useState('');
   const [newPresupuestoDisplay, setNewPresupuestoDisplay] = useState('0');
-  const [newMedioPago, setNewMedioPago] = useState('TC Lulo Bank');
+  const [newMedioPago, setNewMedioPago] = useState<string>('TC Lulo Bank');
   const [isCreating, setIsCreating] = useState(false);
+
+  // Estados de acordeón colapsable por macro
+  const [openMacros, setOpenMacros] = useState<Record<string, boolean>>({});
+
+  const toggleMacro = (macroName: string) => {
+    setOpenMacros((prev) => ({ ...prev, [macroName]: !prev[macroName] }));
+  };
 
   const [feedback, setFeedback] = useState<{ msg: string; isError?: boolean } | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -217,9 +173,11 @@ export default function BudgetAccordion() {
   }, []);
 
   useEffect(() => {
-    fetchAppData().then(data => {
-      setAppData(data);
-    }).catch(() => {});
+    fetchAppData()
+      .then((data) => {
+        setAppData(data);
+      })
+      .catch(() => {});
 
     const handleUpdate = (e: Event) => {
       const custom = e as CustomEvent<AppData>;
@@ -231,140 +189,343 @@ export default function BudgetAccordion() {
     return () => window.removeEventListener('finanzas_appdata_updated', handleUpdate);
   }, []);
 
+  const catalogo: CatalogoItem[] = appData?.catalogo || [];
   const rawPresupuestos: PresupuestoItem[] = appData?.presupuestos || [];
   const spentSubMap = appData?.gastadoPorSubcat || {};
   const spentMacroMap = appData?.gastadoPorMacro || {};
 
-  // Descubrir macrocategorías combinando la lista estándar con las presentes en appData
-  const macrosFromData = Array.from(new Set(rawPresupuestos.map(p => p.macro).filter(Boolean)));
-  const allMacroNames = Array.from(new Set([
-    ...DEFAULT_MACROS.map(m => m.nombre),
-    ...macrosFromData,
-  ]));
+  // Medios de pago activos desde carteras
+  const mediosPagoDisponibles = useMemo(() => {
+    if (appData?.carteras && appData.carteras.length > 0) {
+      const activas = appData.carteras
+        .filter((c) => c.activa !== false && c.permite_gasto !== false)
+        .map((c) => c.nombre);
+      if (activas.length > 0) return activas;
+    }
+    return MEDIOS_PAGO_DEFAULT;
+  }, [appData?.carteras]);
 
-  const categories: DynamicMacroCategoria[] = allMacroNames.map(macroName => {
-    const items = rawPresupuestos.filter(p => p.macro.toLowerCase() === macroName.toLowerCase() || p.macro === macroName);
-    const icono = MACRO_ICONS[macroName] || '📊';
+  // ── 1. Construcción de Macrocategorías de GASTO ─────────────────────────────
+  const categoriesGasto: DynamicMacroCategoria[] = useMemo(() => {
+    const itemsCatalogoGasto = catalogo.filter(
+      (c) => (c.tipo ?? 'GASTO') === 'GASTO',
+    );
 
-    const subcategorias: DynamicSubcategoria[] = items.map(p => {
-      const gastado = typeof p.gastado === 'number' && p.gastado > 0 ? p.gastado : (spentSubMap[p.sub] ?? 0);
+    const macroNamesFromCatalogo = itemsCatalogoGasto.map((c) => c.macro_categoria.trim());
+    const macroNamesFromPresupuestos = rawPresupuestos.map((p) => p.macro.trim());
+    const allGastoMacroNames = Array.from(
+      new Set([
+        ...DEFAULT_MACROS_GASTO.map((m) => m.nombre),
+        ...macroNamesFromCatalogo,
+        ...macroNamesFromPresupuestos,
+      ]),
+    ).filter(Boolean);
+
+    return allGastoMacroNames.map((macroName) => {
+      const icono = MACRO_ICONS[macroName] || '📊';
+
+      // Filtrar subcategorías en catálogo
+      let subs = itemsCatalogoGasto.filter(
+        (c) => c.macro_categoria.trim().toLowerCase() === macroName.toLowerCase(),
+      );
+
+      // Si no hay subcategorías en catálogo, intentar desde appData.presupuestos
+      if (subs.length === 0) {
+        const fromPres = rawPresupuestos.filter(
+          (p) => p.macro.trim().toLowerCase() === macroName.toLowerCase(),
+        );
+        subs = fromPres.map((p) => ({
+          id: p.id,
+          tipo: 'GASTO',
+          macro_categoria: macroName,
+          subcategoria: p.sub,
+          presupuesto_base: p.presupuesto,
+          activo: true,
+        }));
+      }
+
+      // Si mostrarArchivadas es false, filtrar inactivas
+      const subsFiltradas = mostrarArchivadas
+        ? subs
+        : subs.filter((s) => s.activo !== false);
+
+      const subcategorias: DynamicSubcategoria[] = subsFiltradas.map((s) => {
+        const presItem = rawPresupuestos.find(
+          (p) =>
+            p.macro.trim().toLowerCase() === macroName.toLowerCase() &&
+            p.sub.trim().toLowerCase() === s.subcategoria.trim().toLowerCase(),
+        );
+        const gastado =
+          typeof presItem?.gastado === 'number' && presItem.gastado > 0
+            ? presItem.gastado
+            : spentSubMap[s.subcategoria] ?? 0;
+
+        return {
+          id: s.id,
+          tipo: 'GASTO',
+          macro: macroName,
+          nombre: s.subcategoria,
+          presupuesto: Number(s.presupuesto_base) || 0,
+          gastado,
+          medio_pago_sugerido: s.medio_pago_sugerido,
+          activo: s.activo !== false,
+        };
+      });
+
+      const sumPresupuesto = subcategorias
+        .filter((s) => s.activo !== false)
+        .reduce((acc, s) => acc + s.presupuesto, 0);
+      const macroGastado =
+        subcategorias.length > 0
+          ? subcategorias.reduce((acc, s) => acc + s.gastado, 0)
+          : spentMacroMap[macroName] ?? 0;
+
       return {
-        id: p.id,
-        macro: macroName,
-        nombre: p.sub,
-        presupuesto: Number(p.presupuesto) || 0,
-        gastado,
+        nombre: macroName,
+        icono,
+        presupuesto: sumPresupuesto,
+        gastado: macroGastado,
+        subcategorias,
       };
     });
+  }, [catalogo, rawPresupuestos, spentSubMap, spentMacroMap, mostrarArchivadas]);
 
-    const sumPresupuesto = subcategorias.reduce((acc, s) => acc + s.presupuesto, 0);
-    const macroGastado = subcategorias.length > 0
-      ? subcategorias.reduce((acc, s) => acc + s.gastado, 0)
-      : (spentMacroMap[macroName] ?? 0);
+  // ── 2. Construcción de Macrocategorías de INGRESO ───────────────────────────
+  const categoriesIngreso = useMemo(() => {
+    const itemsCatalogoIngreso = catalogo.filter((c) => c.tipo === 'INGRESO');
+    const macroNamesFromCatalogo = itemsCatalogoIngreso.map((c) => c.macro_categoria.trim());
+    const allIngresoMacroNames = Array.from(
+      new Set([
+        ...DEFAULT_MACROS_INGRESO.map((m) => m.nombre),
+        ...macroNamesFromCatalogo,
+      ]),
+    ).filter(Boolean);
 
-    return {
-      nombre: macroName,
-      icono,
-      presupuesto: sumPresupuesto,
-      gastado: macroGastado,
-      subcategorias,
-    };
-  });
+    return allIngresoMacroNames.map((macroName) => {
+      const icono = MACRO_ICONS[macroName] || '💰';
+      const subs = itemsCatalogoIngreso.filter(
+        (c) => c.macro_categoria.trim().toLowerCase() === macroName.toLowerCase(),
+      );
 
-  const totalPresupuesto = categories.reduce((s, c) => s + c.presupuesto, 0);
-  const totalGastado = categories.reduce((s, c) => s + (c.subcategorias.length > 0 ? c.subcategorias.reduce((ss, sub) => ss + sub.gastado, 0) : c.gastado), 0) || (appData?.kpis.gastos ?? 0);
+      const subsFiltradas = mostrarArchivadas
+        ? subs
+        : subs.filter((s) => s.activo !== false);
+
+      const subcategorias: DynamicSubcategoria[] = subsFiltradas.map((s) => ({
+        id: s.id,
+        tipo: 'INGRESO',
+        macro: macroName,
+        nombre: s.subcategoria,
+        presupuesto: 0,
+        gastado: 0,
+        medio_pago_sugerido: null,
+        activo: s.activo !== false,
+      }));
+
+      return {
+        nombre: macroName,
+        icono,
+        presupuesto: 0,
+        gastado: 0,
+        subcategorias,
+      };
+    });
+  }, [catalogo, mostrarArchivadas]);
+
+  // Totales globales para Gastos
+  const totalPresupuesto = categoriesGasto.reduce((s, c) => s + c.presupuesto, 0);
+  const totalGastado =
+    categoriesGasto.reduce(
+      (s, c) =>
+        s +
+        (c.subcategorias.length > 0
+          ? c.subcategorias.reduce((ss, sub) => ss + sub.gastado, 0)
+          : c.gastado),
+      0,
+    ) || (appData?.kpis.gastos ?? 0);
   const globalPct = totalPresupuesto > 0 ? (totalGastado / totalPresupuesto) * 100 : 0;
 
-  // Abrir modal de edición
-  const handleOpenEdit = (sub: DynamicSubcategoria) => {
-    setEditingSub({
-      id: sub.id,
-      macro: sub.macro,
-      nombre: sub.nombre,
-      presupuesto: sub.presupuesto,
-    });
+  // ── Handlers de Edición y Renombrado ────────────────────────────────────────
+
+  const handleOpenEditSub = (sub: DynamicSubcategoria) => {
+    setEditingSub(sub);
+    setEditSubNombre(sub.nombre);
     setEditAmountDisplay(formatDisplay(String(sub.presupuesto)));
+    setEditMedioPago(sub.medio_pago_sugerido || '');
   };
 
-  // Guardar edición de presupuesto en Supabase
-  const handleSaveEdit = async () => {
-    if (!editingSub) return;
-    const nuevoMonto = parseAmount(editAmountDisplay);
+  const handleOpenRenameMacro = (macroName: string, tipo: 'GASTO' | 'INGRESO') => {
+    setRenamingMacro({
+      tipo,
+      oldName: macroName,
+      newName: macroName,
+    });
+  };
+
+  const handleSaveRenameMacro = async () => {
+    if (!renamingMacro || !renamingMacro.newName.trim()) return;
+    const oldName = renamingMacro.oldName.trim();
+    const newName = renamingMacro.newName.trim();
+    if (oldName === newName) {
+      setRenamingMacro(null);
+      return;
+    }
+
+    setIsRenaming(true);
+    haptic(50);
+    try {
+      await renameMacroCascade(renamingMacro.tipo, oldName, newName);
+      showFeedback(`Macrocategoría renombrada a "${newName}".`);
+      setRenamingMacro(null);
+    } catch (err: any) {
+      showFeedback(err?.message || 'Error al renombrar macrocategoría', true);
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  const handleSaveEditSub = async () => {
+    if (!editingSub || !editSubNombre.trim()) return;
     setIsUpdating(true);
     haptic(50);
     try {
-      let query = supabase
-        .from('catalogo_categorias')
-        .update({ presupuesto_base: nuevoMonto });
+      const nuevoNombre = editSubNombre.trim();
+      const nuevoPresupuesto = parseAmount(editAmountDisplay);
+      const nuevoMedioPago = editMedioPago ? editMedioPago.trim() : null;
 
-      // Filtrar unívocamente: por id de fila si existe, o por la clave compuesta macro + sub
-      if (editingSub.id) {
-        query = query.eq('id', editingSub.id);
-      } else {
-        query = query
-          .eq('macro_categoria', editingSub.macro)
-          .eq('subcategoria', editingSub.nombre);
+      // 1. Si cambió el nombre de la subcategoría, ejecutar renombrado en cascada
+      if (nuevoNombre !== editingSub.nombre) {
+        await renameCategoriaCascade(
+          editingSub.tipo,
+          editingSub.macro,
+          editingSub.nombre,
+          editingSub.macro,
+          nuevoNombre,
+        );
       }
 
-      const { data, error } = await query.select('id');
-
-      if (error) throw error;
-
-      if (!data || data.length === 0) {
-        throw new Error(`No se encontró el registro para "${editingSub.nombre}" o la operación fue rechazada`);
+      // 2. Si es GASTO y tiene ID, actualizar presupuesto y medio de pago
+      if (editingSub.tipo === 'GASTO' && editingSub.id) {
+        await updateCategoria(editingSub.id, {
+          presupuesto_base: nuevoPresupuesto,
+          medio_pago_sugerido: nuevoMedioPago,
+        });
       }
 
-      await fetchAppData(true);
-      showFeedback(`Presupuesto de "${editingSub.nombre}" actualizado.`);
+      showFeedback(`Subcategoría "${nuevoNombre}" actualizada.`);
       setEditingSub(null);
     } catch (err: any) {
-      console.error('Error actualizando presupuesto:', err);
-      showFeedback(err?.message || 'Error al actualizar presupuesto', true);
+      showFeedback(err?.message || 'Error al actualizar subcategoría', true);
     } finally {
       setIsUpdating(false);
     }
   };
 
-  // Guardar nueva subcategoría en Supabase
-  const handleCreateNewSub = async () => {
-    if (!newSubNombre.trim()) return;
-    const nuevoMonto = parseAmount(newPresupuestoDisplay);
+  const handleArchiveSub = async () => {
+    if (!editingSub) return;
+    if (
+      !window.confirm(
+        `¿Deseas archivar "${editingSub.nombre}"?\n\nEl historial de transacciones se conservará intacto, pero ya no aparecerá en nuevos registros.`,
+      )
+    ) {
+      return;
+    }
+
+    setIsUpdating(true);
+    haptic(50);
+    try {
+      if (editingSub.id) {
+        await updateCategoria(editingSub.id, { activo: false });
+      }
+      showFeedback(`"${editingSub.nombre}" ha sido archivada.`);
+      setEditingSub(null);
+    } catch (err: any) {
+      showFeedback(err?.message || 'Error al archivar subcategoría', true);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleReactivateSub = async () => {
+    if (!editingSub) return;
+    setIsUpdating(true);
+    haptic(50);
+    try {
+      if (editingSub.id) {
+        await updateCategoria(editingSub.id, { activo: true });
+      }
+      showFeedback(`"${editingSub.nombre}" ha sido reactivada.`);
+      setEditingSub(null);
+    } catch (err: any) {
+      showFeedback(err?.message || 'Error al reactivar subcategoría', true);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // ── Creación de Nueva Categoría ─────────────────────────────────────────────
+
+  const handleOpenNewCategory = () => {
+    haptic();
+    setNewTipo(tipoFiltro);
+    const macroOptions =
+      tipoFiltro === 'GASTO'
+        ? categoriesGasto.map((c) => c.nombre)
+        : categoriesIngreso.map((c) => c.nombre);
+    setNewMacro(macroOptions[0] || (tipoFiltro === 'GASTO' ? 'Alimentación' : 'Ingresos Laborales'));
+    setNewMacroCustom('');
+    setIsCustomMacro(false);
+    setNewSubNombre('');
+    setNewPresupuestoDisplay('0');
+    setNewMedioPago(mediosPagoDisponibles[0] || 'TC Lulo Bank');
+    setModalNewCat(true);
+  };
+
+  const handleCreateCategory = async () => {
+    const targetMacro = isCustomMacro ? newMacroCustom.trim() : newMacro.trim();
+    const targetSub = newSubNombre.trim();
+    if (!targetMacro || !targetSub) return;
+
     setIsCreating(true);
     haptic(50);
     try {
-      const { error } = await supabase
-        .from('catalogo_categorias')
-        .insert([{
-          macro_categoria: newMacro.trim(),
-          subcategoria: newSubNombre.trim(),
-          presupuesto_base: nuevoMonto,
-          medio_pago_sugerido: newMedioPago,
-          activo: true,
-        }]);
+      const nuevoMonto = newTipo === 'GASTO' ? parseAmount(newPresupuestoDisplay) : 0;
+      const nuevoMedio = newTipo === 'GASTO' && newMedioPago ? newMedioPago.trim() : null;
 
-      if (error) throw error;
+      await createCategoria({
+        tipo: newTipo,
+        macro_categoria: targetMacro,
+        subcategoria: targetSub,
+        presupuesto_base: nuevoMonto,
+        medio_pago_sugerido: nuevoMedio,
+      });
 
-      await fetchAppData(true);
-      showFeedback(`Subcategoría "${newSubNombre.trim()}" creada con éxito.`);
-      setModalNewSub(false);
-      setNewSubNombre('');
-      setNewPresupuestoDisplay('0');
-    } catch (err) {
-      console.error('Error insertando nueva subcategoría:', err);
+      showFeedback(`Subcategoría "${targetSub}" creada con éxito.`);
+      setModalNewCat(false);
+    } catch (err: any) {
+      showFeedback(err?.message || 'Error al crear la subcategoría', true);
     } finally {
       setIsCreating(false);
     }
   };
 
+  const macroOptionsForNew = useMemo(() => {
+    return newTipo === 'GASTO'
+      ? categoriesGasto.map((c) => c.nombre)
+      : categoriesIngreso.map((c) => c.nombre);
+  }, [newTipo, categoriesGasto, categoriesIngreso]);
+
   return (
     <div className="flex flex-col gap-3 px-4 pb-4 pt-3 animate-fade-in max-w-lg mx-auto w-full">
-      {/* Notificación de feedback */}
+      {/* Toast Feedback */}
       {feedback && (
-        <div className={`p-3 rounded-xl border text-xs font-semibold flex items-center gap-2 shadow-sm animate-slide-up ${
-          feedback.isError
-            ? 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/60 dark:border-rose-800 dark:text-rose-200'
-            : 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200'
-        }`}>
+        <div
+          className={`p-3 rounded-xl border text-xs font-semibold flex items-center gap-2 shadow-sm animate-slide-up ${
+            feedback.isError
+              ? 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/60 dark:border-rose-800 dark:text-rose-200'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200'
+          }`}
+        >
           {feedback.isError ? (
             <AlertCircle size={16} className="text-rose-600 dark:text-rose-400 flex-shrink-0" />
           ) : (
@@ -374,47 +535,367 @@ export default function BudgetAccordion() {
         </div>
       )}
 
-      {/* Global summary card */}
-      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Total del Ciclo</p>
-            <p className="text-3xl font-black text-slate-900 dark:text-slate-100 mt-0.5">{formatCOP(totalGastado)}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Presupuesto</p>
-            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{formatCOP(totalPresupuesto)}</p>
-            <p className={`text-xs font-black mt-0.5 ${progressTextColor(globalPct)}`}>{globalPct.toFixed(1)}%</p>
-          </div>
+      {/* Selector superior de pestaña + Toggle Archivadas */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex p-1 bg-slate-100 dark:bg-slate-800/70 rounded-2xl">
+          <button
+            type="button"
+            onClick={() => {
+              haptic();
+              setTipoFiltro('GASTO');
+            }}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+              tipoFiltro === 'GASTO'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            Gastos y Presupuestos
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              haptic();
+              setTipoFiltro('INGRESO');
+            }}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+              tipoFiltro === 'INGRESO'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            Categorías de Ingreso
+          </button>
         </div>
-        <ProgressBar pct={globalPct} label="Presupuesto total del ciclo" />
+
+        <button
+          type="button"
+          onClick={() => {
+            haptic();
+            setMostrarArchivadas(!mostrarArchivadas);
+          }}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+            mostrarArchivadas
+              ? 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300'
+              : 'bg-white dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+          }`}
+          title={mostrarArchivadas ? 'Ocultar archivadas' : 'Ver archivadas'}
+        >
+          {mostrarArchivadas ? <EyeOff size={13} /> : <Eye size={13} />}
+          <span>{mostrarArchivadas ? 'Archivadas' : 'Archivadas'}</span>
+        </button>
       </div>
 
-      {/* Accordion list */}
-      {categories.map(cat => (
-        <AccordionRow key={cat.nombre} cat={cat} onEditSub={handleOpenEdit} />
-      ))}
+      {/* VISTA 1: GASTOS Y PRESUPUESTOS */}
+      {tipoFiltro === 'GASTO' && (
+        <>
+          {/* Card Resumen Global del Ciclo */}
+          <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+                  Total del Ciclo
+                </p>
+                <p className="text-3xl font-black text-slate-900 dark:text-slate-100 mt-0.5">
+                  {formatCOP(totalGastado)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+                  Presupuesto
+                </p>
+                <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  {formatCOP(totalPresupuesto)}
+                </p>
+                <p className={`text-xs font-black mt-0.5 ${progressTextColor(globalPct)}`}>
+                  {globalPct.toFixed(1)}%
+                </p>
+              </div>
+            </div>
+            <ProgressBar pct={globalPct} label="Presupuesto total del ciclo" />
+          </div>
 
-      {/* Botón "+ Nueva Subcategoría" al final del acordeón */}
+          {/* Acordeón de Macrocategorías de Gasto */}
+          {categoriesGasto.map((cat) => {
+            const isOpen = openMacros[cat.nombre] ?? false;
+            const totalSubGastado =
+              cat.subcategorias.length > 0
+                ? cat.subcategorias.reduce((s, sub) => s + (sub.gastado || 0), 0)
+                : cat.gastado;
+            const pct =
+              cat.presupuesto > 0 ? (totalSubGastado / cat.presupuesto) * 100 : 0;
+            const remaining = cat.presupuesto - totalSubGastado;
+
+            return (
+              <div
+                key={cat.nombre}
+                className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all"
+              >
+                {/* Header Macrocategoría */}
+                <div className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => toggleMacro(cat.nombre)}
+                    className="flex-1 flex items-center gap-3 text-left cursor-pointer min-w-0"
+                    aria-expanded={isOpen}
+                  >
+                    <span className="text-xl flex-shrink-0">{cat.icono}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate mr-2">
+                          {cat.nombre}
+                        </span>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className={`text-xs font-black ${progressTextColor(pct)}`}>
+                            {pct.toFixed(0)}%
+                          </span>
+                          <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
+                            {formatCOP(totalSubGastado)} / {formatCOP(cat.presupuesto)}
+                          </span>
+                        </div>
+                      </div>
+                      <ProgressBar
+                        pct={pct}
+                        label={`${cat.nombre}: ${pct.toFixed(0)}% del presupuesto`}
+                      />
+                      <div className="mt-1 flex items-center justify-between">
+                        <span
+                          className={`text-[10px] font-semibold ${
+                            remaining >= 0
+                              ? 'text-slate-600 dark:text-slate-400'
+                              : 'text-rose-600 dark:text-rose-400 font-bold'
+                          }`}
+                        >
+                          {remaining >= 0
+                            ? `Disponible: ${formatCOP(remaining)}`
+                            : `⚠ Excedido: ${formatCOP(Math.abs(remaining))}`}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRenameMacro(cat.nombre, 'GASTO')}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      title={`Renombrar macrocategoría "${cat.nombre}"`}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleMacro(cat.nombre)}
+                      className="p-1.5 text-slate-400 dark:text-slate-500 cursor-pointer"
+                    >
+                      {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Subcategorías de la Macro */}
+                {isOpen && (
+                  <div className="border-t border-slate-100 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 bg-slate-50/70 dark:bg-slate-950/40 animate-slide-up">
+                    {cat.subcategorias.length === 0 ? (
+                      <div className="px-4 py-3 text-xs text-slate-400 dark:text-slate-500 italic text-center">
+                        Sin subcategorías en este ciclo
+                      </div>
+                    ) : (
+                      cat.subcategorias.map((sub) => {
+                        const subGastado = sub.gastado || 0;
+                        const subPct =
+                          sub.presupuesto > 0 ? (subGastado / sub.presupuesto) * 100 : 0;
+                        const subRemaining = sub.presupuesto - subGastado;
+
+                        return (
+                          <div
+                            key={sub.nombre}
+                            className="px-4 py-2.5 pl-14 flex flex-col gap-1"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 truncate mr-2">
+                                <span
+                                  className={`text-xs font-semibold truncate ${
+                                    sub.activo === false
+                                      ? 'text-slate-400 dark:text-slate-500 line-through'
+                                      : 'text-slate-700 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {sub.nombre}
+                                </span>
+                                {sub.activo === false && (
+                                  <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 flex-shrink-0">
+                                    Archivada
+                                  </span>
+                                )}
+                                {sub.medio_pago_sugerido && (
+                                  <span className="text-[10px] text-slate-400 dark:text-slate-500 truncate hidden sm:inline flex-shrink-0">
+                                    💳 {sub.medio_pago_sugerido}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <span
+                                  className={`text-[11px] font-black ${progressTextColor(
+                                    subPct,
+                                  )}`}
+                                >
+                                  {subPct.toFixed(0)}%
+                                </span>
+                                <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                                  {formatCOP(subGastado)} / {formatCOP(sub.presupuesto)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditSub(sub)}
+                                  className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors cursor-pointer"
+                                  title={`Editar subcategoría ${sub.nombre}`}
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                              </div>
+                            </div>
+                            <ProgressBar
+                              pct={subPct}
+                              label={`${sub.nombre}: ${subPct.toFixed(0)}%`}
+                            />
+                            <p
+                              className={`text-[10px] mt-0.5 font-medium ${
+                                subRemaining >= 0
+                                  ? 'text-slate-600 dark:text-slate-400'
+                                  : 'text-rose-600 dark:text-rose-400 font-bold'
+                              }`}
+                            >
+                              {subRemaining >= 0
+                                ? `Disponible: ${formatCOP(subRemaining)}`
+                                : `⚠ Excedido: ${formatCOP(Math.abs(subRemaining))}`}
+                            </p>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* VISTA 2: CATEGORÍAS DE INGRESO */}
+      {tipoFiltro === 'INGRESO' && (
+        <div className="flex flex-col gap-3">
+          {categoriesIngreso.map((macro) => {
+            const isOpen = openMacros[macro.nombre] ?? true;
+            return (
+              <div
+                key={macro.nombre}
+                className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-all"
+              >
+                <div className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => toggleMacro(macro.nombre)}
+                    className="flex-1 flex items-center gap-3 text-left cursor-pointer min-w-0"
+                  >
+                    <span className="text-xl flex-shrink-0">{macro.icono}</span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                        {macro.nombre}
+                      </span>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {macro.subcategorias.filter((s) => s.activo !== false).length}{' '}
+                        subcategorías activas
+                      </p>
+                    </div>
+                  </button>
+                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRenameMacro(macro.nombre, 'INGRESO')}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      title={`Renombrar macrocategoría "${macro.nombre}"`}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleMacro(macro.nombre)}
+                      className="p-1.5 text-slate-400 dark:text-slate-500 cursor-pointer"
+                    >
+                      {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                {isOpen && (
+                  <div className="border-t border-slate-100 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 bg-slate-50/70 dark:bg-slate-950/40">
+                    {macro.subcategorias.length === 0 ? (
+                      <div className="px-4 py-3 text-xs text-slate-400 dark:text-slate-500 italic text-center">
+                        Sin subcategorías registradas
+                      </div>
+                    ) : (
+                      macro.subcategorias.map((sub) => (
+                        <div
+                          key={sub.nombre}
+                          className="px-4 py-2.5 pl-14 flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-2 truncate mr-2">
+                            <span
+                              className={`text-xs font-semibold truncate ${
+                                sub.activo === false
+                                  ? 'text-slate-400 dark:text-slate-500 line-through'
+                                  : 'text-slate-700 dark:text-slate-300'
+                              }`}
+                            >
+                              {sub.nombre}
+                            </span>
+                            {sub.activo === false && (
+                              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 flex-shrink-0">
+                                Archivada
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditSub(sub)}
+                            className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors cursor-pointer"
+                            title={`Editar ${sub.nombre}`}
+                          >
+                            <Pencil size={12} />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Botón "+ Nueva Categoría" */}
       <button
         type="button"
-        onClick={() => {
-          haptic();
-          setModalNewSub(true);
-        }}
+        onClick={handleOpenNewCategory}
         className="w-full py-3.5 px-4 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-600 bg-white/70 dark:bg-slate-900/50 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 flex items-center justify-center gap-2 transition active:scale-[0.99] shadow-sm cursor-pointer mt-1"
       >
         <Plus size={16} />
-        <span>+ Nueva Subcategoría</span>
+        <span>
+          + Nueva Subcategoría ({tipoFiltro === 'GASTO' ? 'Gasto' : 'Ingreso'})
+        </span>
       </button>
 
-      {/* Modal Editar Presupuesto Base */}
-      {editingSub && (
+      {/* MODAL 1: Renombrar Macrocategoría en Cascada */}
+      {renamingMacro && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
           role="dialog"
           aria-modal="true"
-          onClick={(e) => { if (e.target === e.currentTarget) setEditingSub(null); }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRenamingMacro(null);
+          }}
         >
           <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-4 animate-scale-up">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
@@ -424,10 +905,99 @@ export default function BudgetAccordion() {
                 </div>
                 <div>
                   <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                    Editar Presupuesto Base
+                    Renombrar Macrocategoría
                   </h3>
                   <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate max-w-[200px]">
-                    {editingSub.nombre}
+                    {renamingMacro.tipo === 'GASTO' ? 'Gasto' : 'Ingreso'}: {renamingMacro.oldName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRenamingMacro(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div>
+              <label
+                htmlFor="rename-macro-input"
+                className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+              >
+                Nuevo nombre de la Macrocategoría
+              </label>
+              <input
+                id="rename-macro-input"
+                type="text"
+                value={renamingMacro.newName}
+                onChange={(e) =>
+                  setRenamingMacro({ ...renamingMacro, newName: e.target.value })
+                }
+                className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-sm font-bold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="Ej. Vivienda y Servicios"
+              />
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
+                💡 Este cambio renombrará en cascada la macrocategoría en el catálogo y en todas las transacciones históricas.
+              </p>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setRenamingMacro(null)}
+                disabled={isRenaming}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveRenameMacro}
+                disabled={
+                  isRenaming ||
+                  !renamingMacro.newName.trim() ||
+                  renamingMacro.newName.trim() === renamingMacro.oldName
+                }
+                className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5"
+              >
+                {isRenaming ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    <span>Guardando...</span>
+                  </>
+                ) : (
+                  <span>Renombrar en Cascada</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Editar / Renombrar / Archivar Subcategoría */}
+      {editingSub && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditingSub(null);
+          }}
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-4 animate-scale-up">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                  <Pencil size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                    Editar Subcategoría
+                  </h3>
+                  <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate max-w-[200px]">
+                    {editingSub.macro} › {editingSub.nombre}
                   </p>
                 </div>
               </div>
@@ -440,24 +1010,101 @@ export default function BudgetAccordion() {
               </button>
             </div>
 
+            {/* Nombre de la Subcategoría */}
             <div>
-              <label htmlFor="edit-budget-input" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
-                Nuevo Presupuesto Base (COP)
+              <label
+                htmlFor="edit-sub-name"
+                className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+              >
+                Nombre de la Subcategoría
               </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 dark:text-slate-500">$</span>
-                <input
-                  id="edit-budget-input"
-                  type="text"
-                  inputMode="numeric"
-                  value={editAmountDisplay}
-                  onChange={e => {
-                    const digits = e.target.value.replace(/\D/g, '');
-                    setEditAmountDisplay(digits ? formatDisplay(digits) : '0');
-                  }}
-                  className="w-full pl-7 pr-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-sm font-black text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
+              <input
+                id="edit-sub-name"
+                type="text"
+                value={editSubNombre}
+                onChange={(e) => setEditSubNombre(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            {/* Solo GASTO: Presupuesto Base y Medio de Pago Sugerido */}
+            {editingSub.tipo === 'GASTO' && (
+              <>
+                <div>
+                  <label
+                    htmlFor="edit-budget-input"
+                    className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+                  >
+                    Presupuesto Base (COP)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 dark:text-slate-500">
+                      $
+                    </span>
+                    <input
+                      id="edit-budget-input"
+                      type="text"
+                      inputMode="numeric"
+                      value={editAmountDisplay}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '');
+                        setEditAmountDisplay(digits ? formatDisplay(digits) : '0');
+                      }}
+                      className="w-full pl-7 pr-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-black text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="edit-medio-pago"
+                    className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+                  >
+                    Medio de Pago Sugerido
+                  </label>
+                  <select
+                    id="edit-medio-pago"
+                    value={editMedioPago}
+                    onChange={(e) => setEditMedioPago(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="">Sin sugerencia</option>
+                    {mediosPagoDisponibles.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
+
+            {/* Botón Archivar / Reactivar */}
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                Estado: {editingSub.activo !== false ? 'Activa' : 'Archivada'}
+              </span>
+              {editingSub.activo !== false ? (
+                <button
+                  type="button"
+                  onClick={handleArchiveSub}
+                  disabled={isUpdating}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-rose-600 hover:text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-xs font-semibold transition cursor-pointer"
+                >
+                  <Archive size={12} />
+                  <span>Archivar</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleReactivateSub}
+                  disabled={isUpdating}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold transition cursor-pointer"
+                >
+                  <RotateCcw size={12} />
+                  <span>Reactivar</span>
+                </button>
+              )}
             </div>
 
             <div className="flex gap-2 pt-1">
@@ -471,8 +1118,8 @@ export default function BudgetAccordion() {
               </button>
               <button
                 type="button"
-                onClick={handleSaveEdit}
-                disabled={isUpdating}
+                onClick={handleSaveEditSub}
+                disabled={isUpdating || !editSubNombre.trim()}
                 className="flex-1 py-2.5 rounded-xl bg-slate-900 dark:bg-indigo-600 hover:bg-slate-800 dark:hover:bg-indigo-500 text-white text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5"
               >
                 {isUpdating ? (
@@ -481,7 +1128,7 @@ export default function BudgetAccordion() {
                     <span>Guardando...</span>
                   </>
                 ) : (
-                  <span>Guardar Presupuesto</span>
+                  <span>Guardar Cambios</span>
                 )}
               </button>
             </div>
@@ -489,13 +1136,15 @@ export default function BudgetAccordion() {
         </div>
       )}
 
-      {/* Modal Nueva Subcategoría */}
-      {modalNewSub && (
+      {/* MODAL 3: Nueva Subcategoría / Categoría */}
+      {modalNewCat && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
           role="dialog"
           aria-modal="true"
-          onClick={(e) => { if (e.target === e.currentTarget) setModalNewSub(false); }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setModalNewCat(false);
+          }}
         >
           <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-3.5 animate-scale-up">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
@@ -508,97 +1157,158 @@ export default function BudgetAccordion() {
                     Nueva Subcategoría
                   </h3>
                   <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                    Añadir al catálogo de presupuestos
+                    Añadir al catálogo de {newTipo === 'GASTO' ? 'gastos' : 'ingresos'}
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setModalNewSub(false)}
+                onClick={() => setModalNewCat(false)}
                 className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
               >
                 <X size={16} />
               </button>
             </div>
 
-            {/* Macro-categoría */}
+            {/* Switch de Tipo */}
+            <div className="flex p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setNewTipo('GASTO')}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${
+                  newTipo === 'GASTO'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                Gasto
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewTipo('INGRESO')}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition ${
+                  newTipo === 'INGRESO'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                Ingreso
+              </button>
+            </div>
+
+            {/* Macrocategoría */}
             <div>
-              <label htmlFor="new-macro-select" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
-                Macro-Categoría
+              <label
+                htmlFor="new-macro-select"
+                className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+              >
+                Macrocategoría
               </label>
               <select
                 id="new-macro-select"
-                value={newMacro}
-                onChange={e => setNewMacro(e.target.value)}
+                value={isCustomMacro ? '__custom__' : newMacro}
+                onChange={(e) => {
+                  if (e.target.value === '__custom__') {
+                    setIsCustomMacro(true);
+                  } else {
+                    setIsCustomMacro(false);
+                    setNewMacro(e.target.value);
+                  }
+                }}
                 className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
-                {allMacroNames.map(m => (
+                {macroOptionsForNew.map((m) => (
                   <option key={m} value={m}>
                     {MACRO_ICONS[m] || '📊'} {m}
                   </option>
                 ))}
+                <option value="__custom__">➕ Nueva Macrocategoría...</option>
               </select>
+              {isCustomMacro && (
+                <input
+                  type="text"
+                  value={newMacroCustom}
+                  onChange={(e) => setNewMacroCustom(e.target.value)}
+                  placeholder="Escribe el nombre de la macro"
+                  className="w-full mt-1.5 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              )}
             </div>
 
-            {/* Nombre de la Subcategoría */}
+            {/* Nombre de Subcategoría */}
             <div>
-              <label htmlFor="new-sub-name" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
+              <label
+                htmlFor="new-sub-name"
+                className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+              >
                 Nombre de la Subcategoría
               </label>
               <input
                 id="new-sub-name"
                 type="text"
                 value={newSubNombre}
-                onChange={e => setNewSubNombre(e.target.value)}
-                placeholder="Ej. Plataformas IA, Peajes"
+                onChange={(e) => setNewSubNombre(e.target.value)}
+                placeholder="Ej. Salario, Plataformas IA, Peajes"
                 className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
 
-            {/* Presupuesto Base */}
-            <div>
-              <label htmlFor="new-sub-budget" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
-                Presupuesto Base (COP)
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 dark:text-slate-500">$</span>
-                <input
-                  id="new-sub-budget"
-                  type="text"
-                  inputMode="numeric"
-                  value={newPresupuestoDisplay}
-                  onChange={e => {
-                    const digits = e.target.value.replace(/\D/g, '');
-                    setNewPresupuestoDisplay(digits ? formatDisplay(digits) : '0');
-                  }}
-                  className="w-full pl-7 pr-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-black text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-            </div>
+            {/* Si es GASTO: Presupuesto y Medio de Pago */}
+            {newTipo === 'GASTO' && (
+              <>
+                <div>
+                  <label
+                    htmlFor="new-sub-budget"
+                    className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+                  >
+                    Presupuesto Base (COP)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 dark:text-slate-500">
+                      $
+                    </span>
+                    <input
+                      id="new-sub-budget"
+                      type="text"
+                      inputMode="numeric"
+                      value={newPresupuestoDisplay}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '');
+                        setNewPresupuestoDisplay(digits ? formatDisplay(digits) : '0');
+                      }}
+                      className="w-full pl-7 pr-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-black text-slate-900 dark:text-slate-100 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
 
-            {/* Medio de pago sugerido */}
-            <div>
-              <label htmlFor="new-medio-pago" className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1">
-                Medio de Pago Sugerido
-              </label>
-              <select
-                id="new-medio-pago"
-                value={newMedioPago}
-                onChange={e => setNewMedioPago(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                {MEDIOS_PAGO.map(m => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </div>
+                <div>
+                  <label
+                    htmlFor="new-medio-pago"
+                    className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 block mb-1"
+                  >
+                    Medio de Pago Sugerido
+                  </label>
+                  <select
+                    id="new-medio-pago"
+                    value={newMedioPago}
+                    onChange={(e) => setNewMedioPago(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="">Sin sugerencia</option>
+                    {mediosPagoDisponibles.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
 
             <div className="flex gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setModalNewSub(false)}
+                onClick={() => setModalNewCat(false)}
                 disabled={isCreating}
                 className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
               >
@@ -606,9 +1316,13 @@ export default function BudgetAccordion() {
               </button>
               <button
                 type="button"
-                onClick={handleCreateNewSub}
-                disabled={isCreating || !newSubNombre.trim()}
-                className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5"
+                onClick={handleCreateCategory}
+                disabled={
+                  isCreating ||
+                  !newSubNombre.trim() ||
+                  (isCustomMacro && !newMacroCustom.trim())
+                }
+                className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5"
               >
                 {isCreating ? (
                   <>

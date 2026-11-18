@@ -24,6 +24,7 @@ import {
   CATALOG_INGRESOS,
   CATALOG_TRANSFERENCIAS,
   CARTERAS,
+  PAYMENT_RULES,
 } from "../data/catalog";
 import { formatCOP, haptic } from "../utils/format";
 
@@ -38,12 +39,14 @@ interface EditTransactionModalProps {
 const MACRO_ICONS: Record<string, string> = {
   Alimentación: "🛒",
   Transporte: "⛽",
+  "Vivienda y Servicios": "🏠",
   "Vivienda / Hogar": "🏠",
   Vivienda: "🏠",
   "Servicios Públicos": "💡",
   Servicios: "💡",
   "Salud y Bienestar": "🏋️",
   Mascota: "🐾",
+  "Ocio y Suscripciones": "🎉",
   "Ocio y Viajes": "✈️",
   Suscripciones: "📱",
   "Inversión y Ahorro": "📈",
@@ -53,7 +56,7 @@ const MACRO_ICONS: Record<string, string> = {
   "Ingresos Laborales": "💼",
   "Ingresos Agencia": "🚀",
   "Rentas del Capital": "💰",
-  "Otros Ingresos": "📥",
+  "Otros Ingresos": "💰",
   "Movimientos Propios": "🔄",
 };
 
@@ -200,7 +203,7 @@ export default function EditTransactionModal({
   const macrosDisponibles = useMemo(() => {
     if (tipo === "GASTO") {
       const fromLive = activeCatalogo
-        .filter((c) => c.activo !== false && c.macro_categoria)
+        .filter((c) => (c.tipo === undefined || c.tipo === "GASTO") && c.activo !== false && c.macro_categoria)
         .map((c) => c.macro_categoria.trim());
       const fromBase = CATALOG_GASTOS.map((c) => c.nombre);
       const unified = Array.from(new Set([...fromLive, ...fromBase]));
@@ -210,10 +213,14 @@ export default function EditTransactionModal({
       return unified.length > 0 ? unified : ["Alimentación"];
     }
     if (tipo === "INGRESO") {
+      const fromLive = activeCatalogo
+        .filter((c) => c.tipo === "INGRESO" && c.activo !== false && c.macro_categoria)
+        .map((c) => c.macro_categoria.trim());
       const base = CATALOG_INGRESOS.map((c) => c.nombre);
-      return macroCategoria && !base.includes(macroCategoria)
-        ? [macroCategoria, ...base]
-        : base;
+      const unified = Array.from(new Set([...fromLive, ...base]));
+      return macroCategoria && !unified.includes(macroCategoria)
+        ? [macroCategoria, ...unified]
+        : unified.length > 0 ? unified : base;
     }
     const base = CATALOG_TRANSFERENCIAS.map((c) => c.nombre);
     return macroCategoria && !base.includes(macroCategoria)
@@ -228,6 +235,7 @@ export default function EditTransactionModal({
       const fromLive = activeCatalogo
         .filter(
           (c) =>
+            (c.tipo === undefined || c.tipo === "GASTO") &&
             c.macro_categoria.trim().toLowerCase() ===
               macroCategoria.trim().toLowerCase() && c.activo !== false,
         )
@@ -245,15 +253,49 @@ export default function EditTransactionModal({
       }
       return unified;
     }
-    const currentList =
-      tipo === "INGRESO" ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
-    const found = currentList.find((c) => c.nombre === macroCategoria);
+    if (tipo === "INGRESO") {
+      const fromLive = activeCatalogo
+        .filter(
+          (c) =>
+            c.tipo === "INGRESO" &&
+            c.macro_categoria.trim().toLowerCase() ===
+              macroCategoria.trim().toLowerCase() && c.activo !== false,
+        )
+        .map((c) => c.subcategoria.trim());
+      const baseCat = CATALOG_INGRESOS.find((c) => c.nombre === macroCategoria);
+      const fromBase = baseCat ? baseCat.subcategorias.map((s) => s.nombre) : [];
+      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      if (subcategoria && !unified.includes(subcategoria)) {
+        return [subcategoria, ...unified];
+      }
+      return unified;
+    }
+    const found = CATALOG_TRANSFERENCIAS.find((c) => c.nombre === macroCategoria);
     const base = found ? found.subcategorias.map((s) => s.nombre) : [];
     if (subcategoria && !base.includes(subcategoria)) {
       return [subcategoria, ...base];
     }
     return base;
   }, [activeCatalogo, macroCategoria, subcategoria, tipo]);
+
+  // Filtrado de carteras según tipo
+  const carterasDisponibles = useMemo(() => {
+    if (tipo === "GASTO") {
+      return carterasList.filter((c) => c.permite_gasto !== false);
+    }
+    return carterasList;
+  }, [tipo, carterasList]);
+
+  // Regla de sugerencia de cuenta/medio de pago
+  const getSuggestedPayment = (macroName: string, subName: string) => {
+    const item = activeCatalogo.find(
+      (c) =>
+        (c.tipo === undefined || c.tipo === "GASTO") &&
+        c.macro_categoria.trim().toLowerCase() === macroName.trim().toLowerCase() &&
+        c.subcategoria.trim().toLowerCase() === subName.trim().toLowerCase(),
+    );
+    return item?.medio_pago_sugerido || PAYMENT_RULES[subName];
+  };
 
   // Manejador del cambio de macro-categoría
   const handleMacroChange = (newMacro: string) => {
@@ -263,6 +305,7 @@ export default function EditTransactionModal({
       const fromLive = activeCatalogo
         .filter(
           (c) =>
+            (c.tipo === undefined || c.tipo === "GASTO") &&
             c.macro_categoria.trim().toLowerCase() ===
               newMacro.trim().toLowerCase() && c.activo !== false,
         )
@@ -281,9 +324,36 @@ export default function EditTransactionModal({
       nextSubs = found ? found.subcategorias.map((s) => s.nombre) : [];
     }
     if (nextSubs.length > 0) {
-      setSubcategoria(nextSubs[0]);
+      const firstSub = nextSubs[0];
+      setSubcategoria(firstSub);
+      if (tipo === "GASTO") {
+        const suggested = getSuggestedPayment(newMacro, firstSub);
+        if (suggested) {
+          const allowed = carterasDisponibles.some(
+            (c) => (c.nombre === suggested || c.id === suggested) && c.permite_gasto !== false,
+          );
+          if (allowed) {
+            setCuenta(suggested);
+          }
+        }
+      }
     } else {
       setSubcategoria("");
+    }
+  };
+
+  const handleSubcategoriaChange = (newSub: string) => {
+    setSubcategoria(newSub);
+    if (tipo === "GASTO") {
+      const suggested = getSuggestedPayment(macroCategoria, newSub);
+      if (suggested) {
+        const allowed = carterasDisponibles.some(
+          (c) => (c.nombre === suggested || c.id === suggested) && c.permite_gasto !== false,
+        );
+        if (allowed) {
+          setCuenta(suggested);
+        }
+      }
     }
   };
 
@@ -292,14 +362,6 @@ export default function EditTransactionModal({
     (macroCategoria === "Pago Deuda" ||
       macroCategoria?.toLowerCase().includes("deuda") ||
       Boolean(transaccion?.cuentaDestino));
-
-  // Filtrado de carteras según tipo
-  const carterasDisponibles = useMemo(() => {
-    if (transaccion?.tipo === "GASTO") {
-      return carterasList.filter((c) => c.permite_gasto !== false);
-    }
-    return carterasList;
-  }, [transaccion?.tipo, carterasList]);
 
   // Carteras de pasivo / deuda para amortización
   const carterasDeuda = useMemo(() => {
@@ -612,7 +674,7 @@ export default function EditTransactionModal({
               <select
                 id="edit-tx-sub"
                 value={subcategoria}
-                onChange={(e) => setSubcategoria(e.target.value)}
+                onChange={(e) => handleSubcategoriaChange(e.target.value)}
                 className="
                   w-full px-3 py-2 rounded-xl
                   bg-slate-50 dark:bg-slate-950/60

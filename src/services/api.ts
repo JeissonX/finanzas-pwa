@@ -1591,7 +1591,11 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
           .from("carteras")
           .select("*")
           .order("orden", { ascending: true, nullsFirst: false }),
-        supabase.from("catalogo_categorias").select("*").eq("activo", true),
+        supabase
+          .from("catalogo_categorias")
+          .select("id, tipo, macro_categoria, subcategoria, presupuesto_base, medio_pago_sugerido, activo")
+          .order("macro_categoria", { ascending: true })
+          .order("subcategoria", { ascending: true }),
         supabase
           .from("transacciones")
           .select("*")
@@ -1644,10 +1648,11 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
 
     const catalogo: CatalogoItem[] = catalogoData.map((c: any) => ({
       id: c.id ? String(c.id) : undefined,
+      tipo: c.tipo === "INGRESO" ? "INGRESO" : "GASTO",
       macro_categoria: (c.macro_categoria || "").trim(),
       subcategoria: (c.subcategoria || "").trim(),
       activo: c.activo !== false,
-      medio_pago_sugerido: c.medio_pago_sugerido || undefined,
+      medio_pago_sugerido: c.medio_pago_sugerido || null,
       presupuesto_base: sanitizeAmount(c.presupuesto_base),
     }));
 
@@ -1756,7 +1761,9 @@ export async function fetchAppData(forceRefresh = false): Promise<AppData> {
       }
     }
 
-    const presupuestos: PresupuestoItem[] = catalogoData.map((catRow: any) => {
+    const presupuestos: PresupuestoItem[] = catalogoData
+      .filter((catRow: any) => (catRow.tipo ?? "GASTO") === "GASTO" && catRow.activo !== false)
+      .map((catRow: any) => {
       const macro = (catRow.macro_categoria || "").trim();
       const sub = (catRow.subcategoria || "").trim();
       const presupuesto = sanitizeAmount(catRow.presupuesto_base);
@@ -2327,4 +2334,115 @@ export async function syncOfflineQueue(
     }
     throw err;
   }
+}
+
+
+// ── Gestión de Catálogo de Categorías ─────────────────────────────────────────
+
+export async function createCategoria(input: {
+  tipo: 'GASTO' | 'INGRESO';
+  macro_categoria: string;
+  subcategoria: string;
+  presupuesto_base?: number;
+  medio_pago_sugerido?: string | null;
+}): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa para crear categorías');
+  }
+  const user_id = sessionData.session.user.id;
+  const presupuesto = input.tipo === 'INGRESO'
+    ? 0
+    : Math.trunc(Math.max(0, Number(input.presupuesto_base) || 0));
+
+  const { error } = await supabase.from('catalogo_categorias').insert([{
+    user_id,
+    tipo: input.tipo,
+    macro_categoria: input.macro_categoria.trim(),
+    subcategoria: input.subcategoria.trim(),
+    presupuesto_base: presupuesto,
+    medio_pago_sugerido: input.medio_pago_sugerido ?? null,
+    activo: true,
+  }]);
+
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error(`Ya existe la categoría "${input.macro_categoria} › ${input.subcategoria}" para tipo ${input.tipo}`);
+    }
+    throw error;
+  }
+  await fetchAppData(true);
+}
+
+export async function updateCategoria(
+  id: string | number,
+  patch: { presupuesto_base?: number; medio_pago_sugerido?: string | null; activo?: boolean },
+): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa para actualizar categorías');
+  }
+
+  const payload: Record<string, unknown> = {};
+  if (patch.presupuesto_base !== undefined) {
+    payload.presupuesto_base = Math.trunc(Math.max(0, Number(patch.presupuesto_base) || 0));
+  }
+  if ('medio_pago_sugerido' in patch) {
+    payload.medio_pago_sugerido = patch.medio_pago_sugerido ?? null;
+  }
+  if (patch.activo !== undefined) {
+    payload.activo = patch.activo;
+  }
+
+  const { error } = await supabase
+    .from('catalogo_categorias')
+    .update(payload)
+    .eq('id', id);
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function renameCategoriaCascade(
+  tipo: 'GASTO' | 'INGRESO',
+  oldMacro: string,
+  oldSub: string,
+  newMacro: string,
+  newSub: string,
+): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const { error } = await supabase.rpc('rename_categoria_cascade', {
+    p_tipo: tipo,
+    p_old_macro: oldMacro,
+    p_old_sub: oldSub,
+    p_new_macro: newMacro,
+    p_new_sub: newSub,
+  });
+
+  if (error) throw error;
+  await fetchAppData(true);
+}
+
+export async function renameMacroCascade(
+  tipo: 'GASTO' | 'INGRESO',
+  oldMacro: string,
+  newMacro: string,
+): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session?.user?.id) {
+    throw new Error('Se requiere sesión activa');
+  }
+
+  const { error } = await supabase.rpc('rename_macro_cascade', {
+    p_tipo: tipo,
+    p_old_macro: oldMacro,
+    p_new_macro: newMacro,
+  });
+
+  if (error) throw error;
+  await fetchAppData(true);
 }

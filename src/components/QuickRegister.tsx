@@ -56,12 +56,14 @@ const TAB_ACCENT: Record<TipoTransaccion, string> = {
 const MACRO_ICONS: Record<string, string> = {
   Alimentación: "🛒",
   Transporte: "⛽",
+  "Vivienda y Servicios": "🏠",
   "Vivienda / Hogar": "🏠",
   Vivienda: "🏠",
   "Servicios Públicos": "💡",
   Servicios: "💡",
   "Salud y Bienestar": "🏋️",
   Mascota: "🐾",
+  "Ocio y Suscripciones": "🎉",
   "Ocio y Viajes": "✈️",
   Suscripciones: "📱",
   "Inversión y Ahorro": "📈",
@@ -71,7 +73,7 @@ const MACRO_ICONS: Record<string, string> = {
   "Ingresos Laborales": "💼",
   "Ingresos Agencia": "🚀",
   "Rentas del Capital": "💰",
-  "Otros Ingresos": "📥",
+  "Otros Ingresos": "💰",
   "Movimientos Propios": "🔄",
 };
 
@@ -278,14 +280,19 @@ export default function QuickRegister({
   const macrosDisponibles = useMemo(() => {
     if (tipo === "GASTO") {
       const fromLive = (activeCatalogo || [])
-        .filter((c) => c.activo !== false && c.macro_categoria)
+        .filter((c) => (c.tipo === undefined || c.tipo === "GASTO") && c.activo !== false && c.macro_categoria)
         .map((c) => c.macro_categoria.trim());
       const fromBase = CATALOG_GASTOS.map((c) => c.nombre);
       const unified = Array.from(new Set([...fromLive, ...fromBase]));
       return unified.length > 0 ? unified : ["Alimentación"];
     }
     if (tipo === "INGRESO") {
-      return CATALOG_INGRESOS.map((c) => c.nombre);
+      const fromLive = (activeCatalogo || [])
+        .filter((c) => c.tipo === "INGRESO" && c.activo !== false && c.macro_categoria)
+        .map((c) => c.macro_categoria.trim());
+      const fromBase = CATALOG_INGRESOS.map((c) => c.nombre);
+      const unified = Array.from(new Set([...fromLive, ...fromBase]));
+      return unified.length > 0 ? unified : fromBase;
     }
     return CATALOG_TRANSFERENCIAS.map((c) => c.nombre);
   }, [activeCatalogo, tipo]);
@@ -297,6 +304,7 @@ export default function QuickRegister({
       const fromLive = (activeCatalogo || [])
         .filter(
           (c) =>
+            (c.tipo === undefined || c.tipo === "GASTO") &&
             c.macro_categoria.trim().toLowerCase() ===
               categoria.trim().toLowerCase() && c.activo !== false,
         )
@@ -309,9 +317,20 @@ export default function QuickRegister({
         : [];
       return Array.from(new Set([...fromLive, ...fromBase]));
     }
-    const currentList =
-      tipo === "INGRESO" ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
-    const found = currentList.find((c) => c.nombre === categoria);
+    if (tipo === "INGRESO") {
+      const fromLive = (activeCatalogo || [])
+        .filter(
+          (c) =>
+            c.tipo === "INGRESO" &&
+            c.macro_categoria.trim().toLowerCase() ===
+              categoria.trim().toLowerCase() && c.activo !== false,
+        )
+        .map((c) => c.subcategoria.trim());
+      const baseCat = CATALOG_INGRESOS.find((c) => c.nombre === categoria);
+      const fromBase = baseCat ? baseCat.subcategorias.map((s) => s.nombre) : [];
+      return Array.from(new Set([...fromLive, ...fromBase]));
+    }
+    const found = CATALOG_TRANSFERENCIAS.find((c) => c.nombre === categoria);
     return found ? found.subcategorias.map((s) => s.nombre) : [];
   }, [activeCatalogo, categoria, tipo]);
 
@@ -320,6 +339,7 @@ export default function QuickRegister({
     (macroName: string, subName: string) => {
       const item = activeCatalogo.find(
         (c) =>
+          (c.tipo === undefined || c.tipo === "GASTO") &&
           c.macro_categoria.trim().toLowerCase() ===
             macroName.trim().toLowerCase() &&
           c.subcategoria.trim().toLowerCase() === subName.trim().toLowerCase(),
@@ -351,10 +371,25 @@ export default function QuickRegister({
           ? baseCat.subcategorias.map((s) => s.nombre.trim())
           : [];
         firstSub = Array.from(new Set([...liveSubs, ...baseSubs]))[0] || "";
+      } else if (tipo === "INGRESO") {
+        const liveSubs = (activeCatalogo || [])
+          .filter(
+            (c) =>
+              c.tipo === "INGRESO" &&
+              c.macro_categoria.trim().toLowerCase() ===
+                firstMacro.trim().toLowerCase() && c.activo !== false,
+          )
+          .map((c) => c.subcategoria.trim());
+        const baseCat = CATALOG_INGRESOS.find(
+          (c) =>
+            c.nombre.trim().toLowerCase() === firstMacro.trim().toLowerCase(),
+        );
+        const baseSubs = baseCat
+          ? baseCat.subcategorias.map((s) => s.nombre.trim())
+          : [];
+        firstSub = Array.from(new Set([...liveSubs, ...baseSubs]))[0] || "";
       } else {
-        const currentList =
-          tipo === "INGRESO" ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
-        const found = currentList.find((c) => c.nombre === firstMacro);
+        const found = CATALOG_TRANSFERENCIAS.find((c) => c.nombre === firstMacro);
         firstSub = found?.subcategorias[0]?.nombre || "";
       }
       setSubcategoria(firstSub);
@@ -443,10 +478,24 @@ export default function QuickRegister({
           ? baseCat.subcategorias.map((s) => s.nombre.trim())
           : [];
         nextSubs = Array.from(new Set([...liveSubs, ...baseSubs]));
+      } else if (tipo === "INGRESO") {
+        const liveSubs = (activeCatalogo || [])
+          .filter(
+            (c) =>
+              c.tipo === "INGRESO" &&
+              c.macro_categoria.trim().toLowerCase() ===
+                catName.trim().toLowerCase() && c.activo !== false,
+          )
+          .map((c) => c.subcategoria.trim());
+        const baseCat = CATALOG_INGRESOS.find(
+          (c) => c.nombre.trim().toLowerCase() === catName.trim().toLowerCase(),
+        );
+        const baseSubs = baseCat
+          ? baseCat.subcategorias.map((s) => s.nombre.trim())
+          : [];
+        nextSubs = Array.from(new Set([...liveSubs, ...baseSubs]));
       } else {
-        const currentList =
-          tipo === "INGRESO" ? CATALOG_INGRESOS : CATALOG_TRANSFERENCIAS;
-        const found = currentList.find((c) => c.nombre === catName);
+        const found = CATALOG_TRANSFERENCIAS.find((c) => c.nombre === catName);
         nextSubs = found ? found.subcategorias.map((s) => s.nombre) : [];
       }
       const firstSub = nextSubs[0] || "";

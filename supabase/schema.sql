@@ -52,13 +52,16 @@ CREATE TABLE IF NOT EXISTS public.transacciones (
 CREATE TABLE IF NOT EXISTS public.catalogo_categorias (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+    tipo TEXT NOT NULL DEFAULT 'GASTO' CHECK (tipo IN ('GASTO', 'INGRESO')),
     macro_categoria TEXT NOT NULL,
     subcategoria TEXT NOT NULL,
     presupuesto_base NUMERIC NOT NULL DEFAULT 0,
     activo BOOLEAN NOT NULL DEFAULT true,
+    medio_pago_sugerido TEXT,
     cuenta_defecto TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_catalogo_user_macro_sub UNIQUE (user_id, macro_categoria, subcategoria),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_catalogo_user_tipo_macro_sub UNIQUE (user_id, tipo, macro_categoria, subcategoria),
     CONSTRAINT catalogo_presupuesto_pesos_enteros CHECK (presupuesto_base = trunc(presupuesto_base) AND presupuesto_base >= 0)
 );
 
@@ -437,3 +440,51 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.historico_patrimonio TO aut
 ALTER TABLE public.carteras REPLICA IDENTITY FULL;
 ALTER TABLE public.transacciones REPLICA IDENTITY FULL;
 ALTER TABLE public.gastos_recurrentes REPLICA IDENTITY FULL;
+
+
+-- RPCs de renombrado en cascada (documentados en 20261117_categorias_ingresos_y_cascada.sql)
+CREATE OR REPLACE FUNCTION public.rename_categoria_cascade(
+  p_tipo TEXT,
+  p_old_macro TEXT,
+  p_old_sub TEXT,
+  p_new_macro TEXT,
+  p_new_sub TEXT
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  UPDATE public.catalogo_categorias
+     SET macro_categoria = p_new_macro,
+         subcategoria    = p_new_sub,
+         updated_at      = NOW()
+   WHERE user_id = auth.uid()
+     AND tipo = p_tipo
+     AND macro_categoria = p_old_macro
+     AND subcategoria = p_old_sub;
+
+  UPDATE public.transacciones
+     SET macro_categoria = p_new_macro,
+         subcategoria    = p_new_sub
+   WHERE user_id = auth.uid()
+     AND macro_categoria = p_old_macro
+     AND subcategoria = p_old_sub;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.rename_macro_cascade(
+  p_tipo TEXT,
+  p_old_macro TEXT,
+  p_new_macro TEXT
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  UPDATE public.catalogo_categorias
+     SET macro_categoria = p_new_macro,
+         updated_at      = NOW()
+   WHERE user_id = auth.uid()
+     AND tipo = p_tipo
+     AND macro_categoria = p_old_macro;
+
+  UPDATE public.transacciones
+     SET macro_categoria = p_new_macro
+   WHERE user_id = auth.uid()
+     AND macro_categoria = p_old_macro;
+END;
+$$;

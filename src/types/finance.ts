@@ -93,11 +93,12 @@ export interface GastoRecurrente {
 
 export interface CatalogoItem {
   id?: string | number;
+  tipo?: 'GASTO' | 'INGRESO';
   macro_categoria: string;
   subcategoria: string;
-  activo?: boolean;
-  medio_pago_sugerido?: string;
   presupuesto_base?: number;
+  medio_pago_sugerido?: string | null;
+  activo?: boolean;
 }
 
 export interface AppDataResponse {

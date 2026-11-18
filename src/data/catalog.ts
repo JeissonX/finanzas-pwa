@@ -22,18 +22,11 @@ export const CATALOG_GASTOS: MacroCategoria[] = [
     ],
   },
   {
-    nombre: 'Vivienda / Hogar',
+    nombre: 'Vivienda y Servicios',
     icono: '🏠',
-    presupuesto: 524000,
+    presupuesto: 849000,
     subcategorias: [
       { nombre: 'Arriendo', presupuesto: 524000, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
-    ],
-  },
-  {
-    nombre: 'Servicios Públicos',
-    icono: '💡',
-    presupuesto: 325000,
-    subcategorias: [
       { nombre: 'Energía Eléctrica', presupuesto: 180000, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
       { nombre: 'Internet Hogar', presupuesto: 80000, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
       { nombre: 'Plan Celular', presupuesto: 40000, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
@@ -61,21 +54,14 @@ export const CATALOG_GASTOS: MacroCategoria[] = [
     ],
   },
   {
-    nombre: 'Ocio y Viajes',
-    icono: '✈️',
-    presupuesto: 380000,
+    nombre: 'Ocio y Suscripciones',
+    icono: '🎉',
+    presupuesto: 410000,
     subcategorias: [
       { nombre: 'Salidas / Rumba / Bares', presupuesto: 250000, gastado: 0, cuentaDefecto: 'Nequi' },
       { nombre: 'Ropa y Calzado', presupuesto: 80000, gastado: 0, cuentaDefecto: 'TC Lulo Bank' },
       { nombre: 'Cuidado Personal / Barbería', presupuesto: 50000, gastado: 0, cuentaDefecto: 'Efectivo' },
       { nombre: 'Vacaciones y Paseos', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Bolsillo - Vacaciones' },
-    ],
-  },
-  {
-    nombre: 'Suscripciones',
-    icono: '📱',
-    presupuesto: 30000,
-    subcategorias: [
       { nombre: 'Streaming y Apps Digitales', presupuesto: 30000, gastado: 0, cuentaDefecto: 'TC Lulo Bank' },
     ],
   },
@@ -84,7 +70,6 @@ export const CATALOG_GASTOS: MacroCategoria[] = [
     icono: '📈',
     presupuesto: 0,
     subcategorias: [
-      { nombre: 'Traslado a Bolsillo Ahorro', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Bolsillo - Ahorro' },
       { nombre: 'Inversiones', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
     ],
   },
@@ -107,6 +92,14 @@ export const CATALOG_GASTOS: MacroCategoria[] = [
   },
 ];
 
+// Aliases de compatibilidad hacia atrás para macros renombradas (transacciones históricas)
+export const CATALOG_GASTOS_LEGACY_MAP: Record<string, string> = {
+  'Vivienda / Hogar': 'Vivienda y Servicios',
+  'Servicios Públicos': 'Vivienda y Servicios',
+  'Ocio y Viajes': 'Ocio y Suscripciones',
+  'Suscripciones': 'Ocio y Suscripciones',
+};
+
 export const CATALOG_INGRESOS: MacroCategoria[] = [
   {
     nombre: 'Ingresos Laborales',
@@ -119,31 +112,12 @@ export const CATALOG_INGRESOS: MacroCategoria[] = [
     ],
   },
   {
-    nombre: 'Ingresos Agencia',
-    icono: '🚀',
-    presupuesto: 0,
-    subcategorias: [
-      { nombre: 'Servicios Pauta / Clientes', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
-      { nombre: 'Consultoría BI / Dev', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
-      { nombre: 'Ventas Directas', presupuesto: 0, gastado: 0, cuentaDefecto: 'Nequi' },
-    ],
-  },
-  {
-    nombre: 'Rentas del Capital',
+    nombre: 'Otros Ingresos',
     icono: '💰',
     presupuesto: 0,
     subcategorias: [
-      { nombre: 'Rendimientos Lulo', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Bolsillo - Ahorro' },
-      { nombre: 'Dividendos / Acciones', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Principal (Cuenta)' },
-      { nombre: 'CDT / Renta Fija', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Bolsillo - Ahorro' },
-    ],
-  },
-  {
-    nombre: 'Otros Ingresos',
-    icono: '📥',
-    presupuesto: 0,
-    subcategorias: [
       { nombre: 'Reembolsos', presupuesto: 0, gastado: 0, cuentaDefecto: 'Nequi' },
+      { nombre: 'Rendimientos / Dividendos', presupuesto: 0, gastado: 0, cuentaDefecto: 'Lulo Bolsillo - Ahorro' },
       { nombre: 'Préstamos Cobrados', presupuesto: 0, gastado: 0, cuentaDefecto: 'Efectivo' },
       { nombre: 'Varios', presupuesto: 0, gastado: 0, cuentaDefecto: 'Efectivo' },
     ],
