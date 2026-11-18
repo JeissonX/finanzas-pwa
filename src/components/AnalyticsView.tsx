@@ -1,7 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
-  BarChart,
-  Bar,
   XAxis,
   YAxis,
   Tooltip,
@@ -9,7 +7,6 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
   AreaChart,
   Area,
 } from 'recharts';
@@ -20,16 +17,13 @@ import {
   X,
   Check,
   Flame,
-  CreditCard,
   ShieldCheck,
-  Scale,
   TrendingUp,
   Layers,
   Fuel,
   Plus,
   Trash2,
 } from 'lucide-react';
-import { CATALOG_GASTOS } from '../data/catalog';
 import {
   formatCOP,
   calcEquivalentesEA,
@@ -50,61 +44,9 @@ import {
 import type { Tanqueada, VehiculoGasolina } from '../types/finance';
 
 const PALETTE = [
-  '#E11D48', '#2563EB', '#059669', '#D97706',
+  '#2563EB', '#059669', '#E11D48', '#D97706',
   '#7C3AED', '#0891B2', '#EA580C', '#4F46E5', '#DB2777',
 ];
-
-// Subcategorías clasificadas como inflexibles (costos fijos obligatorios)
-const SUBCATS_INFLEXIBLES_SET = new Set([
-  'arriendo',
-  'energía eléctrica',
-  'energia electrica',
-  'agua y alcantarillado',
-  'gas natural',
-  'internet hogar',
-  'plan celular',
-  'mercado del hogar',
-  'cuota regular mazda 2',
-  'gimnasio',
-]);
-
-interface TooltipProps {
-  active?: boolean;
-  payload?: { name: string; value: number; color: string }[];
-  label?: string;
-}
-
-function CustomTooltip({ active, payload, label }: TooltipProps) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 text-xs shadow-lg">
-      <p className="font-bold text-slate-900 dark:text-slate-100 mb-1.5">{label}</p>
-      {payload.map(p => (
-        <p key={p.name} style={{ color: p.color }} className="font-semibold flex justify-between gap-3">
-          <span>{p.name}:</span>
-          <span>{formatCOP(p.value)}</span>
-        </p>
-      ))}
-    </div>
-  );
-}
-
-interface KPICardProps {
-  label: string;
-  value: string;
-  sub?: string;
-  accent?: string;
-}
-
-function KPICard({ label, value, sub, accent = 'text-slate-900 dark:text-slate-100' }: KPICardProps) {
-  return (
-    <div className="flex-1 rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-3.5 shadow-sm">
-      <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">{label}</p>
-      <p className={`text-xl font-black mt-1 ${accent}`}>{value}</p>
-      {sub && <p className="text-[10px] font-medium text-slate-500 dark:text-slate-400 mt-0.5">{sub}</p>}
-    </div>
-  );
-}
 
 export interface AmortizationRun {
   months: number;
@@ -195,6 +137,21 @@ function calculateNewPayment(
   return Math.round(payment);
 }
 
+/** Asigna un emoji coherente a cada macrocategoría del catálogo */
+function getMacroIcon(macro: string): string {
+  const m = macro.toLowerCase();
+  if (m.includes('vivienda') || m.includes('hogar') || m.includes('servicio')) return '🏠';
+  if (m.includes('aliment') || m.includes('mercado') || m.includes('comida')) return '🛒';
+  if (m.includes('transporte') || m.includes('gasolina') || m.includes('carro') || m.includes('moto')) return '🚗';
+  if (m.includes('salud') || m.includes('bienestar') || m.includes('farmacia') || m.includes('médic')) return '🩺';
+  if (m.includes('ocio') || m.includes('suscrip') || m.includes('viaje') || m.includes('entreten')) return '🍿';
+  if (m.includes('deuda') || m.includes('obligac') || m.includes('credito') || m.includes('crédito') || m.includes('prestam')) return '💳';
+  if (m.includes('educa') || m.includes('curso') || m.includes('libro')) return '📚';
+  if (m.includes('mascota') || m.includes('veterin')) return '🐾';
+  if (m.includes('hormiga') || m.includes('gusto') || m.includes('personal') || m.includes('ropa')) return '☕';
+  return '🏷️';
+}
+
 export default function AnalyticsView() {
   const [appData, setAppData] = useState<AppData>(DEFAULT_APPDATA);
 
@@ -267,30 +224,140 @@ export default function AnalyticsView() {
   }, [appData.tasas]);
 
   const saldos = appData.saldos;
-  const currentCycle = appData.historico[appData.historico.length - 1] || { ciclo: 'Ciclo Actual', gastos: 0, ingresos: 0 };
   const gastosTotal = appData.kpis.gastos;
   const ingresosTotal = appData.kpis.ingresos;
-  const netAhorro = appData.kpis.balance;
-  const tasa = appData.kpis.tasaAhorro.toFixed(1);
 
-  // ── Cálculo de días restantes del ciclo nómina (corte el día 24) ────
-  const now = new Date();
-  const currentDay = now.getDate();
-  let targetDate = new Date(now.getFullYear(), now.getMonth(), 24, 23, 59, 59);
-  if (currentDay > 24) {
-    targetDate = new Date(now.getFullYear(), now.getMonth() + 1, 24, 23, 59, 59);
+  // ── Cálculo de días restantes del ciclo (corte el día 24 en Bogotá) ────
+  const { year: bYear, month: bMonth, day: bDay } = getBogotaDateParts();
+  let diasRestantesCorte24 = 1;
+  if (bDay < 24) {
+    diasRestantesCorte24 = 24 - bDay;
+  } else if (bDay === 24) {
+    diasRestantesCorte24 = 1;
+  } else {
+    const ultimoDiaMes = new Date(bYear, bMonth, 0).getDate();
+    diasRestantesCorte24 = (ultimoDiaMes - bDay) + 24;
   }
-  const diffMs = targetDate.getTime() - now.getTime();
-  const diasRestantes = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
 
   const balanceDisponible = appData.kpis.balanceDisponible ?? appData.kpis.balance;
-  const ritmoDiario = Math.max(balanceDisponible / diasRestantes, 0);
+  const ritmoDiario = Math.max(0, Math.round(balanceDisponible / diasRestantesCorte24));
 
-  // ── WIDGET 1: RUNWAY EN MESES DE VIDA (OXÍGENO FINANCIERO) ─────────
-  // Costos Fijos Inflexibles Base: Arriendo ($524.000) + Servicios Públicos ($325.000) + Cuota Mazda ($815.731) + Mercado Base ($600.000) = $2.264.731 COP/mes.
-  const costosFijosBase = 2_264_731;
+  // ── BLOQUE 1: AGRUPACIÓN DINÁMICA POR MACROCATEGORÍA ────────────────
+  const macrosData = useMemo(() => {
+    const map = new Map<string, { macro: string; gastado: number; presupuesto: number; ordenMacro: number }>();
+
+    // 1. Presupuestos configurados en Supabase
+    (appData.presupuestos || []).forEach(p => {
+      const macro = (p.macro || (p as any).macro_categoria || 'Otros').trim();
+      const existing = map.get(macro) || { macro, gastado: 0, presupuesto: 0, ordenMacro: p.orden_macro ?? 99 };
+      existing.presupuesto += Number(p.presupuesto) || 0;
+      if (p.orden_macro != null && p.orden_macro < existing.ordenMacro) {
+        existing.ordenMacro = p.orden_macro;
+      }
+      map.set(macro, existing);
+    });
+
+    // 2. Gastado real del ciclo activo
+    Object.entries(appData.gastadoPorMacro || {}).forEach(([macro, gastado]) => {
+      const m = macro.trim();
+      const existing = map.get(m) || { macro: m, gastado: 0, presupuesto: 0, ordenMacro: 99 };
+      existing.gastado = Number(gastado) || 0;
+      map.set(m, existing);
+    });
+
+    // Filtrar únicamente aquellas con actividad o presupuesto > 0
+    const list = Array.from(map.values()).filter(item => item.gastado > 0 || item.presupuesto > 0);
+
+    // Ordenar de mayor a menor gastado (desempate por presupuesto desc)
+    list.sort((a, b) => {
+      if (b.gastado !== a.gastado) return b.gastado - a.gastado;
+      return b.presupuesto - a.presupuesto;
+    });
+
+    const totalGastado = list.reduce((acc, m) => acc + m.gastado, 0);
+
+    return {
+      list,
+      totalGastado,
+    };
+  }, [appData.presupuestos, appData.gastadoPorMacro]);
+
+  const pieDataDinamico = useMemo(() => {
+    return macrosData.list
+      .filter(m => m.gastado > 0)
+      .map((m, i) => ({
+        name: m.macro,
+        value: m.gastado,
+        color: PALETTE[i % PALETTE.length],
+      }));
+  }, [macrosData.list]);
+
+  // ── BLOQUE 3: PATRIMONIO NETO CON PRÉSTAMOS POR COBRAR Y RUNWAY DINÁMICO ──
+  const activosCarteras = useMemo(() => {
+    const list = (appData.carteras || []).filter(c => c.activa !== false);
+    if (list.length > 0) {
+      return list
+        .filter(c => (c.saldo_actual ?? c.saldo ?? 0) > 0)
+        .reduce((acc, c) => acc + (c.saldo_actual ?? c.saldo ?? 0), 0);
+    }
+    return Object.entries(saldos).reduce((acc, [cuenta, saldo]) => {
+      const cl = cuenta.toLowerCase();
+      if (!cl.includes('crédito') && !cl.includes('credito') && saldo > 0) {
+        return acc + saldo;
+      }
+      return acc;
+    }, 0);
+  }, [appData.carteras, saldos]);
+
+  const prestamosPorCobrar = useMemo(() => {
+    return (appData.prestamos || [])
+      .filter(p => p.estado === 'PENDIENTE')
+      .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
+  }, [appData.prestamos]);
+
+  const pasivosDeudas = useMemo(() => {
+    const list = (appData.carteras || []).filter(c => c.activa !== false);
+    if (list.length > 0) {
+      return list
+        .filter(c => (c.saldo_actual ?? c.saldo ?? 0) < 0)
+        .reduce((acc, c) => acc + Math.abs(c.saldo_actual ?? c.saldo ?? 0), 0);
+    }
+    return Object.entries(saldos).reduce((acc, [cuenta, saldo]) => {
+      const cl = cuenta.toLowerCase();
+      if (cl.includes('crédito') || cl.includes('credito') || saldo < 0) {
+        return acc + Math.abs(saldo);
+      }
+      return acc;
+    }, 0);
+  }, [appData.carteras, saldos]);
+
+  const patrimonioNetoReal = activosCarteras + prestamosPorCobrar - pasivosDeudas;
+
+  // Runway · Fondo de Reserva dinámico según presupuesto esencial
+  const costoFijoMensual = useMemo(() => {
+    const ESSENTIAL_SET = new Set([
+      'vivienda y servicios',
+      'alimentación',
+      'alimentacion',
+      'transporte',
+      'pago deuda',
+      'obligaciones financieras',
+      'vivienda / hogar',
+      'servicios públicos',
+      'servicios publicos',
+    ]);
+    let suma = 0;
+    (appData.presupuestos || []).forEach(p => {
+      const m = (p.macro || (p as any).macro_categoria || '').trim().toLowerCase();
+      if (ESSENTIAL_SET.has(m)) {
+        suma += Number(p.presupuesto) || 0;
+      }
+    });
+    return suma > 0 ? suma : 2_264_731;
+  }, [appData.presupuestos]);
+
   const saldoReserva = saldos['Lulo Bolsillo - Ahorro'] ?? 0;
-  const runwayMeses = costosFijosBase > 0 ? saldoReserva / costosFijosBase : 0;
+  const runwayMeses = costoFijoMensual > 0 ? saldoReserva / costoFijoMensual : 0;
   const pctRunwayMeta = Math.min((runwayMeses / 3) * 100, 100);
 
   const runwayColorClass = runwayMeses >= 3
@@ -313,31 +380,7 @@ export default function AnalyticsView() {
 
   const runwayBadgeLabel = runwayMeses >= 3 ? 'Meta Superada' : runwayMeses >= 1 ? 'En Construcción' : 'Alerta Mínima';
 
-  // ── WIDGET 2: MATRIZ DE GASTOS: INFLEXIBLES VS. ESTILO DE VIDA ─────
-  const { totalInflexibles, totalDiscrecionales, pctInflexibles, pctDiscrecionales } = useMemo(() => {
-    let inflexibles = 0;
-    let discrecionales = 0;
-
-    const subcats = appData.gastadoPorSubcat || {};
-    Object.entries(subcats).forEach(([sub, monto]) => {
-      const subNorm = sub.trim().toLowerCase();
-      if (SUBCATS_INFLEXIBLES_SET.has(subNorm)) {
-        inflexibles += Number(monto) || 0;
-      } else {
-        discrecionales += Number(monto) || 0;
-      }
-    });
-
-    const total = inflexibles + discrecionales;
-    return {
-      totalInflexibles: inflexibles,
-      totalDiscrecionales: discrecionales,
-      pctInflexibles: total > 0 ? (inflexibles / total) * 100 : 50,
-      pctDiscrecionales: total > 0 ? (discrecionales / total) * 100 : 50,
-    };
-  }, [appData.gastadoPorSubcat]);
-
-  // ── WIDGET 3: SIMULADOR MAZDA 2 · DESPIECE A CAPITAL & ARBITRAJE ────
+  // ── BLOQUE 4: SIMULADOR CRÉDITO MAZDA 2 ──────────────────────
   const cuotaRegular = 815_731;
   const rawDeudaMazda = saldos['Crédito Mazda 2 (Lulo)'] ?? 0;
   const deudaViva = Math.abs(rawDeudaMazda);
@@ -346,6 +389,27 @@ export default function AnalyticsView() {
   const i_mes = Math.pow(1 + (tasaMazda / 100), 1 / 12) - 1;
   const interesMesBanco = deudaViva > 0 ? Math.round(deudaViva * i_mes) : 0;
   const abonoCapitalCuota = deudaViva > 0 ? Math.max(0, cuotaRegular - interesMesBanco) : cuotaRegular;
+
+  // Proyección de patrimonio a 6 meses amortizando cuota
+  const evolucionPatrimonio = useMemo(() => {
+    const puntos = [];
+    const baseDate = new Date();
+    const mesesNombres = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+    for (let i = 0; i <= 5; i++) {
+      const mDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
+      const label = i === 0 ? 'Actual' : `+${i}M (${mesesNombres[mDate.getMonth()]})`;
+      const capitalAbonadoAcum = abonoCapitalCuota * i;
+      const netProyectado = patrimonioNetoReal + capitalAbonadoAcum;
+      puntos.push({
+        mes: label,
+        patrimonio: netProyectado,
+        activos: activosCarteras + prestamosPorCobrar,
+        pasivos: Math.max(0, pasivosDeudas - capitalAbonadoAcum),
+      });
+    }
+    return puntos;
+  }, [patrimonioNetoReal, abonoCapitalCuota, activosCarteras, prestamosPorCobrar, pasivosDeudas]);
 
   // Abono simulado efectivo acotado a la deuda viva
   const abonoEfectivo = Math.min(abonoSimulado, deudaViva);
@@ -371,83 +435,6 @@ export default function AnalyticsView() {
     : 0;
   const reduccionCuotaMensual = Math.max(0, cuotaRegular - nuevaCuotaEstimada);
 
-  // ── WIDGET 4: EVOLUCIÓN DE PATRIMONIO NETO ─────────────────────────
-  const { patrimonioNetoActual, totalActivos, totalPasivos, evolucionPatrimonio } = useMemo(() => {
-    let activos = 0;
-    let pasivos = 0;
-
-    Object.entries(saldos).forEach(([cuenta, saldo]) => {
-      const cuentaLower = cuenta.toLowerCase();
-      if (cuentaLower.includes('crédito') || cuentaLower.includes('credito') || saldo < 0) {
-        pasivos += Math.abs(saldo);
-      } else {
-        activos += Math.max(0, saldo);
-      }
-    });
-
-    const netActual = activos - pasivos;
-
-    // Generar 6 puntos (Actual + 5 meses proyectados con amortización a capital)
-    const puntos = [];
-    const baseDate = new Date();
-    const mesesNombres = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-
-    for (let i = 0; i <= 5; i++) {
-      const mDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
-      const label = i === 0 ? 'Actual' : `+${i}M (${mesesNombres[mDate.getMonth()]})`;
-      // Proyección basada en el abono a capital recurrente de la cuota
-      const capitalAbonadoAcum = abonoCapitalCuota * i;
-      const netProyectado = netActual + capitalAbonadoAcum;
-      puntos.push({
-        mes: label,
-        patrimonio: netProyectado,
-        activos: activos,
-        pasivos: Math.max(0, pasivos - capitalAbonadoAcum),
-      });
-    }
-
-    return {
-      patrimonioNetoActual: netActual,
-      totalActivos: activos,
-      totalPasivos: pasivos,
-      evolucionPatrimonio: puntos,
-    };
-  }, [saldos, abonoCapitalCuota]);
-
-  // ── Cálculo de Carga Financiera (DTI) ────────────────────────
-  const tcWallets = new Set(['TC Lulo Bank', 'RappiCard']);
-  appData.carteras?.forEach(c => {
-    if (c.tipo === 'credito') tcWallets.add(c.nombre);
-  });
-  const cicloTxs = (appData.transacciones || []).filter(t => isDateInCurrentCycle(t.fecha));
-  const totalGastosTC = cicloTxs
-    .filter(t => t.tipo === 'GASTO' && (tcWallets.has(t.cuenta) || tcWallets.has(t.cuentaOrigen || '')))
-    .reduce((acc, t) => acc + (Number(t.monto) || 0), 0);
-
-  const dti = ingresosTotal > 0 ? ((cuotaRegular + totalGastosTC) / ingresosTotal) * 100 : 0;
-
-  let dtiStatus = {
-    label: 'Saludable',
-    badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',
-    barClass: 'bg-emerald-500',
-    textClass: 'text-emerald-600 dark:text-emerald-400',
-  };
-  if (dti > 40) {
-    dtiStatus = {
-      label: 'Elevado',
-      badgeClass: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800',
-      barClass: 'bg-rose-500',
-      textClass: 'text-rose-600 dark:text-rose-400',
-    };
-  } else if (dti >= 30) {
-    dtiStatus = {
-      label: 'Alerta',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800',
-      barClass: 'bg-amber-500',
-      textClass: 'text-amber-600 dark:text-amber-400',
-    };
-  }
-
   const handleOpenMazdaModal = () => {
     setInputMazda(tasaMazda.toString());
     setModalMazdaOpen(true);
@@ -466,7 +453,7 @@ export default function AnalyticsView() {
 
   const previewMazdaRates = calcEquivalentesEA(parseFloat(inputMazda) || tasaMazda);
 
-  // ── Cálculos de Rendimiento de Gasolina ─────────────────────
+  // ── BLOQUE 2: CONTROL Y RENDIMIENTO DE GASOLINA ─────────────
   const datosGasolina = useMemo(() => {
     const list = (appData.tanqueadas || []).filter(
       (t) => t.vehiculo === vehiculoGasolina
@@ -608,7 +595,7 @@ export default function AnalyticsView() {
 
     // Último odómetro
     const kmList = list
-      .filter((t) => t.kilometraje != null && !isNaN(Number(t.kilometraje)))
+      .filter((t) => t.kilometraje != null && !isNaN(Number(t.kilometraje)) && Number(t.kilometraje) > 0)
       .map((t) => Number(t.kilometraje));
     const ultimoOdometro = kmList.length > 0 ? Math.max(...kmList) : null;
 
@@ -649,7 +636,7 @@ export default function AnalyticsView() {
     e.preventDefault();
     const cleanMonto = parseAmount(tMonto);
     if (cleanMonto <= 0) {
-      setErrorTanqueada('El monto de la tanqueada debe ser mayor a 0');
+      setErrorTanqueada('El monto debe ser mayor a 0');
       return;
     }
 
@@ -753,473 +740,213 @@ export default function AnalyticsView() {
     }
   };
 
-  const pieData = CATALOG_GASTOS.map((cat, i) => ({
-    name: cat.nombre,
-    value: appData.gastadoPorMacro[cat.nombre] ?? 0,
-    color: PALETTE[i % PALETTE.length],
-  })).filter(d => d.value > 0);
-
-  const formatAxisValue = (v: number) => `$${Math.round(v / 1000)}k`;
   const formatPatrimonioAxis = (v: number) => `$${(v / 1_000_000).toFixed(1)}M`;
 
   return (
     <div className="flex flex-col gap-4 px-4 pb-8 pt-3 animate-fade-in max-w-lg mx-auto w-full">
 
-      {/* ── CARD: RITMO DE GASTO DIARIO SUGERIDO (BURN RATE) ── */}
-      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200/80 dark:border-emerald-800/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400 flex-shrink-0">
-            <Flame className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-              Gasto Máximo Sugerido / Día
-            </p>
-            <p className={`text-2xl font-black tracking-tight font-mono tabular-nums ${balanceDisponible > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-              {formatCOP(ritmoDiario)}
-            </p>
-            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-              Faltan {diasRestantes} día{diasRestantes === 1 ? '' : 's'} para el corte del 24
-            </p>
-          </div>
-        </div>
-        <div className="text-right hidden sm:block">
-          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">
-            Disponible
-          </span>
-          <span className="text-xs font-bold text-slate-700 dark:text-slate-300 font-mono">
-            {formatCOP(balanceDisponible)}
-          </span>
-        </div>
-      </div>
-
-      {/* KPI Cards */}
-      <div className="flex gap-2.5">
-        <KPICard
-          label="Gastos Ciclo"
-          value={formatCOP(gastosTotal)}
-          sub={currentCycle.ciclo}
-          accent="text-rose-600 dark:text-rose-400"
-        />
-        <KPICard
-          label="Ingresos Ciclo"
-          value={formatCOP(ingresosTotal)}
-          sub={currentCycle.ciclo}
-          accent="text-emerald-600 dark:text-emerald-400"
-        />
-      </div>
-      <div className="flex gap-2.5">
-        <KPICard
-          label="Ahorro Neto"
-          value={formatCOP(netAhorro)}
-          accent={netAhorro >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
-        />
-        <KPICard
-          label="Tasa de Ahorro"
-          value={`${tasa}%`}
-          accent={parseFloat(tasa) >= 20 ? 'text-blue-600 dark:text-blue-400' : 'text-amber-600 dark:text-amber-400'}
-        />
-      </div>
-
-      {/* ── WIDGET 1: RUNWAY EN MESES DE VIDA (OXÍGENO FINANCIERO) ── */}
-      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-800/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-              <ShieldCheck className="w-4 h-4" />
+      {/* ═════════════════════════════════════════════════════════════ */}
+      {/* ── BLOQUE 1: PULSO DEL CICLO Y DISTRIBUCIÓN POR MACRO ──────── */}
+      {/* ═════════════════════════════════════════════════════════════ */}
+      <section className="space-y-3">
+        {/* Pulso del Ciclo & Gasto Diario Sugerido */}
+        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200/80 dark:border-emerald-800/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400 flex-shrink-0">
+                <Flame className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Gasto Máximo Sugerido / Día
+                </span>
+                <p className={`text-2xl sm:text-3xl font-black tracking-tight font-mono tabular-nums ${balanceDisponible > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                  {formatCOP(ritmoDiario)}
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 font-sans ml-1">/día</span>
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                Runway · Fondo de Reserva
-              </h2>
-              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                Oxígeno Financiero · Cobertura Costos Fijos
-              </p>
-            </div>
-          </div>
-          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border uppercase tracking-wide ${runwayBadgeClass}`}>
-            {runwayBadgeLabel}
-          </span>
-        </div>
-
-        <div className="flex items-baseline justify-between">
-          <div>
-            <span className={`text-3xl font-black font-mono tabular-nums tracking-tight ${runwayColorClass}`}>
-              {runwayMeses.toFixed(1)} meses
-            </span>
-            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 ml-2">
-              (Meta ideal: 3.0 meses)
-            </span>
-          </div>
-          <span className="text-xs font-bold text-slate-600 dark:text-slate-400 font-mono">
-            {pctRunwayMeta.toFixed(0)}%
-          </span>
-        </div>
-
-        {/* Barra de progreso hacia la meta ideal de 3 meses */}
-        <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden">
-          <div
-            className={`h-full transition-all duration-500 rounded-full ${runwayBarClass}`}
-            style={{ width: `${pctRunwayMeta}%` }}
-          />
-        </div>
-
-        <p className="text-[11px] text-slate-600 dark:text-slate-400 font-medium pt-0.5">
-          Reserva actual: <strong className="text-slate-800 dark:text-slate-200">{formatCOP(saldoReserva)}</strong> · Costo fijo: <strong className="text-slate-800 dark:text-slate-200">{formatCOP(costosFijosBase)}/mes</strong>
-        </p>
-      </section>
-
-      {/* ── WIDGET 2: MATRIZ DE GASTOS: INFLEXIBLES VS. ESTILO DE VIDA ── */}
-      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-800/60 flex items-center justify-center text-blue-600 dark:text-blue-400">
-              <Layers className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                Matriz de Gastos: Inflexibles vs. Estilo de Vida
-              </h2>
-              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                Esenciales obligatorios vs. Consumo discrecional
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Barra proporcional bicolor */}
-        <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-xl h-3.5 overflow-hidden flex shadow-inner">
-          <div
-            className="h-full bg-blue-600 transition-all duration-500"
-            style={{ width: `${pctInflexibles}%` }}
-            title={`Inflexibles: ${pctInflexibles.toFixed(1)}%`}
-          />
-          <div
-            className="h-full bg-amber-500 transition-all duration-500"
-            style={{ width: `${pctDiscrecionales}%` }}
-            title={`Estilo de Vida: ${pctDiscrecionales.toFixed(1)}%`}
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 pt-1">
-          {/* Bloque Inflexibles */}
-          <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-800/50 flex flex-col">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="w-2 h-2 rounded-full bg-blue-600 flex-shrink-0" />
-              <span className="text-[10px] font-bold text-blue-900 dark:text-blue-300 uppercase tracking-wider">
-                Inflexibles
+            <div className="text-right">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                {diasRestantesCorte24 === 1 ? 'Último día del ciclo' : `Faltan ${diasRestantesCorte24} días`}
+              </span>
+              <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-1">
+                Corte: 24 del mes
               </span>
             </div>
-            <p className="text-base font-black text-blue-700 dark:text-blue-300 font-mono">
-              {formatCOP(totalInflexibles)}
-            </p>
-            <p className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-              {pctInflexibles.toFixed(1)}% del ciclo
-            </p>
           </div>
 
-          {/* Bloque Discrecionales */}
-          <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-800/50 flex flex-col">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
-              <span className="text-[10px] font-bold text-amber-900 dark:text-amber-300 uppercase tracking-wider">
-                Estilo de Vida
+          {/* 4 Indicadores clave del ciclo activo */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+                Ingresos Ciclo
+              </span>
+              <span className="text-xs sm:text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono block tabular-nums">
+                {formatCOP(ingresosTotal)}
               </span>
             </div>
-            <p className="text-base font-black text-amber-700 dark:text-amber-300 font-mono">
-              {formatCOP(totalDiscrecionales)}
-            </p>
-            <p className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-              {pctDiscrecionales.toFixed(1)}% del ciclo
-            </p>
-          </div>
-        </div>
-      </section>
 
-      {/* ── CARD: CARGA FINANCIERA (DTI) ── */}
-      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-700 dark:text-slate-300">
-              <CreditCard className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                Carga Financiera (DTI)
-              </h2>
-              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                Deuda fija + Tarjetas sobre ingresos
-              </p>
-            </div>
-          </div>
-          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border uppercase tracking-wide ${dtiStatus.badgeClass}`}>
-            {dtiStatus.label}
-          </span>
-        </div>
-
-        <div className="flex items-baseline justify-between">
-          <span className={`text-2xl font-black font-mono tabular-nums ${dtiStatus.textClass}`}>
-            {dti.toFixed(1)}%
-          </span>
-          <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-            {formatCOP(cuotaRegular + totalGastosTC)} / {formatCOP(ingresosTotal)}
-          </span>
-        </div>
-
-        {/* Barra de progreso */}
-        <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden">
-          <div
-            className={`h-full transition-all duration-500 rounded-full ${dtiStatus.barClass}`}
-            style={{ width: `${Math.min(dti, 100)}%` }}
-          />
-        </div>
-
-        <div className="flex justify-between items-center text-[10px] text-slate-500 dark:text-slate-400 pt-0.5">
-          <span>Cuota Mazda: {formatCOP(cuotaRegular)}</span>
-          <span>Gastos TC: {formatCOP(totalGastosTC)}</span>
-        </div>
-      </section>
-
-      {/* ── WIDGET 3: SIMULADOR MAZDA 2 · DESPIECE A CAPITAL & ARBITRAJE ── */}
-      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
-        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-100 dark:border-rose-800/60 flex items-center justify-center text-rose-600 dark:text-rose-400">
-              <Car className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                Simulador Mazda 2 · Despiece & Arbitraje
-              </h2>
-              <p className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">
-                Crédito Consumo · Cuota Fija {formatCOP(cuotaRegular)}
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleOpenMazdaModal}
-            className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors shadow-sm cursor-pointer"
-            aria-label="Editar tasa de interés crédito Mazda 2"
-            title="Editar Tasa E.A. del Crédito"
-          >
-            <span>{tasaMazda.toFixed(2)}% E.A.</span>
-            <Pencil size={10} className="opacity-75" />
-          </button>
-        </div>
-
-        {/* Deuda Viva */}
-        <div className="flex items-baseline justify-between bg-slate-50/80 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl p-3">
-          <div>
-            <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block">
-              Deuda Viva Actual
-            </span>
-            <span className="text-xl font-black text-slate-900 dark:text-slate-100 font-mono tabular-nums">
-              {formatCOP(deudaViva)}
-            </span>
-            {deudaViva === 0 && (
-              <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 block mt-0.5">
-                Al día (Sin deuda pendiente)
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+                Gastos Ciclo
               </span>
-            )}
-          </div>
-          <span className="text-[10px] font-bold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 px-2 py-0.5 rounded-lg">
-            Pasivo bancario
-          </span>
-        </div>
-
-        {/* Métricas clave: Interés banco vs Abono cuota */}
-        <div className="grid grid-cols-2 gap-2">
-          {/* Interés del mes */}
-          <div className="p-3 rounded-xl bg-rose-50/70 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-800/50 flex flex-col justify-between">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold text-rose-900 dark:text-rose-300 uppercase tracking-wide">
-                Interés Mes
-              </span>
-              <ArrowDownRight className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
-            </div>
-            <div className="mt-1">
-              <p className="text-base font-black text-rose-600 dark:text-rose-400 font-mono">
-                {(i_mes * 100).toFixed(3)}% <span className="text-xs font-semibold text-rose-800 dark:text-rose-300">mes</span>
-              </p>
-              <p className="text-[11px] font-bold text-rose-600 dark:text-rose-400 mt-0.5 font-mono">
-                {formatCOP(interesMesBanco)}/mes
-              </p>
-            </div>
-          </div>
-
-          {/* Abono a capital de la cuota */}
-          <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-800/50 flex flex-col justify-between">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold text-blue-900 dark:text-blue-300 uppercase tracking-wide">
-                Abono Capital
-              </span>
-              <span className="text-[9px] font-black text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/60 px-1.5 py-0.2 rounded">
-                Cuota $815k
+              <span className="text-xs sm:text-sm font-black text-rose-600 dark:text-rose-400 font-mono block tabular-nums">
+                {formatCOP(gastosTotal)}
               </span>
             </div>
-            <div className="mt-1">
-              <p className="text-base font-black text-blue-600 dark:text-blue-400 font-mono">
-                {formatCOP(abonoCapitalCuota)}
-              </p>
-              <p className="text-[10px] font-medium text-blue-700 dark:text-blue-300 mt-0.5">
-                de cuota {formatCOP(cuotaRegular)}
-              </p>
+
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+                Disponible
+              </span>
+              <span className={`text-xs sm:text-sm font-black font-mono block tabular-nums ${balanceDisponible >= 0 ? 'text-slate-900 dark:text-slate-100' : 'text-rose-600 dark:text-rose-400'}`}>
+                {formatCOP(balanceDisponible)}
+              </span>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
+                Tasa Ahorro
+              </span>
+              <span className={`text-xs sm:text-sm font-black font-mono block tabular-nums ${appData.kpis.tasaAhorro >= 20 ? 'text-blue-600 dark:text-blue-400' : appData.kpis.tasaAhorro >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                {appData.kpis.tasaAhorro.toFixed(1)}%
+              </span>
             </div>
           </div>
         </div>
 
-        {/* ── Simulador Interactivo de Abono a Capital ── */}
-        <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-              Abono Extraordinario a Capital
-            </span>
-            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-              Impacto directo
+        {/* Distribución de Gastos por Categoría (Ciclo Actual) */}
+        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-3.5">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                <Layers className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                  Distribución de Gastos por Categoría
+                </h2>
+                <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                  Ciclo Actual · Ejecución vs. Presupuesto Base
+                </p>
+              </div>
+            </div>
+            <span className="text-xs font-bold text-slate-900 dark:text-slate-100 font-mono">
+              Total: {formatCOP(macrosData.totalGastado)}
             </span>
           </div>
 
-          {/* Chips de monto rápido */}
-          <div className="flex gap-1.5">
-            {[500_000, 1_000_000, 2_000_000].map(val => (
-              <button
-                key={val}
-                type="button"
-                onClick={() => {
-                  haptic();
-                  setAbonoSimulado(val);
-                  setAbonoInput(formatDisplay(String(val)));
-                }}
-                className={`
-                  flex-1 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer
-                  ${abonoSimulado === val
-                    ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}
-                `}
-              >
-                +${val / 1000}k
-              </button>
-            ))}
-          </div>
-
-          {/* Input de monto libre */}
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-black text-xs select-none">
-              $
-            </span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={abonoInput}
-              onChange={e => {
-                const num = parseAmount(e.target.value);
-                setAbonoSimulado(num);
-                setAbonoInput(num > 0 ? formatDisplay(String(num)) : '');
-              }}
-              placeholder="Monto personalizado a abonar..."
-              className="w-full pl-7 pr-3 py-2 rounded-xl text-xs font-bold font-mono bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-rose-500 transition"
-            />
-          </div>
-
-          {/* Toggle de Escenario: [Reducir Plazo] vs [Reducir Cuota] */}
-          <div className="flex gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
-            <button
-              type="button"
-              onClick={() => { haptic(); setEscenarioSimulador('plazo'); }}
-              className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                escenarioSimulador === 'plazo'
-                  ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-              }`}
-            >
-              Reducir Plazo
-            </button>
-            <button
-              type="button"
-              onClick={() => { haptic(); setEscenarioSimulador('cuota'); }}
-              className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                escenarioSimulador === 'cuota'
-                  ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-              }`}
-            >
-              Reducir Cuota
-            </button>
-          </div>
-
-          {/* Caja con resultado según el escenario */}
-          <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 rounded-2xl p-4 flex flex-col gap-2">
-            {escenarioSimulador === 'plazo' ? (
-              <>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Cuotas descontadas de deuda:
-                  </span>
-                  <span className="text-sm font-black text-slate-900 dark:text-slate-100 font-mono">
-                    ~{cuotasAhorradas} {cuotasAhorradas === 1 ? 'cuota menos' : 'cuotas menos'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Ahorro total en intereses:
-                  </span>
-                  <span className="text-sm font-black text-rose-600 dark:text-rose-400 font-mono">
-                    +{formatCOP(interesTotalAhorrado)}
-                  </span>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Nueva cuota mensual estimada:
-                  </span>
-                  <span className="text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">
-                    {formatCOP(nuevaCuotaEstimada)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Alivio mensual en flujo de caja:
-                  </span>
-                  <span className="text-xs font-black text-blue-600 dark:text-blue-400 font-mono">
-                    -{formatCOP(reduccionCuotaMensual)}/mes
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Alerta de saldo residual si no se amortiza a 360 meses */}
-          {(baseRun.residualBalance > 0 || extraRun.residualBalance > 0) && (
-            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-semibold flex items-center gap-2">
-              <span>
-                Atención: La proyección alcanzó el límite máximo de 360 meses con un saldo residual de {formatCOP(Math.max(baseRun.residualBalance, extraRun.residualBalance))}. La cuota actual no amortiza la totalidad del capital en el plazo proyectado.
-              </span>
+          {/* Gráfico Donut si hay gastos registrados */}
+          {pieDataDinamico.length > 0 && (
+            <div className="w-full h-44 -my-1">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={pieDataDinamico}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={46}
+                    outerRadius={68}
+                    paddingAngle={3}
+                    dataKey="value"
+                  >
+                    {pieDataDinamico.map((entry, idx) => (
+                      <Cell key={`cell-${idx}`} fill={entry.color} stroke="none" />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null;
+                      const item = payload[0];
+                      return (
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-2.5 text-xs shadow-lg font-sans">
+                          <p className="font-bold text-slate-900 dark:text-slate-100 mb-0.5">{item.name}</p>
+                          <p className="text-indigo-600 dark:text-indigo-400 font-mono font-bold">
+                            {formatCOP(item.value as number)}
+                          </p>
+                        </div>
+                      );
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
           )}
 
-          {/* INSIGHT DE ARBITRAJE FINANCIERO (SPREAD) */}
-          <div className="p-3.5 rounded-2xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 flex items-start gap-2.5">
-            <div className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center text-amber-700 dark:text-amber-300 flex-shrink-0 mt-0.5">
-              <Scale size={14} />
+          {/* Lista detallada con barras de progreso y semáforo */}
+          {macrosData.list.length === 0 ? (
+            <div className="py-6 text-center text-xs text-slate-400 dark:text-slate-500">
+              No hay presupuestos ni gastos registrados en el ciclo activo.
             </div>
-            <div>
-              <p className="text-[11px] font-bold text-amber-900 dark:text-amber-200">
-                Spread de Liquidez
-              </p>
-              <p className="text-[11px] text-amber-800 dark:text-amber-300/90 leading-relaxed mt-0.5">
-                Amortizar este abono a capital te ahorra <strong>21.35% E.A.</strong>, mientras que en Lulo rinde <strong>9.25% E.A.</strong> Rendimiento neto de amortizar: <strong className="text-emerald-700 dark:text-emerald-300">+12.10% E.A.</strong> (+${(121000).toLocaleString('es-CO')}/año extra por cada millón).
-              </p>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
+              {macrosData.list.map((m) => {
+                const pctGastoTotal = macrosData.totalGastado > 0 ? (m.gastado / macrosData.totalGastado) * 100 : 0;
+                const pctPresupuesto = m.presupuesto > 0 ? (m.gastado / m.presupuesto) * 100 : 0;
+
+                let semaforoBar = 'bg-emerald-500';
+                let semaforoText = 'text-emerald-600 dark:text-emerald-400';
+                if (pctPresupuesto > 100) {
+                  semaforoBar = 'bg-rose-500';
+                  semaforoText = 'text-rose-600 dark:text-rose-400';
+                } else if (pctPresupuesto >= 80) {
+                  semaforoBar = 'bg-amber-500';
+                  semaforoText = 'text-amber-600 dark:text-amber-400';
+                }
+
+                return (
+                  <div key={m.macro} className="py-2.5 first:pt-1 last:pb-1 space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-base flex-shrink-0">{getMacroIcon(m.macro)}</span>
+                        <span className="font-bold text-slate-800 dark:text-slate-200 truncate">
+                          {m.macro}
+                        </span>
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono font-medium flex-shrink-0">
+                          ({pctGastoTotal.toFixed(1)}% mes)
+                        </span>
+                      </div>
+                      <div className="text-right flex-shrink-0 font-mono">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">
+                          {formatCOP(m.gastado)}
+                        </span>
+                        <span className="text-slate-400 dark:text-slate-500 text-[11px] font-medium ml-1">
+                          / {formatCOP(m.presupuesto)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Barra de progreso con semáforo */}
+                    <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden flex">
+                      <div
+                        className={`h-full transition-all duration-500 rounded-full ${semaforoBar}`}
+                        style={{ width: `${Math.min(pctPresupuesto, 100)}%` }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                      <span className={semaforoText}>
+                        {m.presupuesto > 0 ? `${pctPresupuesto.toFixed(0)}% ejecutado` : 'Sin presupuesto fijado'}
+                      </span>
+                      <span>
+                        {m.presupuesto >= m.gastado
+                          ? `Disponible: ${formatCOP(m.presupuesto - m.gastado)}`
+                          : `Excedido: ${formatCOP(m.gastado - m.presupuesto)}`}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          </div>
+          )}
         </div>
       </section>
 
-      {/* ── WIDGET: CONTROL Y RENDIMIENTO DE GASOLINA ── */}
-      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-col gap-3">
+      {/* ═════════════════════════════════════════════════════════════ */}
+      {/* ── BLOQUE 2: CONTROL Y RENDIMIENTO DE GASOLINA ───────────── */}
+      {/* ═════════════════════════════════════════════════════════════ */}
+      <section className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-3.5">
         {/* Encabezado con selector de vehículo y botón + Tanqueada */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2">
@@ -1282,7 +1009,6 @@ export default function AnalyticsView() {
 
         {/* 4 KPIs calculados del vehículo */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {/* KPI 1: Rendimiento */}
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
               Rendimiento Prom.
@@ -1295,7 +1021,6 @@ export default function AnalyticsView() {
             </span>
           </div>
 
-          {/* KPI 2: Costo / km */}
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
               Costo por km
@@ -1308,7 +1033,6 @@ export default function AnalyticsView() {
             </span>
           </div>
 
-          {/* KPI 3: Ciclo actual */}
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
               Gasto Ciclo Activo
@@ -1321,7 +1045,6 @@ export default function AnalyticsView() {
             </span>
           </div>
 
-          {/* KPI 4: Último odómetro */}
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
               Último Odómetro
@@ -1464,205 +1187,425 @@ export default function AnalyticsView() {
         </div>
       </section>
 
-      {/* ── WIDGET 4: EVOLUCIÓN DE PATRIMONIO NETO ── */}
-      <section className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm flex flex-col gap-3">
-        <div className="flex items-center justify-between">
+      {/* ═════════════════════════════════════════════════════════════ */}
+      {/* ── BLOQUE 3: PATRIMONIO NETO CON PRÉSTAMOS Y RUNWAY DINÁMICO ─ */}
+      {/* ═════════════════════════════════════════════════════════════ */}
+      <section className="space-y-3">
+        {/* Card Patrimonio Neto Consolidado */}
+        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-3.5">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 flex items-center justify-center text-blue-600 dark:text-blue-400">
+                <TrendingUp className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                  Patrimonio Neto Consolidado
+                </h2>
+                <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                  Liquidez + Préstamos por Cobrar - Deudas
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Patrimonio Neto
+              </span>
+              <span className={`text-base sm:text-lg font-black font-mono tabular-nums ${patrimonioNetoReal >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                {formatCOP(patrimonioNetoReal)}
+              </span>
+            </div>
+          </div>
+
+          {/* 3 Píldoras de desglose explícitas */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {/* 1. Liquidez y Bolsillos */}
+            <div className="p-3 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-800/50 flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider">
+                  Liquidez y Bolsillos
+                </span>
+                <span className="text-xs">💰</span>
+              </div>
+              <p className="text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono tabular-nums mt-1">
+                {formatCOP(activosCarteras)}
+              </p>
+              <span className="text-[9px] text-emerald-700/80 dark:text-emerald-400/80 mt-0.5">
+                Cuentas y bolsillos activos
+              </span>
+            </div>
+
+            {/* 2. Préstamos por Cobrar */}
+            <div className="p-3 rounded-2xl bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200/80 dark:border-indigo-800/50 flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-indigo-800 dark:text-indigo-300 uppercase tracking-wider">
+                  Por Cobrar (Préstamos)
+                </span>
+                <span className="text-xs">🤝</span>
+              </div>
+              <p className="text-sm font-black text-indigo-600 dark:text-indigo-400 font-mono tabular-nums mt-1">
+                {formatCOP(prestamosPorCobrar)}
+              </p>
+              <span className="text-[9px] text-indigo-700/80 dark:text-indigo-400/80 mt-0.5">
+                {appData.prestamos?.filter(p => p.estado === 'PENDIENTE').length || 0} préstamos pendientes
+              </span>
+            </div>
+
+            {/* 3. Deuda Total */}
+            <div className="p-3 rounded-2xl bg-rose-50/60 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-800/50 flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-rose-800 dark:text-rose-300 uppercase tracking-wider">
+                  Deuda Total
+                </span>
+                <span className="text-xs">💳</span>
+              </div>
+              <p className="text-sm font-black text-rose-600 dark:text-rose-400 font-mono tabular-nums mt-1">
+                {formatCOP(pasivosDeudas)}
+              </p>
+              <span className="text-[9px] text-rose-700/80 dark:text-rose-400/80 mt-0.5">
+                Mazda + Pasivos activos
+              </span>
+            </div>
+          </div>
+
+          {/* Gráfico de Evolución del Patrimonio Neto */}
+          <div className="w-full h-44 mt-1">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={evolucionPatrimonio} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="patrimonioRealGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#2563EB" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#2563EB" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <XAxis
+                  dataKey="mes"
+                  tick={{ fontSize: 9, fill: 'currentColor' }}
+                  className="text-slate-500 dark:text-slate-400"
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  tickFormatter={formatPatrimonioAxis}
+                  tick={{ fontSize: 9, fill: 'currentColor' }}
+                  className="text-slate-500 dark:text-slate-400"
+                  axisLine={false}
+                  tickLine={false}
+                  width={45}
+                />
+                <Tooltip
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    const item = payload[0];
+                    return (
+                      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-2.5 text-xs shadow-lg">
+                        <p className="font-bold text-slate-900 dark:text-slate-100 mb-1">{label}</p>
+                        <p className="text-blue-600 dark:text-blue-400 font-mono font-bold">
+                          Patrimonio: {formatCOP(item.value as number)}
+                        </p>
+                      </div>
+                    );
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="patrimonio"
+                  name="Patrimonio Neto"
+                  stroke="#2563EB"
+                  strokeWidth={2.5}
+                  fillOpacity={1}
+                  fill="url(#patrimonioRealGradient)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Runway · Fondo de Reserva (100% Dinámico) */}
+        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-800/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                <ShieldCheck className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
+                  Runway · Fondo de Reserva
+                </h2>
+                <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                  Oxígeno Financiero · Cobertura Costos Esenciales
+                </p>
+              </div>
+            </div>
+            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border uppercase tracking-wide ${runwayBadgeClass}`}>
+              {runwayBadgeLabel}
+            </span>
+          </div>
+
+          <div className="flex items-baseline justify-between">
+            <div>
+              <span className={`text-2xl sm:text-3xl font-black font-mono tabular-nums tracking-tight ${runwayColorClass}`}>
+                {runwayMeses.toFixed(1)} meses
+              </span>
+              <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 ml-2">
+                (Meta: 3.0 meses)
+              </span>
+            </div>
+            <span className="text-xs font-bold text-slate-600 dark:text-slate-400 font-mono">
+              {pctRunwayMeta.toFixed(0)}%
+            </span>
+          </div>
+
+          <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
+            <div
+              className={`h-full transition-all duration-500 rounded-full ${runwayBarClass}`}
+              style={{ width: `${pctRunwayMeta}%` }}
+            />
+          </div>
+
+          <p className="text-[11px] text-slate-600 dark:text-slate-400 font-medium pt-0.5">
+            Reserva actual: <strong className="text-slate-800 dark:text-slate-200 font-mono">{formatCOP(saldoReserva)}</strong> · Costo esencial: <strong className="text-slate-800 dark:text-slate-200 font-mono">{formatCOP(costoFijoMensual)}/mes</strong>
+          </p>
+        </div>
+      </section>
+
+      {/* ═════════════════════════════════════════════════════════════ */}
+      {/* ── BLOQUE 4: SIMULADOR CRÉDITO MAZDA 2 ───────────────────── */}
+      {/* ═════════════════════════════════════════════════════════════ */}
+      <section className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-3.5">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-800/60 flex items-center justify-center text-blue-600 dark:text-blue-400">
-              <TrendingUp className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-100 dark:border-rose-800/60 flex items-center justify-center text-rose-600 dark:text-rose-400">
+              <Car className="w-4 h-4" />
             </div>
             <div>
               <h2 className="text-xs font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                Evolución de Patrimonio Neto
+                Simulador Crédito Mazda 2
               </h2>
               <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                Trayectoria consolidada (Activos - Pasivos)
+                Crédito Consumo · Cuota Fija {formatCOP(cuotaRegular)}
               </p>
             </div>
           </div>
 
-          <div className="text-right">
-            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">
-              Patrimonio Actual
+          <button
+            type="button"
+            onClick={handleOpenMazdaModal}
+            className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors shadow-xs cursor-pointer"
+            aria-label="Editar tasa de interés crédito Mazda 2"
+            title="Editar Tasa E.A. del Crédito"
+          >
+            <span>{tasaMazda.toFixed(2)}% E.A.</span>
+            <Pencil size={10} className="opacity-75" />
+          </button>
+        </div>
+
+        {/* Deuda Viva Actual */}
+        <div className="flex items-baseline justify-between bg-slate-50/80 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-2xl p-3">
+          <div>
+            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+              Deuda Viva Actual
             </span>
-            <span className={`text-sm font-black font-mono ${patrimonioNetoActual >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-rose-600 dark:text-rose-400'}`}>
-              {formatCOP(patrimonioNetoActual)}
+            <span className="text-xl font-black text-slate-900 dark:text-slate-100 font-mono tabular-nums">
+              {formatCOP(deudaViva)}
             </span>
+            {deudaViva === 0 && (
+              <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 block mt-0.5">
+                Al día (Sin saldo de pasivo pendiente)
+              </span>
+            )}
+          </div>
+          <span className="text-[10px] font-bold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 px-2 py-0.5 rounded-lg">
+            Pasivo bancario
+          </span>
+        </div>
+
+        {/* Métricas clave: Interés banco vs Abono cuota */}
+        <div className="grid grid-cols-2 gap-2">
+          {/* Interés del mes */}
+          <div className="p-3 rounded-2xl bg-rose-50/70 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-800/50 flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-rose-900 dark:text-rose-300 uppercase tracking-wide">
+                Interés Mes
+              </span>
+              <ArrowDownRight className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+            </div>
+            <div className="mt-1">
+              <p className="text-base font-black text-rose-600 dark:text-rose-400 font-mono">
+                {(i_mes * 100).toFixed(3)}% <span className="text-xs font-semibold text-rose-800 dark:text-rose-300">mes</span>
+              </p>
+              <p className="text-[11px] font-bold text-rose-600 dark:text-rose-400 mt-0.5 font-mono">
+                {formatCOP(interesMesBanco)}/mes
+              </p>
+            </div>
+          </div>
+
+          {/* Abono a capital de la cuota */}
+          <div className="p-3 rounded-2xl bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-800/50 flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-blue-900 dark:text-blue-300 uppercase tracking-wide">
+                Abono Capital
+              </span>
+              <span className="text-[9px] font-black text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/60 px-1.5 py-0.2 rounded">
+                Cuota $815k
+              </span>
+            </div>
+            <div className="mt-1">
+              <p className="text-base font-black text-blue-600 dark:text-blue-400 font-mono">
+                {formatCOP(abonoCapitalCuota)}
+              </p>
+              <p className="text-[10px] font-medium text-blue-700 dark:text-blue-300 mt-0.5">
+                de cuota {formatCOP(cuotaRegular)}
+              </p>
+            </div>
           </div>
         </div>
 
-        <div className="flex justify-between text-[11px] text-slate-500 dark:text-slate-400 px-1">
-          <span>Activos: <strong className="text-slate-800 dark:text-slate-200">{formatCOP(totalActivos)}</strong></span>
-          <span>Pasivos: <strong className="text-rose-600 dark:text-rose-400">{formatCOP(totalPasivos)}</strong></span>
-        </div>
+        {/* Simulador Interactivo de Abono a Capital */}
+        <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+              Abono Extraordinario a Capital
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+              Impacto directo
+            </span>
+          </div>
 
-        {/* Gráfico de Área en Recharts con tema Light Fintech (#2563EB) */}
-        <div className="w-full h-48 mt-1">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={evolucionPatrimonio} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-              <defs>
-                <linearGradient id="patrimonioGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#2563EB" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#2563EB" stopOpacity={0.0} />
-                </linearGradient>
-              </defs>
-              <XAxis
-                dataKey="mes"
-                tick={{ fontSize: 9, fill: 'currentColor' }}
-                className="text-slate-500 dark:text-slate-400"
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis
-                tickFormatter={formatPatrimonioAxis}
-                tick={{ fontSize: 9, fill: 'currentColor' }}
-                className="text-slate-500 dark:text-slate-400"
-                axisLine={false}
-                tickLine={false}
-                width={45}
-              />
-              <Tooltip
-                content={({ active, payload, label }) => {
-                  if (!active || !payload?.length) return null;
-                  const item = payload[0];
-                  return (
-                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-2.5 text-xs shadow-lg">
-                      <p className="font-bold text-slate-900 dark:text-slate-100 mb-1">{label}</p>
-                      <p className="text-blue-600 dark:text-blue-400 font-mono font-bold">
-                        Patrimonio: {formatCOP(item.value as number)}
-                      </p>
-                    </div>
-                  );
+          {/* Chips de monto rápido */}
+          <div className="flex gap-1.5">
+            {[500_000, 1_000_000, 2_000_000].map(val => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => {
+                  haptic();
+                  setAbonoSimulado(val);
+                  setAbonoInput(formatDisplay(String(val)));
                 }}
-              />
-              <Area
-                type="monotone"
-                dataKey="patrimonio"
-                name="Patrimonio Neto"
-                stroke="#2563EB"
-                strokeWidth={2.5}
-                fillOpacity={1}
-                fill="url(#patrimonioGradient)"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+                className={`
+                  flex-1 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer
+                  ${abonoSimulado === val
+                    ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}
+                `}
+              >
+                +${val / 1000}k
+              </button>
+            ))}
+          </div>
+
+          {/* Input de monto libre */}
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-black text-xs select-none">
+              $
+            </span>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={abonoInput}
+              onChange={e => {
+                const num = parseAmount(e.target.value);
+                setAbonoSimulado(num);
+                setAbonoInput(num > 0 ? formatDisplay(String(num)) : '');
+              }}
+              placeholder="Monto personalizado a abonar..."
+              className="w-full pl-7 pr-3 py-2 rounded-xl text-xs font-bold font-mono bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-rose-500 transition"
+            />
+          </div>
+
+          {/* Toggle de Escenario: [Reducir Plazo] vs [Reducir Cuota] */}
+          <div className="flex gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => { haptic(); setEscenarioSimulador('plazo'); }}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                escenarioSimulador === 'plazo'
+                  ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Reducir Plazo
+            </button>
+            <button
+              type="button"
+              onClick={() => { haptic(); setEscenarioSimulador('cuota'); }}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                escenarioSimulador === 'cuota'
+                  ? 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Reducir Cuota
+            </button>
+          </div>
+
+          {/* Caja con resultado según el escenario */}
+          <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 rounded-2xl p-4 flex flex-col gap-2">
+            {escenarioSimulador === 'plazo' ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Cuotas descontadas de deuda:
+                  </span>
+                  <span className="text-sm font-black text-slate-900 dark:text-slate-100 font-mono">
+                    ~{cuotasAhorradas} {cuotasAhorradas === 1 ? 'cuota menos' : 'cuotas menos'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Ahorro total en intereses:
+                  </span>
+                  <span className="text-sm font-black text-rose-600 dark:text-rose-400 font-mono">
+                    +{formatCOP(interesTotalAhorrado)}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Nueva cuota mensual estimada:
+                  </span>
+                  <span className="text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">
+                    {formatCOP(nuevaCuotaEstimada)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Alivio mensual en flujo de caja:
+                  </span>
+                  <span className="text-xs font-black text-blue-600 dark:text-blue-400 font-mono">
+                    -{formatCOP(reduccionCuotaMensual)}/mes
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Alerta de saldo residual si no se amortiza a 360 meses */}
+          {(baseRun.residualBalance > 0 || extraRun.residualBalance > 0) && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-semibold flex items-center gap-2">
+              <span>
+                Atención: La proyección alcanzó el límite máximo de 360 meses con un saldo residual de {formatCOP(Math.max(baseRun.residualBalance, extraRun.residualBalance))}. La cuota actual no amortiza la totalidad del capital en el plazo proyectado.
+              </span>
+            </div>
+          )}
         </div>
       </section>
 
-      {/* Bar chart: Gastos vs Ingresos histórico */}
-      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
-        <p className="text-xs font-bold text-slate-900 dark:text-slate-100 mb-3 tracking-wide">
-          Gastos vs. Ingresos — últimos ciclos
-        </p>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={appData.historico} barCategoryGap="30%" barGap={4}>
-            <XAxis
-              dataKey="ciclo"
-              tick={{ fontSize: 9, fill: 'currentColor' }}
-              className="text-slate-500 dark:text-slate-400"
-              axisLine={false}
-              tickLine={false}
-            />
-            <YAxis
-              tickFormatter={formatAxisValue}
-              tick={{ fontSize: 9, fill: 'currentColor' }}
-              className="text-slate-500 dark:text-slate-400"
-              axisLine={false}
-              tickLine={false}
-              width={40}
-            />
-            <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(0,0,0,0.02)' }} />
-            <Bar dataKey="gastos" name="Gastos" fill="#E11D48" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="ingresos" name="Ingresos" fill="#059669" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      {/* ═════════════════════════════════════════════════════════════ */}
+      {/* ── MODALES ──────────────────────────────────────────────── */}
+      {/* ═════════════════════════════════════════════════════════════ */}
 
-      {/* Pie chart: distribución de gastos */}
-      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
-        <p className="text-xs font-bold text-slate-900 dark:text-slate-100 mb-3 tracking-wide">
-          Distribución de Gastos — Ciclo Actual
-        </p>
-        {pieData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie
-                data={pieData}
-                cx="50%"
-                cy="45%"
-                innerRadius={55}
-                outerRadius={85}
-                paddingAngle={2}
-                dataKey="value"
-              >
-                {pieData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} stroke="#FFFFFF" strokeWidth={1} />
-                ))}
-              </Pie>
-              <Legend
-                iconSize={8}
-                iconType="circle"
-                formatter={(value) => (
-                  <span style={{ fontSize: 10, color: 'inherit', fontWeight: 600 }}>{value}</span>
-                )}
-              />
-              <Tooltip
-                content={({ active, payload }) => {
-                  if (!active || !payload?.length) return null;
-                  const item = payload[0];
-                  return (
-                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-2.5 text-xs shadow-lg">
-                      <p className="font-bold" style={{ color: item.payload.color }}>{item.name}</p>
-                      <p className="text-slate-900 dark:text-slate-100 font-semibold">{formatCOP(item.value as number)}</p>
-                    </div>
-                  );
-                }}
-              />
-            </PieChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="flex flex-col items-center justify-center py-8 text-center bg-slate-50/50 dark:bg-slate-950/40 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
-            <span className="text-2xl mb-1">📊</span>
-            <p className="text-xs font-bold text-slate-900 dark:text-slate-100">Sin gastos registrados en el ciclo</p>
-            <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">Todas las categorías tienen el 100% de su presupuesto disponible.</p>
-          </div>
-        )}
-      </div>
-
-      {/* Table: category breakdown */}
-      <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden mb-4">
-        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/40">
-          <p className="text-xs font-bold text-slate-900 dark:text-slate-100">Desglose por Categoría</p>
-        </div>
-        <div className="divide-y divide-slate-100 dark:divide-slate-800">
-          {CATALOG_GASTOS.map((cat, i) => {
-            const spent = appData.gastadoPorMacro[cat.nombre] ?? 0;
-            const pct = cat.presupuesto > 0 ? (spent / cat.presupuesto) * 100 : 0;
-            return (
-              <div key={cat.nombre} className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
-                <span
-                  className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
-                />
-                <span className="flex-1 text-xs font-semibold text-slate-700 dark:text-slate-300">{cat.nombre}</span>
-                <span className="text-xs font-bold text-slate-900 dark:text-slate-100">{formatCOP(spent)}</span>
-                <span className={`text-[10px] font-black w-10 text-right ${
-                  pct >= 90 ? 'text-rose-600 dark:text-rose-400' : pct >= 70 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'
-                }`}>{pct.toFixed(0)}%</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ── MODAL EDICIÓN TASA MAZDA ─────────────────────────── */}
+      {/* Modal Editar Tasa Crédito Mazda */}
       {modalMazdaOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-4 animate-scale-up">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl flex flex-col gap-3.5 animate-scale-up">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 flex items-center justify-center text-rose-600 dark:text-rose-400">
@@ -1673,7 +1616,7 @@ export default function AnalyticsView() {
                     Tasa Crédito Mazda 2
                   </h3>
                   <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                    Interés Efectivo Anual (E.A.)
+                    Ajustar costo financiero del pasivo
                   </p>
                 </div>
               </div>
@@ -1686,34 +1629,6 @@ export default function AnalyticsView() {
               </button>
             </div>
 
-            {/* Presets rápidos */}
-            <div>
-              <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-                Valores frecuentes Crédito:
-              </p>
-              <div className="flex gap-1.5">
-                {[21.35, 19.50, 18.00].map(val => (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => {
-                      haptic();
-                      setInputMazda(val.toFixed(2));
-                    }}
-                    className={`
-                      flex-1 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer
-                      ${parseFloat(inputMazda) === val
-                        ? 'bg-rose-600 text-white border-rose-600'
-                        : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100'}
-                    `}
-                  >
-                    {val.toFixed(2)}%
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Input personalizado */}
             <div>
               <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
                 Tasa E.A. Personalizada (%)
@@ -1735,7 +1650,6 @@ export default function AnalyticsView() {
               </div>
             </div>
 
-            {/* Recálculo dinámico en vivo */}
             <div className="p-3 rounded-2xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200/80 dark:border-rose-800/60 text-xs flex flex-col gap-1.5">
               <p className="text-[10px] font-bold text-rose-900 dark:text-rose-300 uppercase tracking-wide">
                 Cálculos Recalculados en Vivo:
@@ -1758,7 +1672,6 @@ export default function AnalyticsView() {
               </div>
             </div>
 
-            {/* Acciones */}
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
@@ -1770,7 +1683,7 @@ export default function AnalyticsView() {
               <button
                 type="button"
                 onClick={() => handleSaveMazda(parseFloat(inputMazda) || 21.35)}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md shadow-rose-600/20 transition flex items-center justify-center gap-1.5 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <Check size={14} />
                 <span>Guardar tasa</span>
@@ -1780,7 +1693,7 @@ export default function AnalyticsView() {
         </div>
       )}
 
-      {/* ── MODAL NUEVA TANQUEADA ────────────────────────────── */}
+      {/* Modal Registrar Tanqueada */}
       {modalTanqueadaOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
@@ -1818,7 +1731,6 @@ export default function AnalyticsView() {
             )}
 
             <form onSubmit={handleSaveNewTanqueada} className="flex flex-col gap-3">
-              {/* Selector de vehículo */}
               <div>
                 <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
                   Vehículo
@@ -1925,7 +1837,7 @@ export default function AnalyticsView() {
                     haptic();
                     setTTanqueLleno((prev) => !prev);
                   }}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
                     tTanqueLleno
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
                       : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
@@ -1974,7 +1886,7 @@ export default function AnalyticsView() {
                 <button
                   type="submit"
                   disabled={savingTanqueada || parseAmount(tMonto) <= 0}
-                  className="flex-1 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  className="flex-1 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                 >
                   {savingTanqueada ? 'Guardando…' : 'Guardar Tanqueada'}
                 </button>
@@ -1984,7 +1896,7 @@ export default function AnalyticsView() {
         </div>
       )}
 
-      {/* ── MODAL EDITAR TANQUEADA ───────────────────────────── */}
+      {/* Modal Editar Tanqueada */}
       {tanqueadaToEdit && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
@@ -2002,7 +1914,7 @@ export default function AnalyticsView() {
                     Editar Tanqueada
                   </h3>
                   <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                    Ajustar kilometraje, galones o estado
+                    Ajustar vehículo, odómetro o estado
                   </p>
                 </div>
               </div>
@@ -2127,7 +2039,7 @@ export default function AnalyticsView() {
                     haptic();
                     setEditTanqueLleno((prev) => !prev);
                   }}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
                     editTanqueLleno
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
                       : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
@@ -2192,7 +2104,7 @@ export default function AnalyticsView() {
                   <button
                     type="submit"
                     disabled={isUpdatingTanqueada || parseAmount(editMonto) <= 0}
-                    className="py-2 px-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    className="py-2 px-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 text-xs font-bold shadow-xs transition flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
                   >
                     {isUpdatingTanqueada ? 'Actualizando…' : 'Guardar Cambios'}
                   </button>
