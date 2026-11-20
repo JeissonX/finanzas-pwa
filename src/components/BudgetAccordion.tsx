@@ -22,7 +22,13 @@ import {
   progressTextColor,
   haptic,
 } from '../utils/format';
-import type { PresupuestoItem, CatalogoItem } from '../types/finance';
+import type { PresupuestoItem, CatalogoItem, Transaccion } from '../types/finance';
+import PeriodSelector from './PeriodSelector';
+import {
+  createDefaultPeriodFilter,
+  filterTransactionsByPeriod,
+  type PeriodFilter,
+} from '../utils/periodFilter';
 import {
   fetchAppData,
   createCategoria,
@@ -63,6 +69,7 @@ interface DynamicSubcategoria {
   nombre: string;
   presupuesto: number;
   gastado: number;
+  count: number;
   orden: number;
   medio_pago_sugerido?: string | null;
   activo?: boolean;
@@ -74,6 +81,7 @@ interface DynamicMacroCategoria {
   orden_macro: number;
   presupuesto: number;
   gastado: number;
+  count: number;
   subcategorias: DynamicSubcategoria[];
 }
 
@@ -126,10 +134,13 @@ const MEDIOS_PAGO_DEFAULT = [
   'Lulo Bolsillo - Carro / Moto',
 ];
 
-export default function BudgetAccordion() {
+export default function BudgetAccordion({ transacciones = [] }: { transacciones?: Transaccion[] }) {
   const [appData, setAppData] = useState<AppData | null>(null);
   const [tipoFiltro, setTipoFiltro] = useState<'GASTO' | 'INGRESO'>('GASTO');
   const [mostrarArchivadas, setMostrarArchivadas] = useState(false);
+
+  // ── Segmentación por Periodo ──────────────────────────────────────────────
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>(() => createDefaultPeriodFilter());
 
   // Estados de modales
   const [editingSub, setEditingSub] = useState<DynamicSubcategoria | null>(null);
@@ -213,6 +224,40 @@ export default function BudgetAccordion() {
     return MEDIOS_PAGO_DEFAULT;
   }, [appData?.carteras]);
 
+  // ── Filtro de Periodos y Transacciones de Gasto del Periodo ───────────────
+  const txsGastoPeriodo = useMemo(() => {
+    const base = transacciones.length > 0 ? transacciones : (appData?.transacciones || []);
+    const inPeriod = filterTransactionsByPeriod(base, periodFilter);
+    return inPeriod.filter((t) => t.tipo === 'GASTO');
+  }, [transacciones, appData?.transacciones, periodFilter]);
+
+  const spendingBySubMap = useMemo(() => {
+    const map = new Map<string, { gastado: number; count: number }>();
+
+    for (const tx of txsGastoPeriodo) {
+      const macro = (tx.categoria || tx.macroCategoria || tx.macro || '').trim().toLowerCase();
+      const sub = (tx.subcategoria || tx.sub || '').trim().toLowerCase();
+      const monto = Number(tx.monto) || 0;
+
+      const key = `${macro}:::${sub}`;
+      const curr = map.get(key) || { gastado: 0, count: 0 };
+      curr.gastado += monto;
+      curr.count += 1;
+      map.set(key, curr);
+
+      // También indexar por subcategoría sola
+      const currSub = map.get(sub) || { gastado: 0, count: 0 };
+      currSub.gastado += monto;
+      currSub.count += 1;
+      map.set(sub, currSub);
+    }
+
+    return map;
+  }, [txsGastoPeriodo]);
+
+  const isCicloCompleto =
+    periodFilter.preset === 'CICLO_ACTUAL' || periodFilter.preset === 'CICLO_ANTERIOR';
+
   // ── 1. Construcción de Macrocategorías de GASTO ordenadas por orden_macro ───
   const categoriesGasto: DynamicMacroCategoria[] = useMemo(() => {
     const itemsCatalogoGasto = catalogo.filter(
@@ -273,15 +318,44 @@ export default function BudgetAccordion() {
 
       const subcategorias: DynamicSubcategoria[] = subsFiltradas
         .map((s): DynamicSubcategoria => {
-          const presItem = rawPresupuestos.find(
-            (p) =>
-              p.macro.trim().toLowerCase() === macroName.toLowerCase() &&
-              p.sub.trim().toLowerCase() === s.subcategoria.trim().toLowerCase(),
-          );
-          const gastado =
-            typeof presItem?.gastado === 'number' && presItem.gastado > 0
-              ? presItem.gastado
-              : spentSubMap[s.subcategoria] ?? 0;
+          const macroLower = macroName.trim().toLowerCase();
+          const subLower = s.subcategoria.trim().toLowerCase();
+
+          const compoundStat = spendingBySubMap.get(`${macroLower}:::${subLower}`);
+          let gastado = 0;
+          let count = 0;
+
+          if (compoundStat && compoundStat.count > 0) {
+            gastado = compoundStat.gastado;
+            count = compoundStat.count;
+          } else if (subLower === 'streaming y apps digitales') {
+            for (const tx of txsGastoPeriodo) {
+              const txSub = (tx.subcategoria || tx.sub || '').trim().toLowerCase();
+              if (txSub.includes('streaming') || txSub.includes('apps digitales')) {
+                gastado += Number(tx.monto) || 0;
+                count += 1;
+              }
+            }
+          } else {
+            const subStat = spendingBySubMap.get(subLower);
+            if (subStat) {
+              gastado = subStat.gastado;
+              count = subStat.count;
+            }
+          }
+
+          const hasTxs = transacciones.length > 0 || (appData?.transacciones && appData.transacciones.length > 0);
+          if (!hasTxs && periodFilter.preset === 'CICLO_ACTUAL') {
+            const presItem = rawPresupuestos.find(
+              (p) =>
+                p.macro.trim().toLowerCase() === macroName.toLowerCase() &&
+                p.sub.trim().toLowerCase() === s.subcategoria.trim().toLowerCase(),
+            );
+            gastado =
+              typeof presItem?.gastado === 'number' && presItem.gastado > 0
+                ? presItem.gastado
+                : spentSubMap[s.subcategoria] ?? 0;
+          }
 
           return {
             id: s.id,
@@ -290,6 +364,7 @@ export default function BudgetAccordion() {
             nombre: s.subcategoria,
             presupuesto: Number(s.presupuesto_base) || 0,
             gastado,
+            count,
             orden: Number(s.orden ?? 99),
             medio_pago_sugerido: s.medio_pago_sugerido,
             activo: s.activo !== false,
@@ -303,7 +378,8 @@ export default function BudgetAccordion() {
       const macroGastado =
         subcategorias.length > 0
           ? subcategorias.reduce((acc, s) => acc + s.gastado, 0)
-          : spentMacroMap[macroName] ?? 0;
+          : (spentMacroMap[macroName] ?? 0);
+      const macroCount = subcategorias.reduce((acc, s) => acc + s.count, 0);
 
       return {
         nombre: macroName,
@@ -311,12 +387,24 @@ export default function BudgetAccordion() {
         orden_macro,
         presupuesto: sumPresupuesto,
         gastado: macroGastado,
+        count: macroCount,
         subcategorias,
       };
     });
 
     return mapped.sort((a, b) => a.orden_macro - b.orden_macro || a.nombre.localeCompare(b.nombre));
-  }, [catalogo, rawPresupuestos, spentSubMap, spentMacroMap, mostrarArchivadas]);
+  }, [
+    catalogo,
+    rawPresupuestos,
+    spentSubMap,
+    spentMacroMap,
+    mostrarArchivadas,
+    spendingBySubMap,
+    txsGastoPeriodo,
+    transacciones,
+    appData?.transacciones,
+    periodFilter.preset,
+  ]);
 
   // ── 2. Construcción de Macrocategorías de INGRESO ordenadas por orden_macro ─
   const categoriesIngreso: DynamicMacroCategoria[] = useMemo(() => {
@@ -358,6 +446,7 @@ export default function BudgetAccordion() {
           nombre: s.subcategoria,
           presupuesto: 0,
           gastado: 0,
+          count: 0,
           orden: Number(s.orden ?? 99),
           medio_pago_sugerido: null,
           activo: s.activo !== false,
@@ -370,6 +459,7 @@ export default function BudgetAccordion() {
         orden_macro,
         presupuesto: 0,
         gastado: 0,
+        count: 0,
         subcategorias,
       };
     });
@@ -388,6 +478,7 @@ export default function BudgetAccordion() {
           : c.gastado),
       0,
     ) || (appData?.kpis.gastos ?? 0);
+  const totalCount = categoriesGasto.reduce((s, c) => s + c.count, 0);
   const globalPct = totalPresupuesto > 0 ? (totalGastado / totalPresupuesto) * 100 : 0;
 
   // ── Reordenamiento de Macrocategorías (Optimista) ───────────────────────────
@@ -732,30 +823,42 @@ export default function BudgetAccordion() {
       {/* VISTA 1: GASTOS Y PRESUPUESTOS */}
       {tipoFiltro === 'GASTO' && (
         <>
-          {/* Card Resumen Global del Ciclo */}
+          {/* Selector de Periodo */}
+          <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-4 shadow-sm">
+            <PeriodSelector value={periodFilter} onChange={setPeriodFilter} />
+          </div>
+
+          {/* Card Resumen Global del Ciclo o Periodo */}
           <div className="rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                  Total del Ciclo
+                  {isCicloCompleto ? 'Total del Ciclo' : 'Total del Periodo'}
                 </p>
                 <p className="text-3xl font-black text-slate-900 dark:text-slate-100 mt-0.5">
                   {formatCOP(totalGastado)}
                 </p>
+                {!isCicloCompleto && (
+                  <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mt-0.5">
+                    {totalCount} {totalCount === 1 ? 'movimiento en rango' : 'movimientos en rango'}
+                  </p>
+                )}
               </div>
               <div className="text-right">
                 <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                  Presupuesto
+                  {isCicloCompleto ? 'Presupuesto' : 'Presupuesto Base'}
                 </p>
                 <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
                   {formatCOP(totalPresupuesto)}
                 </p>
-                <p className={`text-xs font-black mt-0.5 ${progressTextColor(globalPct)}`}>
-                  {globalPct.toFixed(1)}%
-                </p>
+                {isCicloCompleto && (
+                  <p className={`text-xs font-black mt-0.5 ${progressTextColor(globalPct)}`}>
+                    {globalPct.toFixed(1)}%
+                  </p>
+                )}
               </div>
             </div>
-            <ProgressBar pct={globalPct} label="Presupuesto total del ciclo" />
+            {isCicloCompleto && <ProgressBar pct={globalPct} label="Presupuesto total del ciclo" />}
           </div>
 
           {/* Acordeón de Macrocategorías de Gasto */}
@@ -789,31 +892,53 @@ export default function BudgetAccordion() {
                           {cat.nombre}
                         </span>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className={`text-xs font-black ${progressTextColor(pct)}`}>
-                            {pct.toFixed(0)}%
-                          </span>
-                          <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
-                            {formatCOP(totalSubGastado)} / {formatCOP(cat.presupuesto)}
-                          </span>
+                          {isCicloCompleto ? (
+                            <>
+                              <span className={`text-xs font-black ${progressTextColor(pct)}`}>
+                                {pct.toFixed(0)}%
+                              </span>
+                              <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
+                                {formatCOP(totalSubGastado)} / {formatCOP(cat.presupuesto)}
+                              </span>
+                            </>
+                          ) : (
+                            <div className="text-right">
+                              <span className="text-xs font-black text-slate-900 dark:text-slate-100 font-mono">
+                                {formatCOP(totalSubGastado)}
+                              </span>
+                              <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium ml-1.5">
+                                ({cat.count} {cat.count === 1 ? 'mov.' : 'mov.'})
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
-                      <ProgressBar
-                        pct={pct}
-                        label={`${cat.nombre}: ${pct.toFixed(0)}% del presupuesto`}
-                      />
-                      <div className="mt-1 flex items-center justify-between">
-                        <span
-                          className={`text-[10px] font-semibold ${
-                            remaining >= 0
-                              ? 'text-slate-600 dark:text-slate-400'
-                              : 'text-rose-600 dark:text-rose-400 font-bold'
-                          }`}
-                        >
-                          {remaining >= 0
-                            ? `Disponible: ${formatCOP(remaining)}`
-                            : `⚠ Excedido: ${formatCOP(Math.abs(remaining))}`}
-                        </span>
-                      </div>
+                      {isCicloCompleto ? (
+                        <>
+                          <ProgressBar
+                            pct={pct}
+                            label={`${cat.nombre}: ${pct.toFixed(0)}% del presupuesto`}
+                          />
+                          <div className="mt-1 flex items-center justify-between">
+                            <span
+                              className={`text-[10px] font-semibold ${
+                                remaining >= 0
+                                  ? 'text-slate-600 dark:text-slate-400'
+                                  : 'text-rose-600 dark:text-rose-400 font-bold'
+                              }`}
+                            >
+                              {remaining >= 0
+                                ? `Disponible: ${formatCOP(remaining)}`
+                                : `⚠ Excedido: ${formatCOP(Math.abs(remaining))}`}
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                          <span>{cat.count} {cat.count === 1 ? 'movimiento en rango' : 'movimientos en rango'}</span>
+                          <span>Base mensual: {formatCOP(cat.presupuesto)}</span>
+                        </div>
+                      )}
                     </div>
                   </button>
 
@@ -906,16 +1031,29 @@ export default function BudgetAccordion() {
                                 )}
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0">
-                                <span
-                                  className={`text-[11px] font-black ${progressTextColor(
-                                    subPct,
-                                  )}`}
-                                >
-                                  {subPct.toFixed(0)}%
-                                </span>
-                                <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
-                                  {formatCOP(subGastado)} / {formatCOP(sub.presupuesto)}
-                                </span>
+                                {isCicloCompleto ? (
+                                  <>
+                                    <span
+                                      className={`text-[11px] font-black ${progressTextColor(
+                                        subPct,
+                                      )}`}
+                                    >
+                                      {subPct.toFixed(0)}%
+                                    </span>
+                                    <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                                      {formatCOP(subGastado)} / {formatCOP(sub.presupuesto)}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <div className="text-right">
+                                    <span className="text-[11px] font-bold text-slate-900 dark:text-slate-100 font-mono">
+                                      {formatCOP(subGastado)}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-1">
+                                      ({sub.count} {sub.count === 1 ? 'mov.' : 'mov.'})
+                                    </span>
+                                  </div>
+                                )}
                                 <div className="flex items-center gap-0.5 ml-1">
                                   <button
                                     type="button"
@@ -948,21 +1086,29 @@ export default function BudgetAccordion() {
                                 </div>
                               </div>
                             </div>
-                            <ProgressBar
-                              pct={subPct}
-                              label={`${sub.nombre}: ${subPct.toFixed(0)}%`}
-                            />
-                            <p
-                              className={`text-[10px] mt-0.5 font-medium ${
-                                subRemaining >= 0
-                                  ? 'text-slate-600 dark:text-slate-400'
-                                  : 'text-rose-600 dark:text-rose-400 font-bold'
-                              }`}
-                            >
-                              {subRemaining >= 0
-                                ? `Disponible: ${formatCOP(subRemaining)}`
-                                : `⚠ Excedido: ${formatCOP(Math.abs(subRemaining))}`}
-                            </p>
+                            {isCicloCompleto ? (
+                              <>
+                                <ProgressBar
+                                  pct={subPct}
+                                  label={`${sub.nombre}: ${subPct.toFixed(0)}%`}
+                                />
+                                <p
+                                  className={`text-[10px] mt-0.5 font-medium ${
+                                    subRemaining >= 0
+                                      ? 'text-slate-600 dark:text-slate-400'
+                                      : 'text-rose-600 dark:text-rose-400 font-bold'
+                                  }`}
+                                >
+                                  {subRemaining >= 0
+                                    ? `Disponible: ${formatCOP(subRemaining)}`
+                                    : `⚠ Excedido: ${formatCOP(Math.abs(subRemaining))}`}
+                                </p>
+                              </>
+                            ) : (
+                              <p className="text-[10px] mt-0.5 text-slate-500 dark:text-slate-400 font-medium">
+                                {sub.count > 0 ? `${sub.count} mov. en rango` : 'Sin movimientos en rango'} · Base: {formatCOP(sub.presupuesto)}
+                              </p>
+                            )}
                           </div>
                         );
                       })

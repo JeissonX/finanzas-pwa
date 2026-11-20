@@ -640,7 +640,7 @@ function MainDashboard() {
             />
           )}
           {tab === 'carteras' && <WalletsView />}
-          {tab === 'presupuestos' && <BudgetAccordion />}
+          {tab === 'presupuestos' && <BudgetAccordion transacciones={transacciones} />}
           {tab === 'analiticas' && (
             <Suspense
               fallback={
@@ -651,7 +651,7 @@ function MainDashboard() {
                 </div>
               }
             >
-              <AnalyticsView />
+              <AnalyticsView transacciones={transacciones} />
             </Suspense>
           )}
         </main>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   XAxis,
   YAxis,
@@ -30,7 +30,6 @@ import {
   haptic,
   formatDisplay,
   parseAmount,
-  isDateInCurrentCycle,
   getBogotaDateParts,
 } from '../utils/format';
 import {
@@ -41,7 +40,15 @@ import {
   updateTanqueada,
   deleteTanqueada,
 } from '../services/api';
-import type { Tanqueada, VehiculoGasolina } from '../types/finance';
+import type { Tanqueada, VehiculoGasolina, Transaccion } from '../types/finance';
+import PeriodSelector from './PeriodSelector';
+import {
+  createDefaultPeriodFilter,
+  filterTransactionsByPeriod,
+  getPeriodRange,
+  toBogotaDateStr,
+  type PeriodFilter,
+} from '../utils/periodFilter';
 
 const PALETTE = [
   '#2563EB', '#059669', '#E11D48', '#D97706',
@@ -152,8 +159,59 @@ function getMacroIcon(macro: string): string {
   return '🏷️';
 }
 
-export default function AnalyticsView() {
+export default function AnalyticsView({ transacciones: propTransacciones = [] }: { transacciones?: Transaccion[] }) {
   const [appData, setAppData] = useState<AppData>(DEFAULT_APPDATA);
+
+  // ── Selector de Periodo ─────────────────────────────────────
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>(() => createDefaultPeriodFilter());
+
+  const handlePeriodChange = useCallback((f: PeriodFilter) => {
+    setPeriodFilter(f);
+  }, []);
+
+  // Transacciones del periodo seleccionado
+  const txsPeriodo = useMemo(() => {
+    const base = propTransacciones.length > 0 ? propTransacciones : (appData.transacciones || []);
+    return filterTransactionsByPeriod(base, periodFilter);
+  }, [propTransacciones, appData.transacciones, periodFilter]);
+
+  const periodRange = useMemo(() => getPeriodRange(periodFilter), [periodFilter]);
+
+  // KPIs del periodo
+  const { ingresosPeriodo, gastosPeriodo, balancePeriodo } = useMemo(() => {
+    let ing = 0;
+    let gas = 0;
+    for (const tx of txsPeriodo) {
+      const m = Number(tx.monto) || 0;
+      if (tx.tipo === 'INGRESO') ing += m;
+      else if (tx.tipo === 'GASTO') gas += m;
+    }
+    return { ingresosPeriodo: ing, gastosPeriodo: gas, balancePeriodo: ing - gas };
+  }, [txsPeriodo]);
+
+  // Distribución por macro del periodo (con drill-down por sub)
+  const macrosPeriodo = useMemo(() => {
+    const map = new Map<string, { macro: string; gastado: number; subs: Map<string, { nombre: string; monto: number; count: number }> }>();
+    for (const tx of txsPeriodo) {
+      if (tx.tipo !== 'GASTO') continue;
+      const macro = (tx.macroCategoria || tx.categoria || tx.macro || 'Otros').trim();
+      const sub = (tx.subcategoria || tx.sub || 'Sin subcategoría').trim();
+      const monto = Number(tx.monto) || 0;
+      const entry = map.get(macro) ?? { macro, gastado: 0, subs: new Map() };
+      entry.gastado += monto;
+      const subEntry = entry.subs.get(sub) ?? { nombre: sub, monto: 0, count: 0 };
+      subEntry.monto += monto;
+      subEntry.count += 1;
+      entry.subs.set(sub, subEntry);
+      map.set(macro, entry);
+    }
+    const list = Array.from(map.values()).sort((a, b) => b.gastado - a.gastado);
+    const totalGastado = list.reduce((acc, m) => acc + m.gastado, 0);
+    return { list, totalGastado };
+  }, [txsPeriodo]);
+
+  // State de drill-down: qué macro está expandida
+  const [expandedMacro, setExpandedMacro] = useState<string | null>(null);
 
   // ── Parametrización Tasa Mazda ──────────────────────────────
   const [tasaMazda, setTasaMazda] = useState<number>(() => {
@@ -224,8 +282,6 @@ export default function AnalyticsView() {
   }, [appData.tasas]);
 
   const saldos = appData.saldos;
-  const gastosTotal = appData.kpis.gastos;
-  const ingresosTotal = appData.kpis.ingresos;
 
   // ── Cálculo de días restantes del ciclo (corte el día 24 en Bogotá) ────
   const { year: bYear, month: bMonth, day: bDay } = getBogotaDateParts();
@@ -241,56 +297,6 @@ export default function AnalyticsView() {
 
   const balanceDisponible = appData.kpis.balanceDisponible ?? appData.kpis.balance;
   const ritmoDiario = Math.max(0, Math.round(balanceDisponible / diasRestantesCorte24));
-
-  // ── BLOQUE 1: AGRUPACIÓN DINÁMICA POR MACROCATEGORÍA ────────────────
-  const macrosData = useMemo(() => {
-    const map = new Map<string, { macro: string; gastado: number; presupuesto: number; ordenMacro: number }>();
-
-    // 1. Presupuestos configurados en Supabase
-    (appData.presupuestos || []).forEach(p => {
-      const macro = (p.macro || (p as any).macro_categoria || 'Otros').trim();
-      const existing = map.get(macro) || { macro, gastado: 0, presupuesto: 0, ordenMacro: p.orden_macro ?? 99 };
-      existing.presupuesto += Number(p.presupuesto) || 0;
-      if (p.orden_macro != null && p.orden_macro < existing.ordenMacro) {
-        existing.ordenMacro = p.orden_macro;
-      }
-      map.set(macro, existing);
-    });
-
-    // 2. Gastado real del ciclo activo
-    Object.entries(appData.gastadoPorMacro || {}).forEach(([macro, gastado]) => {
-      const m = macro.trim();
-      const existing = map.get(m) || { macro: m, gastado: 0, presupuesto: 0, ordenMacro: 99 };
-      existing.gastado = Number(gastado) || 0;
-      map.set(m, existing);
-    });
-
-    // Filtrar únicamente aquellas con actividad o presupuesto > 0
-    const list = Array.from(map.values()).filter(item => item.gastado > 0 || item.presupuesto > 0);
-
-    // Ordenar de mayor a menor gastado (desempate por presupuesto desc)
-    list.sort((a, b) => {
-      if (b.gastado !== a.gastado) return b.gastado - a.gastado;
-      return b.presupuesto - a.presupuesto;
-    });
-
-    const totalGastado = list.reduce((acc, m) => acc + m.gastado, 0);
-
-    return {
-      list,
-      totalGastado,
-    };
-  }, [appData.presupuestos, appData.gastadoPorMacro]);
-
-  const pieDataDinamico = useMemo(() => {
-    return macrosData.list
-      .filter(m => m.gastado > 0)
-      .map((m, i) => ({
-        name: m.macro,
-        value: m.gastado,
-        color: PALETTE[i % PALETTE.length],
-      }));
-  }, [macrosData.list]);
 
   // ── BLOQUE 3: PATRIMONIO NETO CON PRÉSTAMOS POR COBRAR Y RUNWAY DINÁMICO ──
   const activosCarteras = useMemo(() => {
@@ -588,10 +594,14 @@ export default function AnalyticsView() {
         ? `${formatCOP(Math.round(sumaTotalMonto / sumaTotalKm))}/km`
         : '—';
 
-    // Gasto del ciclo actual
-    const tanqueadasCiclo = list.filter((t) => isDateInCurrentCycle(t.fecha));
-    const gastoCicloCOP = tanqueadasCiclo.reduce((sum, t) => sum + (Number(t.monto) || 0), 0);
-    const galonesCiclo = tanqueadasCiclo.reduce((sum, t) => sum + (Number(t.galones) || 0), 0);
+    // Gasto del periodo seleccionado (filtrado por [desde, hasta] en hora Bogotá)
+    const { desde: periodoDesde, hasta: periodoHasta } = periodRange;
+    const tanqueadasPeriodo = list.filter((t) => {
+      const fechaTx = toBogotaDateStr(t.fecha);
+      return fechaTx >= periodoDesde && fechaTx <= periodoHasta;
+    });
+    const gastoCicloCOP = tanqueadasPeriodo.reduce((sum, t) => sum + (Number(t.monto) || 0), 0);
+    const galonesCiclo = tanqueadasPeriodo.reduce((sum, t) => sum + (Number(t.galones) || 0), 0);
 
     // Último odómetro
     const kmList = list
@@ -614,7 +624,7 @@ export default function AnalyticsView() {
       ultimoOdometro,
       totalTanqueadas: list.length,
     };
-  }, [appData.tanqueadas, vehiculoGasolina]);
+  }, [appData.tanqueadas, vehiculoGasolina, periodRange]);
 
   // Handlers para tanqueadas
   const handleOpenNewTanqueada = () => {
@@ -749,6 +759,11 @@ export default function AnalyticsView() {
       {/* ── BLOQUE 1: PULSO DEL CICLO Y DISTRIBUCIÓN POR MACRO ──────── */}
       {/* ═════════════════════════════════════════════════════════════ */}
       <section className="space-y-3">
+        {/* Selector de Periodo */}
+        <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 shadow-xs">
+          <PeriodSelector value={periodFilter} onChange={handlePeriodChange} />
+        </div>
+
         {/* Pulso del Ciclo & Gasto Diario Sugerido */}
         <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
@@ -758,50 +773,54 @@ export default function AnalyticsView() {
               </div>
               <div>
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
-                  Gasto Máximo Sugerido / Día
+                  {periodFilter.preset === 'CICLO_ACTUAL' ? 'Gasto Máximo Sugerido / Día' : 'Promedio Diario Gastado'}
                 </span>
-                <p className={`text-2xl sm:text-3xl font-black tracking-tight font-mono tabular-nums ${balanceDisponible > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                  {formatCOP(ritmoDiario)}
+                <p className={`text-2xl sm:text-3xl font-black tracking-tight font-mono tabular-nums ${(periodFilter.preset === 'CICLO_ACTUAL' ? balanceDisponible : (gastosPeriodo > 0 ? 1 : 0)) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                  {periodFilter.preset === 'CICLO_ACTUAL'
+                    ? formatCOP(ritmoDiario)
+                    : formatCOP(periodRange.dias > 0 ? Math.round(gastosPeriodo / periodRange.dias) : 0)}
                   <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 font-sans ml-1">/día</span>
                 </p>
               </div>
             </div>
             <div className="text-right">
               <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                {diasRestantesCorte24 === 1 ? 'Último día del ciclo' : `Faltan ${diasRestantesCorte24} días`}
+                {periodFilter.preset === 'CICLO_ACTUAL'
+                  ? (diasRestantesCorte24 === 1 ? 'Último día del ciclo' : `Faltan ${diasRestantesCorte24} días`)
+                  : periodRange.label}
               </span>
               <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-1">
-                Corte: 24 del mes
+                {periodFilter.preset === 'CICLO_ACTUAL' ? 'Corte: 24 del mes' : `${periodRange.dias} días`}
               </span>
             </div>
           </div>
 
-          {/* 4 Indicadores clave del ciclo activo */}
+          {/* 4 Indicadores del periodo */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
-                Ingresos Ciclo
+                Ingresos
               </span>
               <span className="text-xs sm:text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono block tabular-nums">
-                {formatCOP(ingresosTotal)}
+                {formatCOP(ingresosPeriodo)}
               </span>
             </div>
 
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
-                Gastos Ciclo
+                Gastos
               </span>
               <span className="text-xs sm:text-sm font-black text-rose-600 dark:text-rose-400 font-mono block tabular-nums">
-                {formatCOP(gastosTotal)}
+                {formatCOP(gastosPeriodo)}
               </span>
             </div>
 
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
-                Disponible
+                {periodFilter.preset === 'CICLO_ACTUAL' ? 'Disponible' : 'Balance'}
               </span>
-              <span className={`text-xs sm:text-sm font-black font-mono block tabular-nums ${balanceDisponible >= 0 ? 'text-slate-900 dark:text-slate-100' : 'text-rose-600 dark:text-rose-400'}`}>
-                {formatCOP(balanceDisponible)}
+              <span className={`text-xs sm:text-sm font-black font-mono block tabular-nums ${(periodFilter.preset === 'CICLO_ACTUAL' ? balanceDisponible : balancePeriodo) >= 0 ? 'text-slate-900 dark:text-slate-100' : 'text-rose-600 dark:text-rose-400'}`}>
+                {formatCOP(periodFilter.preset === 'CICLO_ACTUAL' ? balanceDisponible : balancePeriodo)}
               </span>
             </div>
 
@@ -809,14 +828,14 @@ export default function AnalyticsView() {
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
                 Tasa Ahorro
               </span>
-              <span className={`text-xs sm:text-sm font-black font-mono block tabular-nums ${appData.kpis.tasaAhorro >= 20 ? 'text-blue-600 dark:text-blue-400' : appData.kpis.tasaAhorro >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                {appData.kpis.tasaAhorro.toFixed(1)}%
+              <span className={`text-xs sm:text-sm font-black font-mono block tabular-nums ${ingresosPeriodo > 0 && (balancePeriodo / ingresosPeriodo) * 100 >= 20 ? 'text-blue-600 dark:text-blue-400' : ingresosPeriodo > 0 && balancePeriodo >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                {ingresosPeriodo > 0 ? ((balancePeriodo / ingresosPeriodo) * 100).toFixed(1) : '0.0'}%
               </span>
             </div>
           </div>
         </div>
 
-        {/* Distribución de Gastos por Categoría (Ciclo Actual) */}
+        {/* Distribución de Gastos por Categoría (Periodo) */}
         <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5 shadow-xs flex flex-col gap-3.5">
           <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-2">
@@ -828,22 +847,22 @@ export default function AnalyticsView() {
                   Distribución de Gastos por Categoría
                 </h2>
                 <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                  Ciclo Actual · Ejecución vs. Presupuesto Base
+                  {periodRange.label} · Desglose por Macrocategoría
                 </p>
               </div>
             </div>
             <span className="text-xs font-bold text-slate-900 dark:text-slate-100 font-mono">
-              Total: {formatCOP(macrosData.totalGastado)}
+              {formatCOP(macrosPeriodo.totalGastado)}
             </span>
           </div>
 
-          {/* Gráfico Donut si hay gastos registrados */}
-          {pieDataDinamico.length > 0 && (
+          {/* Pie chart del periodo */}
+          {macrosPeriodo.list.filter(m => m.gastado > 0).length > 0 && (
             <div className="w-full h-44 -my-1">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={pieDataDinamico}
+                    data={macrosPeriodo.list.filter(m => m.gastado > 0).map((m, i) => ({ name: m.macro, value: m.gastado, color: PALETTE[i % PALETTE.length] }))}
                     cx="50%"
                     cy="50%"
                     innerRadius={46}
@@ -851,8 +870,8 @@ export default function AnalyticsView() {
                     paddingAngle={3}
                     dataKey="value"
                   >
-                    {pieDataDinamico.map((entry, idx) => (
-                      <Cell key={`cell-${idx}`} fill={entry.color} stroke="none" />
+                    {macrosPeriodo.list.filter(m => m.gastado > 0).map((_, idx) => (
+                      <Cell key={`cell-${idx}`} fill={PALETTE[idx % PALETTE.length]} stroke="none" />
                     ))}
                   </Pie>
                   <Tooltip
@@ -874,67 +893,72 @@ export default function AnalyticsView() {
             </div>
           )}
 
-          {/* Lista detallada con barras de progreso y semáforo */}
-          {macrosData.list.length === 0 ? (
+          {/* Lista con drill-down por subcategoría */}
+          {macrosPeriodo.list.length === 0 ? (
             <div className="py-6 text-center text-xs text-slate-400 dark:text-slate-500">
-              No hay presupuestos ni gastos registrados en el ciclo activo.
+              Sin gastos registrados en este periodo.
             </div>
           ) : (
             <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
-              {macrosData.list.map((m) => {
-                const pctGastoTotal = macrosData.totalGastado > 0 ? (m.gastado / macrosData.totalGastado) * 100 : 0;
-                const pctPresupuesto = m.presupuesto > 0 ? (m.gastado / m.presupuesto) * 100 : 0;
-
-                let semaforoBar = 'bg-emerald-500';
-                let semaforoText = 'text-emerald-600 dark:text-emerald-400';
-                if (pctPresupuesto > 100) {
-                  semaforoBar = 'bg-rose-500';
-                  semaforoText = 'text-rose-600 dark:text-rose-400';
-                } else if (pctPresupuesto >= 80) {
-                  semaforoBar = 'bg-amber-500';
-                  semaforoText = 'text-amber-600 dark:text-amber-400';
-                }
+              {macrosPeriodo.list.map((m, idx) => {
+                const pctDel = macrosPeriodo.totalGastado > 0 ? (m.gastado / macrosPeriodo.totalGastado) * 100 : 0;
+                const isOpen = expandedMacro === m.macro;
+                const colorBar = PALETTE[idx % PALETTE.length];
+                const subsArr = Array.from(m.subs.values()).sort((a, b) => b.monto - a.monto);
 
                 return (
                   <div key={m.macro} className="py-2.5 first:pt-1 last:pb-1 space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-base flex-shrink-0">{getMacroIcon(m.macro)}</span>
-                        <span className="font-bold text-slate-800 dark:text-slate-200 truncate">
-                          {m.macro}
-                        </span>
-                        <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono font-medium flex-shrink-0">
-                          ({pctGastoTotal.toFixed(1)}% mes)
-                        </span>
+                    {/* Fila de macrocategoría — clicable */}
+                    <button
+                      type="button"
+                      className="w-full text-left"
+                      onClick={() => { setExpandedMacro(isOpen ? null : m.macro); }}
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-base flex-shrink-0">{getMacroIcon(m.macro)}</span>
+                          <span className="font-bold text-slate-800 dark:text-slate-200 truncate">{m.macro}</span>
+                          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono flex-shrink-0">
+                            ({pctDel.toFixed(1)}%)
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className="font-bold text-slate-900 dark:text-slate-100 font-mono">
+                            {formatCOP(m.gastado)}
+                          </span>
+                          <span className={`text-[10px] transition-transform ${isOpen ? 'rotate-180' : ''} text-slate-400`}>▼</span>
+                        </div>
                       </div>
-                      <div className="text-right flex-shrink-0 font-mono">
-                        <span className="font-bold text-slate-900 dark:text-slate-100">
-                          {formatCOP(m.gastado)}
-                        </span>
-                        <span className="text-slate-400 dark:text-slate-500 text-[11px] font-medium ml-1">
-                          / {formatCOP(m.presupuesto)}
-                        </span>
+                      <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden mt-1.5">
+                        <div
+                          className="h-full transition-all duration-500 rounded-full"
+                          style={{ width: `${Math.min(pctDel, 100)}%`, backgroundColor: colorBar }}
+                        />
                       </div>
-                    </div>
+                    </button>
 
-                    {/* Barra de progreso con semáforo */}
-                    <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden flex">
-                      <div
-                        className={`h-full transition-all duration-500 rounded-full ${semaforoBar}`}
-                        style={{ width: `${Math.min(pctPresupuesto, 100)}%` }}
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                      <span className={semaforoText}>
-                        {m.presupuesto > 0 ? `${pctPresupuesto.toFixed(0)}% ejecutado` : 'Sin presupuesto fijado'}
-                      </span>
-                      <span>
-                        {m.presupuesto >= m.gastado
-                          ? `Disponible: ${formatCOP(m.presupuesto - m.gastado)}`
-                          : `Excedido: ${formatCOP(m.gastado - m.presupuesto)}`}
-                      </span>
-                    </div>
+                    {/* Desglose por subcategoría */}
+                    {isOpen && (
+                      <div className="ml-6 mt-1 space-y-1 border-l-2 pl-3" style={{ borderColor: colorBar + '60' }}>
+                        {subsArr.map(sub => {
+                          const pctSub = m.gastado > 0 ? (sub.monto / m.gastado) * 100 : 0;
+                          return (
+                            <div key={sub.nombre} className="flex items-center justify-between text-[11px] py-0.5">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{sub.nombre}</span>
+                                <span className="text-[9px] text-slate-400 dark:text-slate-500 flex-shrink-0">
+                                  {sub.count} mov.
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{formatCOP(sub.monto)}</span>
+                                <span className="text-[9px] text-slate-400 font-mono">{pctSub.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1017,7 +1041,7 @@ export default function AnalyticsView() {
               {datosGasolina.rendimientoPromedio}
             </span>
             <span className="text-[9px] text-slate-400 dark:text-slate-500 block mt-0.5">
-              Método full to full
+              Histórico full-to-full
             </span>
           </div>
 
@@ -1029,19 +1053,19 @@ export default function AnalyticsView() {
               {datosGasolina.costoPromedioKm}
             </span>
             <span className="text-[9px] text-slate-400 dark:text-slate-500 block mt-0.5">
-              Gasto real combustible
+              Histórico combustible
             </span>
           </div>
 
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1">
-              Gasto Ciclo Activo
+              Gasto En Periodo
             </span>
             <span className="text-xs sm:text-sm font-black text-rose-600 dark:text-rose-400 font-mono block">
               {formatCOP(datosGasolina.gastoCicloCOP)}
             </span>
             <span className="text-[9px] text-slate-400 dark:text-slate-500 block mt-0.5">
-              {datosGasolina.galonesCiclo > 0 ? `${datosGasolina.galonesCiclo.toFixed(2)} gal` : 'Sin cargas este ciclo'}
+              {datosGasolina.galonesCiclo > 0 ? `${datosGasolina.galonesCiclo.toFixed(2)} gal · En periodo` : 'Sin cargas en periodo'}
             </span>
           </div>
 

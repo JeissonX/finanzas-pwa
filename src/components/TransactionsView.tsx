@@ -27,6 +27,7 @@ import {
   haptic,
 } from "../utils/format";
 import { exportTransactionsToCSV } from "../utils/exportCsv";
+import { toBogotaDateStr } from "../utils/periodFilter";
 import EditTransactionModal from "./EditTransactionModal";
 
 interface TransactionsViewProps {
@@ -64,6 +65,79 @@ export default function TransactionsView({
   const [soloCicloActivo, setSoloCicloActivo] = useState(true);
   const [busqueda, setBusqueda] = useState("");
 
+  // ── Filtros Avanzados ──────────────────────────────────────
+  const [mostrarFiltros, setMostrarFiltros] = useState(false);
+  const [filtroFechaDesde, setFiltroFechaDesde] = useState("");
+  const [filtroFechaHasta, setFiltroFechaHasta] = useState("");
+  const [filtroMacro, setFiltroMacro] = useState("");
+  const [filtroSub, setFiltroSub] = useState("");
+  const [filtroCuenta, setFiltroCuenta] = useState("");
+
+  // Opciones dinámicas para selects de filtros
+  const macroOptions = useMemo(() => {
+    const set = new Set<string>();
+    (catalogo || []).forEach((c) => {
+      if (c.macro_categoria?.trim()) set.add(c.macro_categoria.trim());
+    });
+    transacciones.forEach((tx) => {
+      const m = (tx.categoria || tx.macroCategoria || tx.macro || "").trim();
+      if (m) set.add(m);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "es"));
+  }, [catalogo, transacciones]);
+
+  const subOptions = useMemo(() => {
+    const set = new Set<string>();
+    const targetMacro = filtroMacro.trim().toLowerCase();
+    (catalogo || []).forEach((c) => {
+      if (!targetMacro || c.macro_categoria?.trim().toLowerCase() === targetMacro) {
+        if (c.subcategoria?.trim()) set.add(c.subcategoria.trim());
+      }
+    });
+    transacciones.forEach((tx) => {
+      const m = (tx.categoria || tx.macroCategoria || tx.macro || "").trim().toLowerCase();
+      if (!targetMacro || m === targetMacro) {
+        const s = (tx.subcategoria || tx.sub || "").trim();
+        if (s) set.add(s);
+      }
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "es"));
+  }, [catalogo, transacciones, filtroMacro]);
+
+  const cuentaOptions = useMemo(() => {
+    const set = new Set<string>();
+    transacciones.forEach((tx) => {
+      if (tx.cuenta?.trim()) set.add(tx.cuenta.trim());
+      if (tx.cuentaOrigen?.trim()) set.add(tx.cuentaOrigen.trim());
+      if (tx.cuentaDestino?.trim()) set.add(tx.cuentaDestino.trim());
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "es"));
+  }, [transacciones]);
+
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (filtroFechaDesde) count++;
+    if (filtroFechaHasta) count++;
+    if (filtroMacro) count++;
+    if (filtroSub) count++;
+    if (filtroCuenta) count++;
+    return count;
+  }, [filtroFechaDesde, filtroFechaHasta, filtroMacro, filtroSub, filtroCuenta]);
+
+  const handleClearFilters = () => {
+    haptic();
+    setFiltroFechaDesde("");
+    setFiltroFechaHasta("");
+    setFiltroMacro("");
+    setFiltroSub("");
+    setFiltroCuenta("");
+  };
+
+  const handleMacroChange = (macro: string) => {
+    setFiltroMacro(macro);
+    setFiltroSub("");
+  };
+
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -82,15 +156,52 @@ export default function TransactionsView({
   // Filtrado de transacciones
   const filteredTxs = useMemo(() => {
     return transacciones.filter((tx) => {
-      // 1. Filtro por ciclo
-      if (soloCicloActivo && !isDateInCurrentCycle(tx.fecha)) {
+      const txFecha = toBogotaDateStr(tx.fecha);
+
+      // 1. Filtro por ciclo (solo si no se fijó un rango de fechas explícito)
+      if (soloCicloActivo && !filtroFechaDesde && !filtroFechaHasta) {
+        if (!isDateInCurrentCycle(tx.fecha)) {
+          return false;
+        }
+      }
+
+      // 2. Filtro por fechas Desde / Hasta
+      if (filtroFechaDesde && txFecha < filtroFechaDesde) {
         return false;
       }
-      // 2. Filtro por tipo
+      if (filtroFechaHasta && txFecha > filtroFechaHasta) {
+        return false;
+      }
+
+      // 3. Filtro por tipo
       if (filtroTipo !== "TODOS" && tx.tipo !== filtroTipo) {
         return false;
       }
-      // 3. Filtro por búsqueda de texto
+
+      // 4. Filtro por Macrocategoría
+      if (filtroMacro) {
+        const m = (tx.categoria || tx.macroCategoria || tx.macro || "").trim().toLowerCase();
+        if (m !== filtroMacro.trim().toLowerCase()) return false;
+      }
+
+      // 5. Filtro por Subcategoría
+      if (filtroSub) {
+        const s = (tx.subcategoria || tx.sub || "").trim().toLowerCase();
+        if (s !== filtroSub.trim().toLowerCase()) return false;
+      }
+
+      // 6. Filtro por Cartera / Cuenta
+      if (filtroCuenta) {
+        const target = filtroCuenta.trim().toLowerCase();
+        const c = (tx.cuenta || "").trim().toLowerCase();
+        const cOrig = (tx.cuentaOrigen || (tx as any).cuenta_origen || "").trim().toLowerCase();
+        const cDest = (tx.cuentaDestino || (tx as any).cuenta_destino || "").trim().toLowerCase();
+        if (c !== target && cOrig !== target && cDest !== target) {
+          return false;
+        }
+      }
+
+      // 7. Filtro por búsqueda de texto
       if (busqueda.trim()) {
         const query = busqueda.toLowerCase().trim();
         const sub = (tx.subcategoria || tx.sub || "").toLowerCase();
@@ -110,7 +221,17 @@ export default function TransactionsView({
       }
       return true;
     });
-  }, [transacciones, soloCicloActivo, filtroTipo, busqueda]);
+  }, [
+    transacciones,
+    soloCicloActivo,
+    filtroFechaDesde,
+    filtroFechaHasta,
+    filtroTipo,
+    filtroMacro,
+    filtroSub,
+    filtroCuenta,
+    busqueda,
+  ]);
 
   // Totales calculados sobre la lista filtrada
   const stats = useMemo(() => {
@@ -145,15 +266,18 @@ export default function TransactionsView({
   // Exportar a CSV nativo compatible con Excel es_CO
   const handleExportCSV = () => {
     haptic(40);
-    const toExport = filteredTxs.length > 0 ? filteredTxs : transacciones;
+    const toExport = filteredTxs;
     if (toExport.length === 0) {
       showFeedback("No hay movimientos para exportar.");
       return;
     }
-    exportTransactionsToCSV(
-      toExport,
-      soloCicloActivo ? cicloLabel : "Todos_Los_Ciclos",
-    );
+    const label =
+      soloCicloActivo && !filtroFechaDesde && !filtroFechaHasta
+        ? cicloLabel
+        : filtroFechaDesde || filtroFechaHasta
+          ? `${filtroFechaDesde || "Inicio"}_a_${filtroFechaHasta || "Fin"}`
+          : "Movimientos_Filtrados";
+    exportTransactionsToCSV(toExport, label);
     showFeedback(`Se exportaron ${toExport.length} movimientos a CSV.`);
   };
 
@@ -295,7 +419,7 @@ export default function TransactionsView({
           <span>+ REGISTRAR MOVIMIENTO</span>
         </button>
 
-        {/* Barra de búsqueda y exportación */}
+        {/* Barra de búsqueda, botón de Filtros y exportación */}
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <Search
@@ -310,6 +434,32 @@ export default function TransactionsView({
               className="w-full pl-9 pr-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400 transition"
             />
           </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              haptic();
+              setMostrarFiltros((prev) => !prev);
+            }}
+            className={`
+              px-2.5 py-2 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 flex-shrink-0 cursor-pointer
+              ${
+                mostrarFiltros || activeFiltersCount > 0
+                  ? "bg-slate-900 text-white border-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100 shadow-sm"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200/80 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:border-slate-700"
+              }
+            `}
+            title="Filtros avanzados"
+          >
+            <SlidersHorizontal size={14} />
+            <span className="hidden sm:inline">Filtros</span>
+            {activeFiltersCount > 0 && (
+              <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">
+                {activeFiltersCount}
+              </span>
+            )}
+          </button>
+
           <button
             type="button"
             onClick={handleExportCSV}
@@ -320,6 +470,109 @@ export default function TransactionsView({
             <Download size={15} />
           </button>
         </div>
+
+        {/* Panel Desplegable de Filtros Avanzados */}
+        {mostrarFiltros && (
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 flex flex-col gap-3 animate-slide-up">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                Filtros Avanzados
+              </span>
+              {activeFiltersCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                >
+                  Limpiar filtros ({activeFiltersCount})
+                </button>
+              )}
+            </div>
+
+            {/* Fechas Desde / Hasta */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Desde
+                </label>
+                <input
+                  type="date"
+                  value={filtroFechaDesde}
+                  onChange={(e) => {
+                    setFiltroFechaDesde(e.target.value);
+                    if (soloCicloActivo && e.target.value) setSoloCicloActivo(false);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-xl text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Hasta
+                </label>
+                <input
+                  type="date"
+                  value={filtroFechaHasta}
+                  onChange={(e) => {
+                    setFiltroFechaHasta(e.target.value);
+                    if (soloCicloActivo && e.target.value) setSoloCicloActivo(false);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-xl text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                />
+              </div>
+            </div>
+
+            {/* Macrocategoría y Subcategoría */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Macrocategoría
+                </label>
+                <select
+                  value={filtroMacro}
+                  onChange={(e) => handleMacroChange(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded-xl text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                >
+                  <option value="">Todas las macros</option>
+                  {macroOptions.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Subcategoría
+                </label>
+                <select
+                  value={filtroSub}
+                  onChange={(e) => setFiltroSub(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded-xl text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                >
+                  <option value="">Todas las subs</option>
+                  {subOptions.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Cartera / Cuenta */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Cartera / Cuenta
+              </label>
+              <select
+                value={filtroCuenta}
+                onChange={(e) => setFiltroCuenta(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-xl text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+              >
+                <option value="">Todas las cuentas</option>
+                {cuentaOptions.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
 
         {/* Tabs de tipo de transacción */}
         <div className="flex gap-1 overflow-x-auto pb-0.5 no-scrollbar">
@@ -355,6 +608,36 @@ export default function TransactionsView({
             );
           })}
         </div>
+      </div>
+
+      {/* Pastilla resumen viva del segmento filtrado */}
+      <div className="flex items-center justify-between px-3.5 py-2 rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200/90 dark:border-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 shadow-sm">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-bold text-slate-900 dark:text-slate-100">
+            {stats.count} {stats.count === 1 ? "movimiento" : "movimientos"}
+          </span>
+          <span>·</span>
+          <span>
+            Gastos: <strong className="text-rose-600 dark:text-rose-400 font-mono font-bold">{formatCOP(stats.gastos)}</strong>
+          </span>
+          {stats.ingresos > 0 && (
+            <>
+              <span>·</span>
+              <span>
+                Ingresos: <strong className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">{formatCOP(stats.ingresos)}</strong>
+              </span>
+            </>
+          )}
+        </div>
+        {activeFiltersCount > 0 && (
+          <button
+            type="button"
+            onClick={handleClearFilters}
+            className="text-[11px] text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 underline cursor-pointer ml-2 flex-shrink-0"
+          >
+            Limpiar ({activeFiltersCount})
+          </button>
+        )}
       </div>
 
       {/* Lista de transacciones */}
